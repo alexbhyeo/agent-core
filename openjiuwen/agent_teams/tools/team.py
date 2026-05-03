@@ -11,6 +11,7 @@ import shutil
 from pathlib import Path
 from typing import (
     TYPE_CHECKING,
+    Any,
     Awaitable,
     Callable,
     List,
@@ -19,9 +20,9 @@ from typing import (
 
 if TYPE_CHECKING:
     from openjiuwen.agent_teams.models.allocator import Allocation
-    from openjiuwen.agent_teams.schema.deep_agent_spec import TeamModelConfig
 
 from openjiuwen.agent_teams.constants import HUMAN_AGENT_MEMBER_NAME
+from openjiuwen.agent_teams.context import get_session_id
 from openjiuwen.agent_teams.i18n import t
 from openjiuwen.agent_teams.messager import Messager
 from openjiuwen.agent_teams.schema.events import (
@@ -42,7 +43,6 @@ from openjiuwen.agent_teams.schema.status import (
     TaskStatus,
 )
 from openjiuwen.agent_teams.schema.team import MemberOpResult, TeamMemberSpec, TeamRole
-from openjiuwen.agent_teams.context import get_session_id
 from openjiuwen.agent_teams.tools.database import (
     Team,
     TeamDatabase,
@@ -121,6 +121,12 @@ class TeamBackend:
         self._human_agent_names: set[str] = {
             m.member_name for m in self.predefined_members if m.role_type == TeamRole.HUMAN_AGENT
         }
+        # Per-human-agent callback fired by the leader's dispatcher when
+        # a team-side message reaches the avatar — see
+        # ``register_human_agent_inbound`` for the registration surface.
+        # Holds raw callables (not wrapped) so the dispatcher can decide
+        # async vs sync invocation at call time.
+        self._human_agent_inbound_callbacks: dict[str, Any] = {}
         self.message_manager = TeamMessageManager(
             self.team_name,
             member_name,
@@ -900,15 +906,21 @@ class TeamBackend:
         team_name: str,
         spec: Optional[TeamMemberSpec],
     ) -> None:
-        """Register a human-agent member as a READY team member.
+        """Register a human-agent member as an UNSTARTED team member.
 
-        Human agents are shell members: no DeepAgent process, no startup
-        callback, no execution lifecycle. They exist purely so the leader
-        and teammates see a peer they can send_message to and assign
-        tasks to. Status stays at READY so the startup sweep (which
-        targets UNSTARTED) never touches them. When ``spec`` is None the
-        default ``human_agent`` identity is used (the single-human
-        backward-compatible path triggered by ``enable_hitt=True``).
+        Human agents share the standard spawn path with teammates so
+        they get a real DeepAgent runtime (LLM + tools) the user can
+        drive through ``HumanAgentInbox``. Status starts at UNSTARTED so
+        ``startup()`` picks them up and the leader's
+        ``_on_teammate_created`` callback spawns them just like any
+        other member; role-aware rail filtering inside the configurator
+        then strips the team-coordination rails (FirstIterationGate /
+        TeamToolApprovalRail) and replaces ``send_message`` /
+        ``claim_task`` with the human agent's dedicated tool surface.
+
+        When ``spec`` is None the default ``human_agent`` identity is
+        used (the single-human backward-compatible path triggered by
+        ``enable_hitt=True``).
         """
         member_name = spec.member_name if spec else HUMAN_AGENT_MEMBER_NAME
         display_name = spec.display_name if spec else t("hitt.human_agent_display_name")
@@ -926,7 +938,7 @@ class TeamBackend:
             agent_card=member_card,
             desc=persona,
             prompt=prompt,
-            status=MemberStatus.READY,
+            status=MemberStatus.UNSTARTED,
             execution_status=ExecutionStatus.IDLE,
             mode=MemberMode.BUILD_MODE,
         )
@@ -938,24 +950,39 @@ class TeamBackend:
         # holds the same reference) observes the registration without
         # extra wiring.
         self._human_agent_names.add(member_name)
-        try:
-            await self.messager.publish(
-                topic_id=TeamTopic.TEAM.build(get_session_id(), team_name),
-                message=EventMessage.from_event(
-                    MemberSpawnedEvent(
-                        team_name=team_name,
-                        member_name=member_name,
-                    )
-                ),
-            )
-        except Exception as e:
-            team_logger.error(f"Failed to publish human agent spawned event for {member_name}: {e}")
 
     def is_human_agent(self, member_name: Optional[str]) -> bool:
         """Whether ``member_name`` is a registered human-agent member."""
         if not member_name:
             return False
         return member_name in self._human_agent_names
+
+    def register_human_agent_inbound(
+        self,
+        member_name: str,
+        callback: Optional[Any],
+    ) -> None:
+        """Register / clear a team→user notification callback for a human agent.
+
+        Phase-2 HITT does not let a human agent's LLM consume team-side
+        messages; instead the runtime forwards them to the SDK / business
+        layer via this callback. ``callback=None`` removes a prior
+        registration. Unknown member names raise ``KeyError`` so typos
+        surface immediately rather than silently dropping notifications.
+        """
+        if member_name not in self._human_agent_names:
+            raise KeyError(
+                f"'{member_name}' is not a registered human-agent member; "
+                f"registered members: {sorted(self._human_agent_names)}"
+            )
+        if callback is None:
+            self._human_agent_inbound_callbacks.pop(member_name, None)
+        else:
+            self._human_agent_inbound_callbacks[member_name] = callback
+
+    def get_human_agent_inbound(self, member_name: str) -> Optional[Any]:
+        """Return the inbound callback registered for ``member_name``, if any."""
+        return self._human_agent_inbound_callbacks.get(member_name)
 
     def human_agent_names(self) -> frozenset[str]:
         """Snapshot of currently registered human-agent member names."""

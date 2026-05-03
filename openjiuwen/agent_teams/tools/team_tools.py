@@ -12,6 +12,7 @@ import json
 from abc import ABC
 from functools import wraps
 from typing import (
+    TYPE_CHECKING,
     Any,
     AsyncIterator,
     Awaitable,
@@ -20,7 +21,6 @@ from typing import (
     List,
     Optional,
     Set,
-    TYPE_CHECKING,
 )
 
 from pydantic import PrivateAttr
@@ -128,11 +128,20 @@ LEADER_TOOLS: Set[str] = LEADER_ONLY_TOOLS | SHARED_TOOLS
 MEMBER_TOOLS: Set[str] = MEMBER_ONLY_TOOLS | SHARED_TOOLS
 
 # Tools available to the reserved ``human_agent`` role. The human
-# collaborator only needs to talk — no task claim, no team management,
-# no introspection tools. Keeping the surface minimal also makes the
-# model's mental model clear: human_agent is a voice, not a scheduler.
+# agent acts on its corresponding external user's behalf, so it gets
+# read access to tasks and a self-only completion tool. It does not
+# get ``send_message`` — user voice goes through ``HumanAgentInbox``
+# with explicit ``@target`` routing, not through an LLM-controlled
+# tool. It does not get ``claim_task`` — autonomous claiming is a
+# teammate behavior; the user's avatar must wait for explicit leader
+# assignment via ``update_task(assignee=...)`` instead.
+#
+# Workspace lock/version (``workspace_meta``) is attached separately
+# by ``TeamToolRail`` whenever a workspace_manager is configured —
+# same path leader/teammate use — so this set doesn't list it.
 HUMAN_AGENT_TOOLS: Set[str] = {
-    "send_message",
+    "view_task",
+    "member_complete_task",
 }
 
 
@@ -253,9 +262,7 @@ class SpawnMemberTool(TeamTool):
         team: TeamBackend,
         t: Translator,
         *,
-        model_config_allocator: Optional[
-            Callable[[Optional[str]], Optional["Allocation"]]
-        ] = None,
+        model_config_allocator: Optional[Callable[[Optional[str]], Optional["Allocation"]]] = None,
     ):
         super().__init__(
             ToolCard(
@@ -298,11 +305,7 @@ class SpawnMemberTool(TeamTool):
         mode = MemberMode(mode_str)
 
         model_name = inputs.get("model_name")
-        allocation = (
-            self._allocate_model_config(model_name)
-            if self._allocate_model_config
-            else None
-        )
+        allocation = self._allocate_model_config(model_name) if self._allocate_model_config else None
 
         card_id = f"{self.team.team_name}_{member_name}"
         agent_card = AgentCard(id=card_id, name=display_name, description=desc)
@@ -818,10 +821,7 @@ class UpdateTaskTool(TeamTool):
         collaborator can release them (by completing, or by the team
         being cleaned). The leader's only recourse is send_message nudges.
         """
-        return (
-            self.agent_team.is_human_agent(task.assignee)
-            and task.status == TaskStatus.CLAIMED.value
-        )
+        return self.agent_team.is_human_agent(task.assignee) and task.status == TaskStatus.CLAIMED.value
 
     async def invoke(self, inputs: Dict[str, Any], **kwargs) -> ToolOutput:
         task_id = inputs.get("task_id")
@@ -1009,6 +1009,94 @@ class ClaimTaskTool(TeamTool):
         return result
 
 
+class MemberCompleteTaskTool(TeamTool):
+    """Complete a task whose ``assignee`` is the calling member.
+
+    Self-only by design: the tool refuses any task whose ``assignee``
+    differs from the caller's ``member_name``. Distinct from
+    ``ClaimTaskTool`` (which couples claim and complete and is
+    teammate-only) and from leader's ``UpdateTaskTool`` (which manages
+    the team-wide task graph). Wired into ``HUMAN_AGENT_TOOLS`` so the
+    user's avatar can mark its leader-assigned tasks as done without
+    inheriting any of leader's coordination authority.
+    """
+
+    def __init__(self, task_manager: TeamTaskManager, t: Translator):
+        super().__init__(
+            ToolCard(
+                id="team.member_complete_task",
+                name="member_complete_task",
+                description=t("member_complete_task"),
+            )
+        )
+        self.task_manager = task_manager
+        self.card.input_params = {
+            "type": "object",
+            "properties": {
+                "task_id": {
+                    "type": "string",
+                    "description": t("member_complete_task", "task_id"),
+                },
+                "note": {
+                    "type": "string",
+                    "description": t("member_complete_task", "note"),
+                },
+            },
+            "required": ["task_id"],
+        }
+
+    async def invoke(self, inputs: Dict[str, Any], **kwargs) -> ToolOutput:
+        task_id = (inputs.get("task_id") or "").strip()
+        if not task_id:
+            return ToolOutput(success=False, error="'task_id' is required")
+
+        try:
+            task = await self.task_manager.get(task_id)
+        except Exception as e:
+            team_logger.error("member_complete_task: get(%s) failed: %s", task_id, e)
+            return ToolOutput(success=False, error=f"Internal error: {e}")
+        if not task:
+            return ToolOutput(success=False, error=f"Task '{task_id}' not found")
+
+        caller = self.task_manager.member_name
+        if task.assignee != caller:
+            return ToolOutput(
+                success=False,
+                error=(
+                    f"Task '{task_id}' is assigned to "
+                    f"'{task.assignee or '<unassigned>'}', not '{caller}'; "
+                    "you can only complete tasks assigned to yourself"
+                ),
+            )
+
+        try:
+            result = await self.task_manager.complete(task_id=task_id)
+        except Exception as e:
+            team_logger.error("member_complete_task: complete(%s) failed: %s", task_id, e)
+            return ToolOutput(success=False, error=f"Internal error: {e}")
+        if not result.ok:
+            return ToolOutput(success=False, error=result.reason)
+
+        note = (inputs.get("note") or "").strip() or None
+        return ToolOutput(
+            success=True,
+            data={
+                "task_id": task_id,
+                "status": "completed",
+                "note": note,
+            },
+        )
+
+    def map_result(self, output: ToolOutput) -> str:
+        if not output.success:
+            return output.error or "Failed to complete task"
+        d = output.data
+        line = f"Task #{d['task_id']} completed"
+        if d.get("note"):
+            line += f" (note: {d['note']})"
+        return line
+
+
 # ========== Messaging ==========
 
 
@@ -1120,9 +1208,7 @@ def create_team_tools(
     agent_team: TeamBackend,
     teammate_mode: str = "build_mode",
     on_teammate_created: Optional[Callable[[str], Awaitable[None]]] = None,
-    model_config_allocator: Optional[
-        Callable[[Optional[str]], Optional["Allocation"]]
-    ] = None,
+    model_config_allocator: Optional[Callable[[Optional[str]], Optional["Allocation"]]] = None,
     exclude_tools: Optional[Set[str]] = None,
     lang: str = "cn",
 ) -> List[Tool]:
@@ -1166,6 +1252,7 @@ def create_team_tools(
         "update_task": UpdateTaskTool(agent_team, t),
         "view_task": ViewTaskToolV2(task_mgr, t),
         "claim_task": ClaimTaskTool(task_mgr, t),
+        "member_complete_task": MemberCompleteTaskTool(task_mgr, t),
         # Messaging
         "send_message": SendMessageTool(
             msg_mgr,

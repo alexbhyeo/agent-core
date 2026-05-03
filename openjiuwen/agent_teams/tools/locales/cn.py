@@ -72,17 +72,19 @@ STRINGS: dict[str, str] = {
     "update_task.assignee": "指派任务的目标 member_name（仅当任务当前无 assignee 时生效）。系统会向被指派成员发送通知",
     "update_task.add_blocked_by": "要添加为新依赖的任务 ID 列表（本任务将被阻塞直到这些任务完成）",
     "update_task.error_human_agent_locked_cancel": (
-        "任务 {task_id} 已由人类成员认领，该任务不允许被取消；"
-        "如需变更，请通过 send_message 与对应的人类成员协商"
+        "任务 {task_id} 已由人类成员认领，该任务不允许被取消；如需变更，请通过 send_message 与对应的人类成员协商"
     ),
     "update_task.error_human_agent_locked_reassign": (
-        "任务 {task_id} 已由人类成员认领，不能改派给 {new_assignee}；"
-        "人类成员锁定的任务必须由对应人类本人完成"
+        "任务 {task_id} 已由人类成员认领，不能改派给 {new_assignee}；人类成员锁定的任务必须由对应人类本人完成"
     ),
     # ===== claim_task =========================================================
     # claim_task._desc lives in descs/cn/claim_task.md
     "claim_task.task_id": "要领取或完成的任务 ID",
     "claim_task.status": "目标状态：'claimed'（领取）或 'completed'（完成）",
+    # ===== member_complete_task ===============================================
+    # member_complete_task._desc lives in descs/cn/member_complete_task.md
+    "member_complete_task.task_id": "要标记完成的任务 ID（必须是 leader 已经指派给你的任务）",
+    "member_complete_task.note": "可选的完成说明，便于团队了解你的执行结果或后续注意事项",
     # ===== send_message ========================================================
     # send_message._desc lives in descs/cn/send_message.md
     "send_message.to": '收件人：填 member_name（如 "backend-dev-1"）发送点对点消息；填 "user"（仅 teammate 用于回复用户）；填 "*" 广播给所有成员',

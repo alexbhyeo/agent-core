@@ -66,6 +66,37 @@ InteractPayload = Union[GodViewMessage, OperatorMessage, HumanAgentMessage]
 
 
 @dataclass(frozen=True, slots=True)
+class HumanAgentInboundEvent:
+    """Notification that a team-side message reached a human agent.
+
+    Phase-2 HITT does not let a human agent's LLM autonomously consume
+    incoming messages — they are passed straight through to the
+    corresponding external user. This dataclass is what the runtime
+    feeds to the ``on_inbound`` callback registered with
+    ``HumanAgentInbox`` so the SDK / business layer can deliver the
+    message wherever the user is.
+
+    Attributes:
+        member_name: The human-agent member that received the message.
+        sender: The team member that sent the message (or the literal
+            ``"user"`` pseudo-member for user-side broadcasts).
+        body: Message content.
+        broadcast: ``True`` when the message arrived via broadcast.
+        message_id: Identifier persisted on the message bus, useful for
+            deduplication and read-state correlation.
+        timestamp: Millisecond wall-clock timestamp when the message
+            row was created.
+    """
+
+    member_name: str
+    sender: str
+    body: str
+    broadcast: bool
+    message_id: str
+    timestamp: int
+
+
+@dataclass(frozen=True, slots=True)
 class DeliverResult:
     """Outcome of a single payload delivery.
 
@@ -95,6 +126,7 @@ class DeliverResult:
 __all__ = [
     "DeliverResult",
     "GodViewMessage",
+    "HumanAgentInboundEvent",
     "HumanAgentMessage",
     "InteractPayload",
     "OperatorMessage",

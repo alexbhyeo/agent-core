@@ -152,6 +152,14 @@ STRINGS: dict[str, str] = {
     # claim_task._desc lives in descs/en/claim_task.md
     "claim_task.task_id": "The ID of the task to claim or complete",
     "claim_task.status": "New status: 'claimed' (start work) or 'completed' (mark done)",
+    # ===== member_complete_task ===============================================
+    # member_complete_task._desc lives in descs/en/member_complete_task.md
+    "member_complete_task.task_id": (
+        "ID of the task to mark completed (must be a task the leader has assigned to you)"
+    ),
+    "member_complete_task.note": (
+        "Optional completion note describing your result or any follow-up the team should know about"
+    ),
     # ===== send_message ========================================================
     # send_message._desc lives in descs/en/send_message.md
     "send_message.to": (

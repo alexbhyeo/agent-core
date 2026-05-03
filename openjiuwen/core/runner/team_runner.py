@@ -31,10 +31,10 @@ Plus one method:
 from __future__ import annotations
 
 from typing import (
+    TYPE_CHECKING,
     Any,
     AsyncIterator,
     Optional,
-    TYPE_CHECKING,
     Union,
 )
 
@@ -42,6 +42,8 @@ from openjiuwen.core.common.logging import runner_logger as logger
 from openjiuwen.core.context_engine import ModelContext
 from openjiuwen.core.multi_agent import (
     BaseTeam,
+)
+from openjiuwen.core.multi_agent import (
     Session as AgentTeamSession,
 )
 from openjiuwen.core.session.agent_team import create_agent_team_session
@@ -52,6 +54,8 @@ from openjiuwen.core.session.stream import (
 )
 from openjiuwen.core.single_agent import (
     BaseAgent,
+)
+from openjiuwen.core.single_agent import (
     Session as AgentSession,
 )
 
@@ -130,8 +134,7 @@ class _TeamRunnerMixin:
                     action = activation.action
                     if _is_team_reject_kind(action.kind):
                         logger.warning(
-                            "run_agent_team rejected for team/session "
-                            "({}, {}), kind={}, reason={}",
+                            "run_agent_team rejected for team/session ({}, {}), kind={}, reason={}",
                             agent_team.team_name,
                             activation.session.get_session_id(),
                             action.kind.value,
@@ -181,8 +184,7 @@ class _TeamRunnerMixin:
                     action = activation.action
                     if _is_team_reject_kind(action.kind):
                         logger.warning(
-                            "run_agent_team_streaming rejected for team/session "
-                            "({}, {}), kind={}, reason={}",
+                            "run_agent_team_streaming rejected for team/session ({}, {}), kind={}, reason={}",
                             agent_team.team_name,
                             activation.session.get_session_id(),
                             action.kind.value,
@@ -247,6 +249,32 @@ class _TeamRunnerMixin:
             payload,
             team_name=team_name,
             session_id=session_id,
+        )
+
+    async def register_human_agent_inbound(
+        self,
+        *,
+        team_name: str,
+        session_id: str,
+        member_name: str,
+        callback: object,
+    ) -> bool:
+        """Register a team→user notification callback for a human agent.
+
+        Phase-2 HITT: every team-side message addressed to ``member_name``
+        (point-to-point) or sent as a broadcast (excluding the human
+        agent's own broadcasts) fires ``callback`` with a
+        ``HumanAgentInboundEvent``. Pass ``None`` to clear.
+
+        Returns ``False`` when no active runtime matches
+        ``(team_name, session_id)``. Raises ``KeyError`` when
+        ``member_name`` is not a registered human-agent member.
+        """
+        return await self._get_team_runtime_manager().register_human_agent_inbound(
+            team_name=team_name,
+            session_id=session_id,
+            member_name=member_name,
+            callback=callback,
         )
 
     async def pause_agent_team(
@@ -343,10 +371,7 @@ class _TeamRunnerMixin:
     ):
         if isinstance(session, AgentTeamSession):
             return session
-        team_id = (
-            getattr(agent_team.card, "id", None)
-            or getattr(agent_team.card, "name", "agent_team")
-        )
+        team_id = getattr(agent_team.card, "id", None) or getattr(agent_team.card, "name", "agent_team")
         if isinstance(session, AgentSession):
             return create_agent_team_session(
                 session_id=session.get_session_id(),
@@ -464,6 +489,23 @@ class _TeamRunnerClassMixin:
             payload,
             team_name=team_name,
             session_id=session_id,
+        )
+
+    @classmethod
+    async def register_human_agent_inbound(
+        cls,
+        *,
+        team_name: str,
+        session_id: str,
+        member_name: str,
+        callback: object,
+    ) -> bool:
+        """Register a team→user notification callback for a human agent."""
+        return await _global_runner().register_human_agent_inbound(
+            team_name=team_name,
+            session_id=session_id,
+            member_name=member_name,
+            callback=callback,
         )
 
     @classmethod

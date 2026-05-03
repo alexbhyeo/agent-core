@@ -89,6 +89,7 @@ async def inprocess_spawn(
     handle = InProcessSpawnHandle(
         process_id=f"inproc-{member_name}",
         _task=task,
+        agent_ref=teammate,
     )
     team_logger.info(
         "[inprocess] spawned teammate {} as task {}",

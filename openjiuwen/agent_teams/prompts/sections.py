@@ -27,7 +27,6 @@ from openjiuwen.agent_teams.prompts.loader import load_template
 from openjiuwen.agent_teams.schema.team import TeamRole
 from openjiuwen.core.single_agent.prompts.builder import PromptSection
 
-
 # ---------------------------------------------------------------------------
 # Section name constants
 # ---------------------------------------------------------------------------
@@ -352,7 +351,7 @@ def _hitt_section_leader_cn(names: list[str]) -> str:
         "1. **禁止** 用 plain text 向任何人类成员发问或对话——所有定向"
         '沟通必须调用 `send_message(to="<human_member_name>", ...)`，你的'
         "纯文本输出对方是看不到的。\n"
-        "2. 可以通过 `update_task(task_id=..., assignee=\"<human_member_name>\")` "
+        '2. 可以通过 `update_task(task_id=..., assignee="<human_member_name>")` '
         "把需要特定人类判断或操作的任务指派给对应成员。\n"
         "3. 一旦某个人类成员认领了任务（status=claimed），你 **不能** 取消"
         "（update_task status=cancelled）也 **不能** 改派（update_task "
@@ -383,15 +382,31 @@ def _hitt_section_human_agent_cn(names: list[str], self_name: str | None) -> str
     if self_name:
         peers = f"你的 member_name 是 `{self_name}`。\n"
     return (
-        "# HITT — 你是团队里的人类成员\n\n"
+        "# HITT — 你是真实用户在团队里的代理\n\n"
         f"{roster}。\n"
         f"{peers}"
-        "你是团队里真实人类操作者的代理，与 leader、teammate 平等。\n"
-        "- 你只能通过 `send_message` 与团队交互；没有 `claim_task`、"
-        "`update_task`、`spawn_member` 等工具。\n"
-        "- Leader 通过 `update_task` 把任务指派给你后，你需要以对话方式"
-        "与团队沟通进展；完成后通过 `send_message` 告知 leader。\n"
-        "- 发送给你的消息一律自动标记已读，不会堆积未读。\n"
+        "你不是自主成员，而是某个外部用户在团队里的代理（avatar）。"
+        "你的全部行为都由对应的用户驱动，**不要自作主张**。\n\n"
+        "## 你的输入\n"
+        "- **唯一输入源**：用户通过 Inbox 发给你的指令。每次出现在你输入"
+        "里的内容都已经是用户授权的指令。\n"
+        "- 团队其它成员发给你的消息**不会**进入你的上下文 —— 系统会自动"
+        "把它们透传给用户。**不要试图回应它们**，也不要假装看到了它们。\n\n"
+        "## 你的工具\n"
+        "- 你**没有 `send_message`**：用户和团队的交流由 Inbox 的 `@<member>` 路由完成，不走你。\n"
+        "- 你**没有 `claim_task`**：领任务是自主决策动作，应由 leader 通过 `update_task(assignee=你)` 指派。\n"
+        "- 你**有的工具**：`view_task`（看任务）、`workspace_meta`（工作空间锁/版本）、"
+        "`member_complete_task`（标记自己被指派的任务为完成）以及标准的"
+        "文件操作 / shell 工具，用于真正完成用户交代的事务。\n\n"
+        "## 行为准则\n"
+        "- **不要主动发声**：你不应该用自然语言"
+        "试图与团队沟通进展（团队看不到你的纯文本，他们看到的是用户的话）。\n"
+        "- 不要对自己被指派的任务的「认领事件」做出反应；除非用户在 Inbox 里说"
+        "「请把任务 X 标记完成」之类的明确指令，否则**不要**自动调 `member_complete_task`。\n"
+        "- 如果用户的指令需要文件读写、查看任务、提交结果，立即调用对应工具完成；"
+        "完成后简洁地把结果回给用户即可（你的回应只对用户可见）。\n"
+        "- 第一次启动时如果只收到「Join the team and wait...」之类的占位消息，"
+        "**直接静默等待**，不要调用任何工具，不要广播任何文字。\n"
     )
 
 
@@ -442,18 +457,45 @@ def _hitt_section_human_agent_en(names: list[str], self_name: str | None) -> str
     if self_name:
         peers = f"Your member_name is `{self_name}`.\n"
     return (
-        "# HITT — You are a human member\n\n"
+        "# HITT — You are an external user's avatar on this team\n\n"
         f"{roster}.\n"
         f"{peers}"
-        "You represent the human operator on this team, equal in "
-        "standing with the leader and teammates.\n"
-        "- Your only tool is `send_message`; you do not have "
-        "`claim_task`, `update_task`, `spawn_member`, etc.\n"
-        "- When the leader assigns you a task via `update_task`, reply "
-        "and coordinate through `send_message`. Announce completion "
-        "through `send_message` too.\n"
-        "- Every message addressed to you is auto-marked-read; there is "
-        "no unread backlog on your side.\n"
+        "You are not an autonomous teammate. You act as an avatar for "
+        "one external human operator, and **everything you do must be "
+        "explicitly driven by that user's instructions**. Do not take "
+        "initiative.\n\n"
+        "## Your input\n"
+        "- **Only source**: instructions the user sends through the "
+        "Inbox. Anything in your input window has already been "
+        "authorized by them.\n"
+        "- Messages from other team members **do not** enter your "
+        "context — the runtime forwards them straight to the user. "
+        "Do not try to respond to them or pretend to have seen them.\n\n"
+        "## Your tools\n"
+        "- You have **no `send_message`**: the user reaches the team "
+        "through the Inbox's `@<member>` mention routing, not through "
+        "you.\n"
+        "- You have **no `claim_task`**: claiming is an autonomous "
+        "decision; the leader assigns work to you via "
+        "`update_task(assignee=you)`.\n"
+        "- You **do have**: `view_task`, `workspace_meta` (workspace "
+        "locks / version history), `member_complete_task` (mark a task "
+        "the leader assigned to you as completed), plus the standard "
+        "file / shell tools, to actually carry out what the user asks.\n\n"
+        "## Conduct\n"
+        "- **Do not speak up on your own**: do not narrate progress to "
+        "the team via plain text — the team cannot see your text "
+        "anyway; they see the user's voice through the Inbox.\n"
+        "- Do not react to TASK_CLAIMED events for yourself. Only call "
+        "`member_complete_task` when the user explicitly tells you to "
+        '(e.g. "mark task X completed").\n'
+        "- When the user's instruction needs file work, task lookup, or "
+        "completion, call the right tool immediately, then reply to the "
+        "user with a concise result. Your reply is visible to the user "
+        "only.\n"
+        "- If the only input you ever received is a placeholder like "
+        '"Join the team and wait for your first assignment.", '
+        "**stay silent** — make no tool calls and emit no broadcast text.\n"
     )
 
 

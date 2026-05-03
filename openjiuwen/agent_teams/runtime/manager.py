@@ -13,8 +13,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from typing import (
-    Optional,
     TYPE_CHECKING,
+    Optional,
 )
 
 from openjiuwen.agent_teams.factory import (
@@ -53,6 +53,8 @@ from openjiuwen.core.common.exception.errors import raise_error
 from openjiuwen.core.common.logging import team_logger
 from openjiuwen.core.session.agent_team import (
     Session as AgentTeamSession,
+)
+from openjiuwen.core.session.agent_team import (
     create_agent_team_session,
 )
 from openjiuwen.core.session.checkpointer import CheckpointerFactory
@@ -103,7 +105,9 @@ class TeamRuntimeManager:
 
         pool_entry = await self._pool.get(team_name)
         team_in_session, team_in_db = await self._inspect_session(
-            spec, team_session, team_name,
+            spec,
+            team_session,
+            team_name,
         )
         action = decide_run_action(
             team_in_db=team_in_db,
@@ -181,7 +185,12 @@ class TeamRuntimeManager:
             return await inbox.direct(payload.target, payload.body)
         if isinstance(payload, HumanAgentMessage):
             try:
-                return await HumanAgentInbox(backend, backend.message_manager).send(
+                inbox = HumanAgentInbox(
+                    backend,
+                    backend.message_manager,
+                    agent_lookup=agent.lookup_human_agent_runtime,
+                )
+                return await inbox.send(
                     payload.body,
                     to=payload.target,
                     sender=payload.sender,
@@ -191,6 +200,32 @@ class TeamRuntimeManager:
             except UnknownHumanAgentError:
                 return DeliverResult.failure("unknown_human_agent")
         return DeliverResult.failure(f"unknown_payload:{type(payload).__name__}")
+
+    async def register_human_agent_inbound(
+        self,
+        *,
+        team_name: str,
+        session_id: str,
+        member_name: str,
+        callback: object,
+    ) -> bool:
+        """Register a team→user notification callback for one human agent.
+
+        ``callback`` may be sync or async; the dispatcher awaits it when
+        it returns an awaitable. Pass ``None`` to clear a prior
+        registration. Returns ``False`` when no active runtime matches
+        ``(team_name, session_id)``; raises ``KeyError`` (propagated
+        from the backend) when ``member_name`` is not a registered
+        human-agent member.
+        """
+        entry = await self._resolve_entry(team_name=team_name, session_id=session_id)
+        if entry is None:
+            return False
+        backend = entry.agent.team_backend
+        if backend is None:
+            return False
+        backend.register_human_agent_inbound(member_name, callback)
+        return True
 
     async def stop_team(
         self,
@@ -254,10 +289,7 @@ class TeamRuntimeManager:
         if session_ids:
             metadata = await self.resolve_team_session_metadata(session_ids[0])
             if metadata is None:
-                raise RuntimeError(
-                    f"Cannot resolve team session metadata for {session_ids[0]}, "
-                    f"aborting delete_team"
-                )
+                raise RuntimeError(f"Cannot resolve team session metadata for {session_ids[0]}, aborting delete_team")
             db_config = metadata.db_config
 
         from openjiuwen.agent_teams.spawn.shared_resources import get_shared_db
@@ -349,13 +381,11 @@ class TeamRuntimeManager:
         spec_data = bucket.get("spec")
         context_data = bucket.get("context")
         if spec_data is None or context_data is None:
-            raise RuntimeError(
-                f"Session {session_id} has team bucket '{team_name}' "
-                f"missing spec or context"
-            )
+            raise RuntimeError(f"Session {session_id} has team bucket '{team_name}' missing spec or context")
 
         from openjiuwen.agent_teams.schema.blueprint import TeamAgentSpec
         from openjiuwen.agent_teams.schema.team import TeamRuntimeContext
+
         try:
             spec = TeamAgentSpec.model_validate(spec_data)
             if spec.team_name != team_name:
@@ -367,26 +397,17 @@ class TeamRuntimeManager:
                 )
         except Exception as e:
             team_logger.warning("Failed to parse spec for session %s: %s", session_id, e)
-            raise RuntimeError(
-                f"Session {session_id} team bucket '{team_name}' "
-                f"spec parsing failed: {e}"
-            ) from e
+            raise RuntimeError(f"Session {session_id} team bucket '{team_name}' spec parsing failed: {e}") from e
 
         try:
             context = TeamRuntimeContext.model_validate(context_data)
             db_config = context.db_config
         except Exception as e:
             team_logger.warning("Failed to parse context for session %s: %s", session_id, e)
-            raise RuntimeError(
-                f"Session {session_id} team bucket '{team_name}' "
-                f"context parsing failed: {e}"
-            ) from e
+            raise RuntimeError(f"Session {session_id} team bucket '{team_name}' context parsing failed: {e}") from e
 
         if db_config is None:
-            raise RuntimeError(
-                f"Session {session_id} team bucket '{team_name}' "
-                f"db_config is missing"
-            )
+            raise RuntimeError(f"Session {session_id} team bucket '{team_name}' db_config is missing")
 
         return TeamSessionMetadata(team_name=team_name, db_config=db_config)
 

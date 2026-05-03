@@ -193,6 +193,55 @@ async def test_mention_routes_direct_message():
 
 @pytest.mark.asyncio
 @pytest.mark.level0
+async def test_human_agent_inbound_callback_fires_on_message_event():
+    """Leader-side dispatcher must forward team→human_agent messages
+    to the registered ``on_inbound`` callback so the SDK can deliver
+    them to the external user."""
+    agent = _make_leader()
+
+    # Register a human-agent member name on the live backend so
+    # ``is_human_agent`` recognises the recipient.
+    agent.team_backend._human_agent_names.add("human_alice")
+
+    received: list = []
+
+    async def cb(evt):
+        received.append(evt)
+
+    agent.team_backend.register_human_agent_inbound("human_alice", cb)
+
+    # Mock the message DB lookup the dispatcher does to fetch the body.
+    fake_row = MagicMock()
+    fake_row.content = "leader pinging the user"
+    fake_row.timestamp = 12345
+    agent._configurator.message_manager = MagicMock()
+    agent._configurator.message_manager.db.message.get_message = AsyncMock(return_value=fake_row)
+
+    await agent._start_coordination(session=None)
+
+    event = EventMessage.from_event(
+        MessageEvent(
+            team_name="test-team",
+            message_id="msg-99",
+            from_member_name="dev-1",
+            to_member_name="human_alice",
+        )
+    )
+    await agent.coordination_loop.enqueue(event)
+    await asyncio.sleep(0.1)
+    await agent._stop_coordination()
+
+    assert len(received) == 1
+    evt = received[0]
+    assert evt.member_name == "human_alice"
+    assert evt.sender == "dev-1"
+    assert evt.body == "leader pinging the user"
+    assert evt.broadcast is False
+    assert evt.message_id == "msg-99"
+
+
+@pytest.mark.asyncio
+@pytest.mark.level0
 async def test_mention_invalid_member_falls_through():
     """@nonexistent falls through to normal leader-agent path."""
     agent = _make_leader_with_teammate()

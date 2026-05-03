@@ -20,11 +20,14 @@ from unittest.mock import AsyncMock
 import pytest
 import pytest_asyncio
 
-from openjiuwen.agent_teams.prompts import build_team_hitt_section
 from openjiuwen.agent_teams.constants import (
     HUMAN_AGENT_MEMBER_NAME,
     RESERVED_MEMBER_NAMES,
     USER_PSEUDO_MEMBER_NAME,
+)
+from openjiuwen.agent_teams.context import (
+    reset_session_id,
+    set_session_id,
 )
 from openjiuwen.agent_teams.interaction import (
     HumanAgentInbox,
@@ -34,6 +37,7 @@ from openjiuwen.agent_teams.interaction import (
     parse_mention,
 )
 from openjiuwen.agent_teams.messager import Messager
+from openjiuwen.agent_teams.prompts import build_team_hitt_section
 from openjiuwen.agent_teams.schema.blueprint import (
     LeaderSpec,
     TeamAgentSpec,
@@ -47,10 +51,6 @@ from openjiuwen.agent_teams.schema.status import (
 from openjiuwen.agent_teams.schema.team import (
     TeamMemberSpec,
     TeamRole,
-)
-from openjiuwen.agent_teams.context import (
-    reset_session_id,
-    set_session_id,
 )
 from openjiuwen.agent_teams.tools.database import (
     DatabaseConfig,
@@ -227,7 +227,9 @@ async def test_build_team_enable_hitt_registers_human_agent(team_backend, db):
     )
     member = await db.member.get_member(HUMAN_AGENT_MEMBER_NAME, "hitt_team")
     assert member is not None
-    assert member.status == MemberStatus.READY.value
+    # Phase 2: human agent enters the standard UNSTARTED → spawn flow so
+    # the leader's startup sweep brings up a real DeepAgent for it.
+    assert member.status == MemberStatus.UNSTARTED.value
     assert member.execution_status == ExecutionStatus.IDLE.value
     assert team_backend.hitt_enabled() is True
 
@@ -254,10 +256,18 @@ async def test_build_team_without_hitt_skips_human_agent(team_backend, db):
 
 @pytest.mark.asyncio
 @pytest.mark.level0
-async def test_human_agent_role_only_gets_send_message(team_backend):
+async def test_human_agent_role_tool_set(team_backend):
+    """human_agent gets only view_task + member_complete_task — no send_message,
+    no claim_task, no team coordination tools.
+    workspace_meta is attached by TeamToolRail elsewhere when a
+    workspace_manager is configured, so it's not part of this set.
+    """
     tools = create_team_tools(role="human_agent", agent_team=team_backend)
     names = sorted(tool.card.name for tool in tools if tool.card is not None)
     assert names == sorted(HUMAN_AGENT_TOOLS)
+    assert "send_message" not in names
+    assert "claim_task" not in names
+    assert "update_task" not in names
 
 
 @pytest.mark.asyncio
@@ -267,6 +277,8 @@ async def test_leader_role_tools_exclude_human_agent_only(team_backend):
     names = {tool.card.name for tool in tools if tool.card is not None}
     # Leader must retain build_team/update_task/create_task/send_message etc.
     assert {"build_team", "update_task", "send_message"}.issubset(names)
+    # member_complete_task is a member-side tool, not a leader-side one
+    assert "member_complete_task" not in names
 
 
 # ---------------------------------------------------------------------------
@@ -567,25 +579,22 @@ async def multi_human_backend(db, messager):
 
 @pytest.mark.asyncio
 @pytest.mark.level0
-async def test_build_team_registers_every_declared_human_member(
-    multi_human_backend, db
-):
+async def test_build_team_registers_every_declared_human_member(multi_human_backend, db):
     assert multi_human_backend.hitt_enabled() is True
     assert multi_human_backend.is_human_agent("human_designer") is True
     assert multi_human_backend.is_human_agent("human_pm") is True
     assert multi_human_backend.is_human_agent("team_leader") is False
-    # Both must be persisted as READY members.
+    # Both must be persisted as UNSTARTED members so the leader's
+    # standard startup sweep brings up a real DeepAgent for each.
     for name in ("human_designer", "human_pm"):
         member = await db.member.get_member(name, "multi_hitt_team")
         assert member is not None
-        assert member.status == MemberStatus.READY.value
+        assert member.status == MemberStatus.UNSTARTED.value
 
 
 @pytest.mark.asyncio
 @pytest.mark.level0
-async def test_direct_message_auto_read_for_every_human_member(
-    multi_human_backend, db
-):
+async def test_direct_message_auto_read_for_every_human_member(multi_human_backend, db):
     """send_message to any of the declared human members must auto-mark-read."""
     mm = multi_human_backend.message_manager
     for name in ("human_designer", "human_pm"):

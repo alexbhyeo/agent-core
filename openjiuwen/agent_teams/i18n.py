@@ -90,7 +90,8 @@ STRINGS: dict[str, dict[str, str]] = {
         # HITT — reserved human_agent member
         "hitt.human_agent_display_name": "人类成员",
         "hitt.human_agent_default_persona": (
-            "团队中的人类协作者。与 leader、teammate 地位平等；由真实操作者驱动，可接收任务、回复消息、参与协作。"
+            "外部用户在团队里的代理（avatar）。所有动作都由对应的真人通过 Inbox 驱动；"
+            "可使用文件、任务、工作空间等工具替用户完成事务，但不主动发声、不自主认领任务。"
         ),
         "hitt.human_agent_spawned": "[成员事件] 人类成员 human_agent 已加入团队",
     },
@@ -166,9 +167,11 @@ STRINGS: dict[str, dict[str, str]] = {
         # HITT — reserved human_agent member
         "hitt.human_agent_display_name": "Human Member",
         "hitt.human_agent_default_persona": (
-            "The human collaborator on the team. Equal in standing with "
-            "the leader and teammates; driven by a real operator, can "
-            "receive tasks, reply to messages, and collaborate."
+            "An external user's avatar on the team. Every action is "
+            "driven by the corresponding human via the Inbox; uses file, "
+            "task, and workspace tools to act on the user's behalf, but "
+            "does not speak up on its own and does not autonomously "
+            "claim tasks."
         ),
         "hitt.human_agent_spawned": "[Member Event] Human member 'human_agent' joined the team",
     },

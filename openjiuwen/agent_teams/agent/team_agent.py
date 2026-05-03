@@ -248,6 +248,20 @@ class TeamAgent(BaseAgent):
             return False
         return await self._configurator.team_backend.get_member(member_name) is not None
 
+    def lookup_human_agent_runtime(self, member_name: str) -> Optional["TeamAgent"]:
+        """Resolve an inprocess-spawned human agent's live ``TeamAgent``.
+
+        Used by ``HumanAgentInbox`` so the leader-side runtime can feed
+        user input directly into the avatar's DeepAgent without going
+        through the message bus. Returns ``None`` for subprocess
+        spawns (cross-process delivery is out of scope for Phase 2)
+        or when the avatar has not been spawned yet.
+        """
+        backend = self._configurator.team_backend
+        if backend is None or not backend.is_human_agent(member_name):
+            return None
+        return self._spawn_manager.lookup_inprocess_agent(member_name)
+
     def is_agent_ready(self) -> bool:
         return self._configurator.deep_agent is not None
 
@@ -351,7 +365,10 @@ class TeamAgent(BaseAgent):
         # Leader path: handle is created lazily in
         # ``_on_teammate_created(self.member_name)`` because the
         # leader's own team row only materializes after BuildTeamTool.
-        if ctx.role == TeamRole.TEAMMATE and ctx.member_name:
+        # Human agents go through the same spawn path as teammates and
+        # need the same status / execution handle so their READY/BUSY
+        # transitions show up in the leader's roster view.
+        if ctx.role in (TeamRole.TEAMMATE, TeamRole.HUMAN_AGENT) and ctx.member_name:
             self._state.team_member = create_member_handle(
                 member_name=ctx.member_name,
                 blueprint=self._configurator.blueprint,

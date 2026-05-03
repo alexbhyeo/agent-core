@@ -25,6 +25,7 @@ from openjiuwen.agent_teams.interaction.human_agent_inbox import (
 from openjiuwen.agent_teams.interaction.payload import (
     DeliverResult,
     GodViewMessage,
+    HumanAgentInboundEvent,
     HumanAgentMessage,
     InteractPayload,
     OperatorMessage,
@@ -41,6 +42,7 @@ __all__ = [
     "DeliverResult",
     "GodViewMessage",
     "HumanAgentInbox",
+    "HumanAgentInboundEvent",
     "HumanAgentMessage",
     "HumanAgentNotEnabledError",
     "InteractPayload",

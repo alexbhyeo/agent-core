@@ -14,7 +14,6 @@ from openjiuwen.agent_teams.agent.blueprint import TeamAgentBlueprint
 from openjiuwen.agent_teams.agent.infra import TeamInfra
 from openjiuwen.agent_teams.agent.payload import SpawnPayloadBuilder
 from openjiuwen.agent_teams.agent.resources import PrivateAgentResources
-from openjiuwen.agent_teams.prompts import role_policy
 from openjiuwen.agent_teams.messager import (
     Messager,
     create_messager,
@@ -22,8 +21,11 @@ from openjiuwen.agent_teams.messager import (
 from openjiuwen.agent_teams.paths import (
     independent_member_workspace,
     team_home,
+)
+from openjiuwen.agent_teams.paths import (
     team_memory_dir as default_team_memory_dir,
 )
+from openjiuwen.agent_teams.prompts import role_policy
 from openjiuwen.agent_teams.schema.blueprint import TeamAgentSpec
 from openjiuwen.agent_teams.schema.deep_agent_spec import SysOperationSpec
 from openjiuwen.agent_teams.schema.team import (
@@ -344,10 +346,16 @@ class AgentConfigurator:
             )
         )
 
-        from openjiuwen.agent_teams.rails import FirstIterationGate
+        # Human agents have no autonomous task loop and no mailbox poll
+        # cycle — their input arrives through HumanAgentInbox, and team
+        # messages addressed to them are passed through to the external
+        # user. Skipping FirstIterationGate keeps
+        # ``enqueue_mailbox_after_first_iteration`` a no-op for them.
+        if ctx.role != TeamRole.HUMAN_AGENT:
+            from openjiuwen.agent_teams.rails import FirstIterationGate
 
-        self.first_iter_gate = FirstIterationGate()
-        self.deep_agent.add_rail(self.first_iter_gate)
+            self.first_iter_gate = FirstIterationGate()
+            self.deep_agent.add_rail(self.first_iter_gate)
 
         if self.workspace_manager:
             from openjiuwen.agent_teams.team_workspace.rails import TeamWorkspaceRail

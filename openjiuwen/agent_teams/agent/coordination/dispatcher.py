@@ -201,6 +201,19 @@ class EventDispatcher:
             await host.shutdown_self()
             return
 
+        # Human agents are user avatars: only their corresponding user
+        # (via HumanAgentInbox) drives their LLM. All other team-side
+        # events (incoming messages, task assignments, stale-claim
+        # nudges) must NOT autonomously poke the LLM. CLEANED above
+        # still applies because the agent process must tear down with
+        # the team. MEMBER_CANCELED is handled by ``handle_team_event``
+        # at a lower level (cancel_agent), not by autonomous nudging,
+        # so muting the rest is safe.
+        if host.blueprint.role == TeamRole.HUMAN_AGENT:
+            if event_type == TeamEvent.MEMBER_CANCELED:
+                await self._handle_member_event(event)
+            return
+
         if event_type == TeamEvent.TOOL_APPROVAL_RESULT:
             await self._handle_tool_approval_result(event)
             return
@@ -215,6 +228,12 @@ class EventDispatcher:
             # message would stay unread forever and re-fire dispatcher wakes.
             if host.blueprint.role == TeamRole.LEADER and event_type == TeamEvent.MESSAGE:
                 await self._ack_user_bound_message(event)
+            # Leader-side hook: notify SDK callbacks for messages reaching
+            # human-agent members. The avatar's own DeepAgent stays out of
+            # this loop (its dispatcher mutes MESSAGE events for HUMAN_AGENT)
+            # so the user is the sole consumer of these notifications.
+            if host.blueprint.role == TeamRole.LEADER:
+                await self._notify_human_agent_inbound(event)
             await host.resume_polls()
             await self._process_unread_messages(member_name)
             return
@@ -251,6 +270,17 @@ class EventDispatcher:
         """Handle local inner events (user input, polling)."""
         host = self._host
         team_logger.debug("inner event received: type={}, payload={}", event.event_type, event.payload)
+
+        # Human agents must never autonomously poll task / mailbox state.
+        # USER_INPUT through this path comes from coordination bootstrap
+        # (the leader's god-view input); a human agent never reaches that
+        # path because the leader is the one whose invoke() carries it.
+        # Even so, defensively short-circuit the polling-driven branches.
+        if host.blueprint.role == TeamRole.HUMAN_AGENT and event.event_type in (
+            InnerEventType.POLL_TASK,
+            InnerEventType.POLL_MAILBOX,
+        ):
+            return
 
         if event.event_type == InnerEventType.USER_INPUT:
             content = event.payload.get("content", "")
@@ -309,13 +339,9 @@ class EventDispatcher:
             return
         result = await UserInbox(mm).direct(to_member_name, content)
         if result.ok:
-            team_logger.info(
-                "user direct message sent to {}: {}", to_member_name, result.message_id
-            )
+            team_logger.info("user direct message sent to {}: {}", to_member_name, result.message_id)
         else:
-            team_logger.warning(
-                "user direct message to {} failed: {}", to_member_name, result.reason
-            )
+            team_logger.warning("user direct message to {} failed: {}", to_member_name, result.reason)
 
     # ------------------------------------------------------------------
     # Member events
@@ -511,6 +537,81 @@ class EventDispatcher:
 
                 await host.deliver_input(text, use_steer=use_steer)
                 await host.infra.message_manager.mark_message_read(msg.message_id, member_name)
+
+    async def _notify_human_agent_inbound(self, event: CoordinationEvent) -> None:
+        """Forward a team-side message to the SDK's human-agent callbacks.
+
+        The leader observes every MESSAGE / BROADCAST event on the team
+        topic. For point-to-point messages addressed to a human agent
+        we fire the recipient's callback; for broadcasts we fire every
+        registered callback whose owner is not the broadcast sender (so
+        a human agent doesn't get its own broadcast echoed back).
+
+        The lookup goes through ``TeamBackend.get_human_agent_inbound``
+        — the registry the SDK populates via
+        ``TeamRuntimeManager.register_human_agent_inbound``. Missing
+        message metadata (e.g. body lookup failure) is logged and
+        swallowed so a notification glitch never breaks the dispatch
+        loop.
+        """
+        host = self._host
+        backend = host.infra.team_backend
+        mm = host.infra.message_manager
+        if backend is None or mm is None:
+            return
+
+        from openjiuwen.agent_teams.interaction.payload import HumanAgentInboundEvent
+
+        payload: MessageEvent = event.get_payload()
+        message_id = payload.message_id
+        sender = payload.from_member_name
+        is_broadcast = event.event_type == TeamEvent.BROADCAST
+
+        try:
+            row = await mm.db.message.get_message(message_id)
+        except Exception as exc:
+            team_logger.warning(
+                "human_agent on_inbound: failed to load message %s: %s",
+                message_id,
+                exc,
+            )
+            return
+        if row is None:
+            return
+
+        body = row.content
+        ts = row.timestamp
+
+        if is_broadcast:
+            recipients = [name for name in backend.human_agent_names() if name != sender]
+        else:
+            target = payload.to_member_name
+            if not backend.is_human_agent(target):
+                return
+            recipients = [target]
+
+        for recipient in recipients:
+            callback = backend.get_human_agent_inbound(recipient)
+            if callback is None:
+                continue
+            evt = HumanAgentInboundEvent(
+                member_name=recipient,
+                sender=sender,
+                body=body,
+                broadcast=is_broadcast,
+                message_id=message_id,
+                timestamp=ts or 0,
+            )
+            try:
+                result = callback(evt)
+                if hasattr(result, "__await__"):
+                    await result
+            except Exception as exc:
+                team_logger.warning(
+                    "human_agent on_inbound callback for %s raised: %s",
+                    recipient,
+                    exc,
+                )
 
     async def _ack_user_bound_message(self, event: CoordinationEvent) -> None:
         """Mark a teammate→user direct message as read on the user's behalf.
