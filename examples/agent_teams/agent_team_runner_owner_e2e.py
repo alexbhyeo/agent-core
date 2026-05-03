@@ -129,18 +129,24 @@ class TeamStreamCli:
     ) -> tuple[str, dict[str, Any] | str]:
         """Route same-session input to interact, and changed session to switch."""
         if self._active_team_name == team_name and self._active_session_id == session_id:
-            delivered = await self.interact(query)
+            result = await self.interact(query)
             return (
                 "interact",
-                f"delivered={delivered} active_team={self._active_team_name} active_session={self._active_session_id}",
+                (
+                    f"ok={result.ok} reason={result.reason!r} "
+                    f"active_team={self._active_team_name} active_session={self._active_session_id}"
+                ),
             )
 
         switched, result = await self.switch_session(team_name, session_id, query)
         return ("switch_committed" if switched else "switch_rolled_back"), result
 
-    async def interact(self, user_input: str) -> bool:
+    async def interact(self, user_input: str):
+        """Send user_input as a god-view interact; returns DeliverResult."""
+        from openjiuwen.agent_teams.interaction.payload import DeliverResult
+
         if self._active_team_name is None or self._active_session_id is None:
-            return False
+            return DeliverResult.failure("no_active_team")
         return await Runner.interact_agent_team(
             user_input,
             team_name=self._active_team_name,

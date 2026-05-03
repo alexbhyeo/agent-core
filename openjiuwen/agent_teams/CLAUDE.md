@@ -33,7 +33,7 @@ agent_teams/
 ├── agent/               # 核心运行时（TeamAgent 本体 + 装配链）
 ├── prompts/             # 系统提示词模板、加载器、PromptSection 构造与缓存
 ├── rails/               # 团队相关 Rail（系统提示词注入 / 首迭代门 / 工具审批）
-├── runtime/             # Runner 进程内 active team 单例所有者；包住 factory 的四条恢复路径
+├── runtime/             # Runner 进程内 TeamAgent 对象池 + 派发决策 + Run/Interact 并发门禁
 ├── interaction/         # 外部交互入口（UserInbox / HumanAgentInbox / @ 路由）
 ├── tools/               # 团队工具（Leader / Teammate / Human Agent 可调用的原子操作）
 ├── messager/            # 消息传输层（inprocess / pyzmq）
@@ -87,6 +87,8 @@ task.py            # TaskSummary / TaskDetail —— 任务返回模型
 - `Spec` 统一含义：**可 JSON 序列化的装配蓝图**。用 `model_dump()` 可跨进程；不放运行时资源引用。
 - `TeamRuntimeContext`：运行时上下文，携带 role / messager_config / db_config 等资源配置，是 `Spec → Runtime` 的边界。
 - 新增 spec 字段要想清楚：**属于装配数据**（放 Spec）还是**运行时资源**（放 Config/Manager/Runtime）。不要让 Spec 持有 `Runner`、`Session`、文件句柄。
+- **Session checkpoint 状态结构按 team 分桶**：`session.update_state` 的全局状态根上有一个 `teams` namespace —— `state["teams"][team_name] = {spec, context, model_allocator_state, lifecycle}`。同一 session 可以承载多个 team 的状态；读写一律走 `runtime/metadata.py` 的 `read_team_namespace / merge_team_namespace`，不要直接在 root 上 `update_state({"spec": ...})`。
+- `MemberStatus.PAUSED`：teammate 协程退出但状态保留，可经 `RESTARTING` 重新拉起；与 `SHUTDOWN`（永久退出）区分。`schema.team.TeamLifecycle`（temporary / persistent）描述静态团队类型，`runtime.pool.RuntimeState`（running / paused）描述对象池中 team 的运行时状态——两个枚举各管各的。
 
 ### models/ — 多模型部署原语
 
@@ -142,14 +144,20 @@ Messager 是点对点 + broadcast 的统一抽象，**任何直接新建 socket 
 - 工具描述文本是**行为契约**，不是 feature 摘要。长文案放 `tools/locales/descs/<lang>/<tool>.md`。
 - ToolCard ID 统一 `team.{name}` 前缀。
 
-### runtime/ — Runner 进程内 active team 所有者
+### runtime/ — TeamAgent 对象池 + 派发 + 并发门禁
 
 | 文件 | 职责 |
 |---|---|
-| `manager.py` | `TeamRuntimeManager`：维护 `(active_team, active_session, active_agent, active_paused)` 四元组；`activate()` 基于 checkpoint 派发到 `factory` 的 create / recover / resume / recover_for_existing_session 四条路径 |
+| `pool.py` | `TeamRuntimePool` / `ActiveTeam` / `RuntimeState`。pool key 是 `team_name`，同一 team 在内存中至多一个 `ActiveTeam` 实例；同 session 多 team 通过 pool 多 entry 自然支持。`RuntimeState.RUNNING / PAUSED` 是运行时状态（与 `schema.team.TeamLifecycle` "temporary/persistent" 不同） |
+| `gate.py` | `InteractGate` / `AdmissionTicket`。run / interact 并发门禁：`admit / consume_done / close_and_drain / reset`。每个 `ActiveTeam` 自带一个 gate |
+| `dispatch.py` | `decide_run_action(...)` 纯函数 + `RunAction` / `RunActionKind`。9 路 truth table：`CREATE / NEW_TEAM_IN_SESSION / NEW_TEAM_IN_SESSION_WARM / COLD_RECOVER / WARM_RECOVER / RESUME_FROM_PAUSE / REJECT_RUNNING / REJECT_ORPHANED / REJECT_INCONSISTENT` |
+| `metadata.py` | session checkpoint 的 per-team namespace 读写：`read_team_namespace / write_team_namespace / merge_team_namespace / read_team_names_in_session`。状态结构 `state["teams"][team_name] = {spec, context, model_allocator_state, lifecycle}`，按 team 分桶 |
+| `manager.py` | `TeamRuntimeManager`：持有 `TeamRuntimePool`；`activate` 用 `decide_run_action` 派发后调用 `_apply_action` 执行副作用；`pause / interact / stop_team / release_session / delete_team` 通过 pool 查 entry。`interact` 接 `InteractPayload`，走 gate 的 `admit / consume_done`，分发到 `UserInbox`（GodView / Operator）或 `HumanAgentInbox`（HumanAgent） |
 
-- **状态归属是 Runner，不是 team 自身**：每个 Runner 进程同时只跑一个 active team，这是 runner 的策略。
-- **裹住 factory 而不是绕开它**：所有恢复入口都走 `factory.recover_*` / `resume_persistent_team`，不要在 manager 里再写一份恢复逻辑。
+- **派发决策是纯函数**：`decide_run_action` 只看 `(team_in_db, team_in_session, pool_entry, target_session_id, target_team_name)`，无副作用。manager 把 IO 收集进派发输入，然后 `_apply_action` 才动 factory / pool / session。改派发时改 `dispatch.py`，不要把决策逻辑塞回 manager。
+- **同一 team 在内存中只有一个实例**：切 session 走 `recover_for_existing_session`（warm），不要让 pool 出现多个相同 `team_name` 的 entry。
+- **InteractGate 的生命周期与 run cycle 对齐**：`run_agent_team[_streaming]` 退出 `finally` 调 `_close_team_interact_gate`（Runner 内 helper）；warm 路径 activate 时调 `gate.reset()` 让下一个 cycle 重新放行。
+- **静止前置**：`release_session` / `delete_team` 在 pool 仍持有相关 entry 时报 `AGENT_TEAM_BUSY_INVALID`（ValidationError），调用方必须先 `stop_team`。
 - `Runner` 在 `_get_team_runtime_manager()` 里 lazy import 它，避免子进程 bootstrap 时拉链。
 
 ### team_workspace/ — 共享工作空间
@@ -160,11 +168,14 @@ Messager 是点对点 + broadcast 的统一抽象，**任何直接新建 socket 
 
 | 文件 | 作用 |
 |---|---|
+| `payload.py` | `GodViewMessage` / `OperatorMessage` / `HumanAgentMessage` 三种交互视角的 dataclass + `InteractPayload` Union + `DeliverResult(ok, message_id, reason)` 统一返回类型 |
 | `router.py` | `parse_mention(raw) -> (target, body) \| None` 纯函数；`is_reserved_name(name)` 校验保留名 |
-| `user_inbox.py` | `UserInbox`：user 侧显式 API。`broadcast` / `direct` / `deliver_to_leader` |
-| `human_agent_inbox.py` | `HumanAgentInbox`：human_agent 对外发声，仅在 HITT 启用时可用；非 HITT 调用抛 `HumanAgentNotEnabledError` |
+| `user_inbox.py` | `UserInbox`：user 侧显式 API。`broadcast` / `direct` / `deliver_to_leader`，全部返回 `DeliverResult` |
+| `human_agent_inbox.py` | `HumanAgentInbox`：human_agent 对外发声，仅在 HITT 启用时可用。`send` 成功返 `DeliverResult`；HITT 关闭抛 `HumanAgentNotEnabledError`，未知 sender 抛 `UnknownHumanAgentError`（manager 层捕获转 `DeliverResult.failure(reason)`） |
 
-旧的 `@xxx body` 解析从 `agent/dispatcher.py` 移到这里——dispatcher 只保留调用点。新增的 `TeamAgent.broadcast()` 和 `TeamAgent.human_agent_say()` 都走这一层。
+- `Runner.interact_agent_team(payload, *, team_name, session_id)` 接收 `InteractPayload`，bare `str` 作为 `GodViewMessage` 的便捷形式。
+- 三视角到 inbox 的 dispatch 统一在 `runtime/manager.py:_dispatch_payload`：GodView → `deliver_to_leader`，Operator(target=None/x) → `UserInbox.broadcast/direct`，HumanAgent → `HumanAgentInbox.send`。
+- 旧的 `@xxx body` 解析从 `agent/dispatcher.py` 移到这里——dispatcher 只保留调用点。`TeamAgent.broadcast()` 和 `TeamAgent.human_agent_say()` 也走这一层。
 
 ### HITT（Human in the Team）
 
