@@ -176,6 +176,11 @@ class CoordinationKernel:
         team_logger.info("[{}] coordination pausing (persistent)", host.member_name or "?")
         await self.drain_agent_task()
         host.persist_allocator_state()
+        if host.role == TeamRole.LEADER:
+            await self._mark_live_teammates_paused()
+            await host.spawn_manager.cancel_recovery_tasks()
+            await host.spawn_manager.shutdown_all_handles()
+            self._persist_team_lifecycle("paused")
         messager = host.infra.messager
         if messager and host.role == TeamRole.LEADER:
             from openjiuwen.agent_teams.schema.events import (
@@ -199,6 +204,65 @@ class CoordinationKernel:
             await self._event_bus.stop()
         self.close_stream()
         host.session_manager.team_session = None
+
+    async def _mark_live_teammates_paused(self) -> None:
+        """Persist PAUSED status for every spawned teammate before tearing down handles.
+
+        Members that were never started (UNSTARTED) or already gone (SHUTDOWN)
+        keep their existing status — PAUSED only applies to runtime that was
+        actually live during this round.
+        """
+        host = self._host
+        team_backend = host.infra.team_backend
+        team_name = host.team_name
+        if not team_backend or not team_name:
+            return
+        spawned = set(host.spawn_manager.spawned_handles.keys())
+        if not spawned:
+            return
+        leader = host.member_name
+        members = await team_backend.list_members()
+        for member in members:
+            if member.member_name == leader:
+                continue
+            if member.member_name not in spawned:
+                continue
+            try:
+                current = MemberStatus(member.status)
+            except ValueError:
+                continue
+            if current in {MemberStatus.UNSTARTED, MemberStatus.SHUTDOWN}:
+                continue
+            try:
+                await team_backend.db.member.update_member_status(
+                    member.member_name,
+                    team_name,
+                    MemberStatus.PAUSED.value,
+                )
+            except Exception as e:
+                team_logger.error(
+                    "[{}] failed to mark teammate {} PAUSED: {}",
+                    leader or "?",
+                    member.member_name,
+                    e,
+                )
+
+    def _persist_team_lifecycle(self, lifecycle: str) -> None:
+        """Write the team lifecycle hint into the session's per-team bucket."""
+        host = self._host
+        session = host.session_manager.team_session
+        team_name = host.team_name
+        if session is None or team_name is None:
+            return
+        from openjiuwen.agent_teams.runtime.metadata import merge_team_namespace
+        try:
+            merge_team_namespace(session, team_name, {"lifecycle": lifecycle})
+        except Exception as e:
+            team_logger.warning(
+                "[{}] failed to persist team lifecycle: {}",
+                host.member_name or "?",
+                e,
+            )
 
     async def stop(self) -> None:
         host = self._host

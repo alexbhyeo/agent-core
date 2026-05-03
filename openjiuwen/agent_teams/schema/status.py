@@ -58,6 +58,7 @@ MEMBER_TRANSITIONS: Dict[MemberStatus, List[MemberStatus]] = {
     ],
     MemberStatus.PAUSED: [
         MemberStatus.READY,
+        MemberStatus.RESTARTING,
         MemberStatus.SHUTDOWN_REQUESTED,
         MemberStatus.SHUTDOWN,
         MemberStatus.ERROR,
