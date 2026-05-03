@@ -35,7 +35,8 @@ from openjiuwen.agent_teams.schema.blueprint import (
 from openjiuwen.agent_teams.schema.events import TeamEvent
 from openjiuwen.agent_teams.models import ModelPoolEntry
 from openjiuwen.agent_teams.runtime import (
-    TeamActivationKind,
+    RunAction,
+    RunActionKind,
     TeamRuntimeActivation,
     TeamRuntimeManager,
 )
@@ -69,7 +70,8 @@ __all__ = [
     "Messager",
     "MessagerPeerConfig",
     "MessagerTransportConfig",
-    "TeamActivationKind",
+    "RunAction",
+    "RunActionKind",
     "TeamAgent",
     "TeamEvent",
     "TeamLifecycle",

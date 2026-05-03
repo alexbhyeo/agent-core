@@ -60,8 +60,35 @@ from openjiuwen.core.workflow import (
 )
 
 if TYPE_CHECKING:
-    from openjiuwen.agent_teams.runtime import TeamActivationKind, TeamRuntimeManager
+    from openjiuwen.agent_teams.runtime import RunActionKind, TeamRuntimeManager
     from openjiuwen.agent_teams.schema.blueprint import TeamAgentSpec
+
+
+def _team_reject_kinds() -> frozenset:
+    """Lazy view of RunActionKind values that short-circuit run_agent_team*.
+
+    Wrapped as a function to avoid pulling agent_teams imports at runner
+    module import time — they cause circular imports during bootstrap.
+    """
+    from openjiuwen.agent_teams.runtime import RunActionKind
+
+    return frozenset(
+        {
+            RunActionKind.REJECT_RUNNING,
+            RunActionKind.REJECT_ORPHANED,
+            RunActionKind.REJECT_INCONSISTENT,
+        }
+    )
+
+
+_TEAM_REJECT_KINDS = None  # populated lazily on first use; see _is_team_reject_kind
+
+
+def _is_team_reject_kind(kind: object) -> bool:
+    global _TEAM_REJECT_KINDS
+    if _TEAM_REJECT_KINDS is None:
+        _TEAM_REJECT_KINDS = _team_reject_kinds()
+    return kind in _TEAM_REJECT_KINDS
 
 
 class _RunnerImpl:
@@ -465,14 +492,15 @@ class _RunnerImpl:
             if self._is_team_agent_spec(agent_team):
                 activation = await self._get_team_runtime_manager().activate(agent_team, session, inputs)
                 try:
-                    kind = activation.activation_kind
-                    if kind is not None and kind.is_short_circuit:
+                    action = activation.action
+                    if _is_team_reject_kind(action.kind):
                         logger.warning(
-                            "run_agent_team short-circuited for team/session "
-                            "({}, {}), activation_kind={}",
+                            "run_agent_team rejected for team/session "
+                            "({}, {}), kind={}, reason={}",
                             agent_team.team_name,
                             activation.session.get_session_id(),
-                            kind,
+                            action.kind.value,
+                            action.reason or "",
                         )
                         return None
                     return await activation.agent.invoke(inputs, session=activation.session)
@@ -519,22 +547,22 @@ class _RunnerImpl:
             if self._is_team_agent_spec(agent_team):
                 activation = await self._get_team_runtime_manager().activate(agent_team, session, inputs)
                 try:
-                    kind = activation.activation_kind
-                    if kind is not None and kind.is_short_circuit:
+                    action = activation.action
+                    if _is_team_reject_kind(action.kind):
                         logger.warning(
-                            "run_agent_team_streaming short-circuited for team/session "
-                            "({}, {}), activation_kind={}",
+                            "run_agent_team_streaming rejected for team/session "
+                            "({}, {}), kind={}, reason={}",
                             agent_team.team_name,
                             activation.session.get_session_id(),
-                            kind,
+                            action.kind.value,
+                            action.reason or "",
                         )
                         return
-                    if kind is not None:
-                        yield self._build_team_runtime_ready_chunk(
-                            team_name=agent_team.team_name,
-                            session_id=activation.session.get_session_id(),
-                            activation_kind=kind,
-                        )
+                    yield self._build_team_runtime_ready_chunk(
+                        team_name=agent_team.team_name,
+                        session_id=activation.session.get_session_id(),
+                        action_kind=action.kind,
+                    )
                     async for chunk in activation.agent.stream(inputs, session=activation.session):
                         yield chunk
                 finally:
@@ -833,7 +861,7 @@ class _RunnerImpl:
         *,
         team_name: str,
         session_id: str,
-        activation_kind: "TeamActivationKind",
+        action_kind: "RunActionKind",
     ) -> OutputSchema:
         return OutputSchema(
             type="message",
@@ -842,7 +870,7 @@ class _RunnerImpl:
                 "event_type": "team.runtime_ready",
                 "team_name": team_name,
                 "session_id": session_id,
-                "activation_kind": activation_kind.value,
+                "activation_kind": action_kind.value,
             },
         )
 

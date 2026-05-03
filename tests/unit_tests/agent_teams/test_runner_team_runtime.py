@@ -37,6 +37,20 @@ from openjiuwen.core.single_agent import (
 from openjiuwen.core.session.stream import OutputSchema
 
 
+async def _activate_pool_entry(manager, team_name: str, session_id: str, agent) -> None:
+    """Test helper: insert an ActiveTeam directly into the manager pool."""
+    from openjiuwen.agent_teams.runtime.pool import ActiveTeam, RuntimeState
+
+    await manager.pool.add(
+        ActiveTeam(
+            team_name=team_name,
+            agent=agent,
+            current_session_id=session_id,
+            state=RuntimeState.RUNNING,
+        )
+    )
+
+
 @pytest.fixture
 def isolated_checkpointer():
     original = CheckpointerFactory.get_checkpointer()
@@ -206,9 +220,12 @@ async def test_runner_team_runtime_manager_resumes_new_session_and_recovers_hist
         ]
 
     assert first_chunks[0].payload["activation_kind"] == "create"
-    assert second_chunks[0].payload["activation_kind"] == "resume"
+    # session_two has no bucket yet for the team; pool already holds the
+    # team from round one, so this is the warm "new team in session" path.
+    assert second_chunks[0].payload["activation_kind"] == "new_team_in_session_warm"
     assert active_agent.resume_calls == [session_two, session_one]
-    assert third_chunks[0].payload["activation_kind"] == "recover"
+    # round 3 reuses session_one which already carries the team bucket.
+    assert third_chunks[0].payload["activation_kind"] == "warm_recover"
     assert active_agent.stop_calls >= 1
 
     await Runner.stop()
@@ -242,6 +259,7 @@ async def test_runner_same_session_streaming_short_circuits_and_skips_second_str
         ]
 
     assert first_chunks[0].payload["activation_kind"] == "create"
+    # Same (team, session) running -> dispatch rejects with reject_running.
     assert second_chunks == []
     assert agent.stream_calls == 1
     assert agent.invoke_calls == 1
@@ -279,7 +297,7 @@ async def test_runner_same_session_after_pause_resumes_paused_runtime(isolated_c
         ]
 
     assert first_chunks[0].payload["activation_kind"] == "create"
-    assert second_chunks[0].payload["activation_kind"] == "resume_paused"
+    assert second_chunks[0].payload["activation_kind"] == "resume_from_pause"
     assert second_chunks[1].payload["event_type"] == "team.chunk"
     assert agent.pause_calls == 1
     assert agent.stream_calls == 2
@@ -317,68 +335,6 @@ async def test_runner_paused_same_session_resume_uses_same_prepared_session(isol
     assert resumed_result["session_id"] == session_id
     assert agent.invoke_calls == 2
     assert agent.pause_calls == 1
-
-    await Runner.stop()
-    await isolated_checkpointer.release(session_id)
-
-
-@pytest.mark.asyncio
-async def test_runner_existing_session_without_team_name_short_circuits(isolated_checkpointer):
-    session_id = f"invalid_missing_{uuid.uuid4().hex}"
-    spec = TeamAgentSpec.model_construct(team_name="invalid_team", agents={})
-    agent = FakeTeamAgent("invalid_team", stream_label="team.chunk")
-    await Runner.start()
-
-    existing_session = create_agent_team_session(session_id=session_id, team_id="invalid_team")
-    await existing_session.pre_run(inputs={"query": "seed"})
-    existing_session.update_state({"spec": {"team_name": "invalid_team"}})
-    await existing_session.post_run()
-
-    with patch.object(TeamAgentSpec, "build", return_value=agent):
-        result = await Runner.run_agent_team(
-            agent_team=spec,
-            inputs={"query": "should short circuit"},
-            session=session_id,
-        )
-
-    assert result is None
-    assert agent.invoke_calls == 0
-    assert agent.stream_calls == 0
-
-    await Runner.stop()
-    await isolated_checkpointer.release(session_id)
-
-
-@pytest.mark.asyncio
-async def test_runner_existing_session_with_wrong_team_name_short_circuits(isolated_checkpointer):
-    session_id = f"invalid_mismatch_{uuid.uuid4().hex}"
-    spec = TeamAgentSpec.model_construct(team_name="target_team", agents={})
-    agent = FakeTeamAgent("target_team", stream_label="team.chunk")
-    await Runner.start()
-
-    existing_session = create_agent_team_session(session_id=session_id, team_id="other_team")
-    await existing_session.pre_run(inputs={"query": "seed"})
-    existing_session.update_state(
-        {
-            "team_name": "other_team",
-            "spec": {"team_name": "other_team"},
-        }
-    )
-    await existing_session.post_run()
-
-    with patch.object(TeamAgentSpec, "build", return_value=agent):
-        chunks = [
-            chunk
-            async for chunk in Runner.run_agent_team_streaming(
-                agent_team=spec,
-                inputs={"query": "should short circuit"},
-                session=session_id,
-            )
-        ]
-
-    assert chunks == []
-    assert agent.invoke_calls == 0
-    assert agent.stream_calls == 0
 
     await Runner.stop()
     await isolated_checkpointer.release(session_id)
@@ -708,8 +664,8 @@ class TestTeamRuntimeManagerReleaseSession:
         fake_db.initialize.assert_awaited_once()
         fake_db.drop_session_tables_by_id.assert_awaited_once_with(session_id)
 
-        # Active session should remain None (no active session was set)
-        assert manager.active_session_id is None
+        # No team should be active for the released session.
+        assert await manager.pool.teams_for_session(session_id) == []
 
         await isolated_checkpointer.release(session_id)
 
@@ -725,14 +681,16 @@ class TestTeamRuntimeManagerReleaseSession:
         team_name = "active_release_team"
 
         fake_agent = FakeTeamAgent(team_name, stream_label="team.chunk")
-        await manager._set_active(team_name, session_id, fake_agent)
+        await _activate_pool_entry(manager, team_name, session_id, fake_agent)
 
         with pytest.raises(ValidationError, match="busy"):
             await manager.release_session(session_id)
 
         # The runtime keeps holding the pool entry until stop_team is called.
-        assert manager.active_team_name == team_name
-        assert manager.active_session_id == session_id
+        entry = await manager.pool.get(team_name)
+        assert entry is not None
+        assert entry.current_session_id == session_id
+        assert entry.agent is fake_agent
         assert fake_agent.stop_calls == 0
 
     @pytest.mark.asyncio
@@ -781,16 +739,14 @@ class TestTeamRuntimeManagerStopTeam:
         session_id = f"stop_{uuid.uuid4().hex}"
 
         fake_agent = FakeTeamAgent(team_name, stream_label="team.chunk")
-        await manager._set_active(team_name, session_id, fake_agent)
+        await _activate_pool_entry(manager, team_name, session_id, fake_agent)
         assert await manager.pool.has_active(team_name) is True
 
         result = await manager.stop_team(team_name=team_name, session_id=session_id)
         assert result is True
         assert fake_agent.stop_calls == 1
-        assert manager.active_team_name is None
-        assert manager.active_session_id is None
-        assert manager.active_agent is None
         assert await manager.pool.has_active(team_name) is False
+        assert await manager.pool.list_team_names() == []
 
     @pytest.mark.asyncio
     @pytest.mark.level0
@@ -803,7 +759,7 @@ class TestTeamRuntimeManagerStopTeam:
         session_id = "s1"
 
         fake_agent = FakeTeamAgent(team_name, stream_label="team.chunk")
-        await manager._set_active(team_name, session_id, fake_agent)
+        await _activate_pool_entry(manager, team_name, session_id, fake_agent)
 
         result = await manager.stop_team(team_name="other_team", session_id=session_id)
         assert result is False
@@ -828,7 +784,7 @@ class TestTeamRuntimeManagerStopTeam:
         session_id = f"std_{uuid.uuid4().hex}"
 
         fake_agent = FakeTeamAgent(team_name, stream_label="team.chunk")
-        await manager._set_active(team_name, session_id, fake_agent)
+        await _activate_pool_entry(manager, team_name, session_id, fake_agent)
         await manager.stop_team(team_name=team_name, session_id=session_id)
 
         db_config = DatabaseConfig(db_type=DatabaseType.SQLITE, connection_string=":memory:")
@@ -902,14 +858,15 @@ class TestTeamRuntimeManagerDeleteTeam:
         session_id = f"delete_active_{uuid.uuid4().hex}"
 
         fake_agent = FakeTeamAgent(team_name, stream_label="team.chunk")
-        await manager._set_active(team_name, session_id, fake_agent)
+        await _activate_pool_entry(manager, team_name, session_id, fake_agent)
 
         with pytest.raises(ValidationError, match="busy"):
             await manager.delete_team(team_name, [session_id])
 
         # Pool entry must remain after the rejection so the caller can stop it.
-        assert manager.active_team_name == team_name
-        assert manager.active_agent is fake_agent
+        entry = await manager.pool.get(team_name)
+        assert entry is not None
+        assert entry.agent is fake_agent
 
 
 class TestRunnerReleaseAutoDispatch:
