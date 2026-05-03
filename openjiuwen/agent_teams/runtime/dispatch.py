@@ -33,7 +33,7 @@ from typing import Optional
 
 from openjiuwen.agent_teams.runtime.pool import (
     ActiveTeam,
-    TeamLifecycle,
+    RuntimeState,
 )
 
 
@@ -114,7 +114,7 @@ def decide_run_action(
 
     # Warm paths: pool already holds this team.
     if pool_entry.current_session_id == target_session_id:
-        if pool_entry.state == TeamLifecycle.PAUSED:
+        if pool_entry.state == RuntimeState.PAUSED:
             return RunAction(kind=RunActionKind.RESUME_FROM_PAUSE, require_spec=False)
         return RunAction(
             kind=RunActionKind.REJECT_RUNNING,

@@ -307,8 +307,15 @@ class EventDispatcher:
         if mm is None:
             team_logger.warning("message_manager unavailable, cannot send user direct message")
             return
-        msg_id = await UserInbox(mm).direct(to_member_name, content)
-        team_logger.info("user direct message sent to {}: {}", to_member_name, msg_id)
+        result = await UserInbox(mm).direct(to_member_name, content)
+        if result.ok:
+            team_logger.info(
+                "user direct message sent to {}: {}", to_member_name, result.message_id
+            )
+        else:
+            team_logger.warning(
+                "user direct message to {} failed: {}", to_member_name, result.reason
+            )
 
     # ------------------------------------------------------------------
     # Member events

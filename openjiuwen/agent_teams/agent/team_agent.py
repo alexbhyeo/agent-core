@@ -43,6 +43,7 @@ from openjiuwen.core.single_agent.rail.base import AgentRail
 from openjiuwen.harness.deep_agent import DeepAgent
 
 if TYPE_CHECKING:
+    from openjiuwen.agent_teams.interaction.payload import DeliverResult
     from openjiuwen.agent_teams.models.allocator import Allocation, ModelAllocator
     from openjiuwen.agent_teams.models.pool import ModelPoolEntry
     from openjiuwen.agent_teams.team_workspace.manager import TeamWorkspaceManager
@@ -422,7 +423,8 @@ class TeamAgent(BaseAgent):
         finally:
             await self._coordination.finalize_round()
 
-    async def broadcast(self, content: str) -> Optional[str]:
+    async def broadcast(self, content: str) -> "DeliverResult":
+        """Broadcast a user-side announcement; returns the delivery result."""
         from openjiuwen.agent_teams.interaction import UserInbox
 
         if self._configurator.team_backend is None:
@@ -435,7 +437,8 @@ class TeamAgent(BaseAgent):
         to: Optional[str] = None,
         *,
         sender: Optional[str] = None,
-    ) -> Optional[str]:
+    ) -> "DeliverResult":
+        """Speak as a registered human-agent member; returns the delivery result."""
         from openjiuwen.agent_teams.interaction import HumanAgentInbox
 
         if self._configurator.team_backend is None:

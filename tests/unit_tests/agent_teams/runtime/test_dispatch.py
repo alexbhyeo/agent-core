@@ -13,14 +13,14 @@ from openjiuwen.agent_teams.runtime.dispatch import (
 )
 from openjiuwen.agent_teams.runtime.pool import (
     ActiveTeam,
-    TeamLifecycle,
+    RuntimeState,
 )
 
 
 def _pool_entry(
     team_name: str = "alpha",
     session_id: str = "session-x",
-    state: TeamLifecycle = TeamLifecycle.RUNNING,
+    state: RuntimeState = RuntimeState.RUNNING,
 ) -> ActiveTeam:
     return ActiveTeam(
         team_name=team_name,
@@ -90,7 +90,7 @@ def test_cold_recover_when_db_and_bucket_present_no_pool():
 
 
 def test_reject_running_when_pool_active_on_same_session():
-    pool = _pool_entry(team_name="alpha", session_id="s1", state=TeamLifecycle.RUNNING)
+    pool = _pool_entry(team_name="alpha", session_id="s1", state=RuntimeState.RUNNING)
     action = decide_run_action(
         team_in_db=True,
         team_in_session=True,
@@ -103,7 +103,7 @@ def test_reject_running_when_pool_active_on_same_session():
 
 
 def test_resume_from_pause_when_pool_paused_on_same_session():
-    pool = _pool_entry(team_name="alpha", session_id="s1", state=TeamLifecycle.PAUSED)
+    pool = _pool_entry(team_name="alpha", session_id="s1", state=RuntimeState.PAUSED)
     action = decide_run_action(
         team_in_db=True,
         team_in_session=True,
@@ -164,7 +164,7 @@ def test_truth_table_full_coverage(
     pool = None
     if has_pool:
         pool_session = target_session if session_match else "other-session"
-        pool_state = TeamLifecycle.PAUSED if paused else TeamLifecycle.RUNNING
+        pool_state = RuntimeState.PAUSED if paused else RuntimeState.RUNNING
         pool = _pool_entry(session_id=pool_session, state=pool_state)
     action = decide_run_action(
         team_in_db=team_in_db,

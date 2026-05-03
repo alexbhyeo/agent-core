@@ -10,7 +10,7 @@ import pytest
 
 from openjiuwen.agent_teams.runtime.pool import (
     ActiveTeam,
-    TeamLifecycle,
+    RuntimeState,
     TeamRuntimePool,
 )
 
@@ -75,11 +75,11 @@ async def test_multi_team_in_same_session_listed_together():
 async def test_lifecycle_state_persists_across_get():
     pool = TeamRuntimePool()
     team = _make_team("alpha")
-    team.state = TeamLifecycle.PAUSED
+    team.state = RuntimeState.PAUSED
     await pool.add(team)
     fetched = await pool.get("alpha")
     assert fetched is not None
-    assert fetched.state is TeamLifecycle.PAUSED
+    assert fetched.state is RuntimeState.PAUSED
 
 
 @pytest.mark.asyncio

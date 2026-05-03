@@ -16,9 +16,13 @@ posts as ``human_agent`` and refuses to work when HITT is off.
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Optional
+from typing import (
+    TYPE_CHECKING,
+    Optional,
+)
 
 from openjiuwen.agent_teams.constants import HUMAN_AGENT_MEMBER_NAME
+from openjiuwen.agent_teams.interaction.payload import DeliverResult
 from openjiuwen.core.common.logging import team_logger
 
 if TYPE_CHECKING:
@@ -88,7 +92,7 @@ class HumanAgentInbox:
         to: Optional[str] = None,
         *,
         sender: Optional[str] = None,
-    ) -> Optional[str]:
+    ) -> DeliverResult:
         """Post a message as a human-agent member.
 
         Args:
@@ -98,21 +102,36 @@ class HumanAgentInbox:
             sender: Member name of the human agent speaking. Optional
                 on single-human teams; required when the team declares
                 multiple human-agent members.
+
+        Returns:
+            ``DeliverResult.success(msg_id)`` once the bus accepts the
+            message, or ``DeliverResult.failure("send_failed")`` when
+            the bus rejects delivery (unknown target, write failure).
+
+        Raises:
+            HumanAgentNotEnabledError: When the team has no registered
+                human-agent member at all.
+            UnknownHumanAgentError: When ``sender`` does not match any
+                registered human-agent member.
         """
         resolved_sender = self._resolve_sender(sender)
         team_logger.debug(
             "HumanAgentInbox: sending as %s, to=%s", resolved_sender, to or "*"
         )
         if to is None:
-            return await self._mm.broadcast_message(
+            msg_id = await self._mm.broadcast_message(
                 content=body,
                 from_member_name=resolved_sender,
             )
-        return await self._mm.send_message(
-            content=body,
-            to_member_name=to,
-            from_member_name=resolved_sender,
-        )
+        else:
+            msg_id = await self._mm.send_message(
+                content=body,
+                to_member_name=to,
+                from_member_name=resolved_sender,
+            )
+        if msg_id is None:
+            return DeliverResult.failure("send_failed")
+        return DeliverResult.success(msg_id)
 
 
 __all__ = [

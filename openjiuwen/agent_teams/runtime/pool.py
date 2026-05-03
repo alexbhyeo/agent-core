@@ -29,7 +29,7 @@ if TYPE_CHECKING:
     from openjiuwen.agent_teams.agent.team_agent import TeamAgent
 
 
-class TeamLifecycle(str, Enum):
+class RuntimeState(str, Enum):
     """Top-level state of an ActiveTeam in the pool."""
 
     RUNNING = "running"
@@ -43,7 +43,7 @@ class ActiveTeam:
     team_name: str
     agent: "TeamAgent"
     current_session_id: str
-    state: TeamLifecycle = TeamLifecycle.RUNNING
+    state: RuntimeState = RuntimeState.RUNNING
     interact_gate: InteractGate = field(default_factory=InteractGate)
 
 
@@ -85,4 +85,5 @@ class TeamRuntimePool:
             return [team for team in self._teams.values() if team.current_session_id == session_id]
 
 
-__all__ = ["ActiveTeam", "TeamLifecycle", "TeamRuntimePool"]
+__all__ = ["ActiveTeam", "RuntimeState", "TeamRuntimePool"]
+
