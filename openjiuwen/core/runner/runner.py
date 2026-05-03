@@ -590,7 +590,7 @@ class _RunnerImpl:
                     team_runtime.unbind_team_session(agent_team_session.get_session_id())
                 await agent_team_session.post_run()
 
-    async def release(self, session_id: str):
+    async def release(self, session_id: str, *, force: bool = False):
         """
         Release resources associated with a session.
 
@@ -598,7 +598,11 @@ class _RunnerImpl:
         (tasks, messages, etc.) in addition to releasing the checkpoint.
 
         Args:
-            session_id: ID of the session to clean up
+            session_id: ID of the session to clean up.
+            force: When ``True``, stop any team still active on this
+                session before cleaning. Default ``False`` raises
+                ``AGENT_TEAM_BUSY_INVALID`` so callers explicitly choose
+                between graceful and forced teardown.
         """
         # Check if this is an agent team session
         from openjiuwen.agent_teams.runtime.manager import TeamRuntimeManager
@@ -606,7 +610,7 @@ class _RunnerImpl:
         metadata = await TeamRuntimeManager.resolve_team_session_metadata(session_id)
         if metadata is not None:
             # This is an agent team session - clean dynamic tables then checkpoint
-            await self._get_team_runtime_manager().release_session(session_id)
+            await self._get_team_runtime_manager().release_session(session_id, force=force)
             await CheckpointerFactory.get_checkpointer().release(session_id)
             return
 
@@ -676,9 +680,19 @@ class _RunnerImpl:
         *,
         team_name: str,
         session_ids: list[str],
+        force: bool = False,
     ) -> bool:
-        """Delete a team and release all supplied sessions."""
-        return await self._get_team_runtime_manager().delete_team(team_name=team_name, session_ids=session_ids)
+        """Delete a team and release all supplied sessions.
+
+        ``force=True`` stops the team's active runtime in-line; default
+        ``force=False`` requires the caller to ``stop_agent_team`` first
+        and otherwise raises ``AGENT_TEAM_BUSY_INVALID``.
+        """
+        return await self._get_team_runtime_manager().delete_team(
+            team_name=team_name,
+            session_ids=session_ids,
+            force=force,
+        )
 
     @classmethod
     def _is_called_by_agent(cls, session: AgentSession) -> bool:
@@ -1274,14 +1288,16 @@ class Runner:
             yield chunk
     
     @classmethod
-    async def release(cls, session_id: str) -> None:
+    async def release(cls, session_id: str, *, force: bool = False) -> None:
         """
         Release resources associated with a session.
 
         Args:
-            session_id: ID of the session to clean up
+            session_id: ID of the session to clean up.
+            force: When ``True``, stop any team still active on this
+                session before cleaning. See ``_RunnerImpl.release``.
         """
-        await GLOBAL_RUNNER.release(session_id)
+        await GLOBAL_RUNNER.release(session_id, force=force)
 
     @classmethod
     async def interact_agent_team(
@@ -1324,6 +1340,14 @@ class Runner:
         *,
         team_name: str,
         session_ids: list[str],
+        force: bool = False,
     ) -> bool:
-        """Delete a team and release all supplied sessions."""
-        return await GLOBAL_RUNNER.delete_agent_team(team_name=team_name, session_ids=session_ids)
+        """Delete a team and release all supplied sessions.
+
+        ``force=True`` stops the team's active runtime in-line.
+        """
+        return await GLOBAL_RUNNER.delete_agent_team(
+            team_name=team_name,
+            session_ids=session_ids,
+            force=force,
+        )

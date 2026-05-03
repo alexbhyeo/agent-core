@@ -697,6 +697,45 @@ class TestTeamRuntimeManagerReleaseSession:
 
     @pytest.mark.asyncio
     @pytest.mark.level0
+    async def test_release_session_force_stops_active_teams_before_cleanup(self):
+        """release_session(force=True) tears down active teams before dropping tables."""
+        from openjiuwen.agent_teams.runtime.manager import (
+            TeamRuntimeManager,
+            TeamSessionMetadata,
+        )
+        from openjiuwen.agent_teams.tools.database import (
+            DatabaseConfig,
+            DatabaseType,
+        )
+
+        manager = TeamRuntimeManager()
+        session_id = f"release_force_{uuid.uuid4().hex}"
+        team_name = "force_release_team"
+
+        fake_agent = FakeTeamAgent(team_name, stream_label="team.chunk")
+        await _activate_pool_entry(manager, team_name, session_id, fake_agent)
+
+        db_config = DatabaseConfig(db_type=DatabaseType.SQLITE, connection_string=":memory:")
+        metadata = TeamSessionMetadata(team_name=team_name, db_config=db_config)
+        fake_db = AsyncMock()
+        fake_db.initialize = AsyncMock()
+        fake_db.drop_session_tables_by_id = AsyncMock(return_value=[])
+
+        with patch(
+            "openjiuwen.agent_teams.runtime.manager.TeamRuntimeManager.resolve_team_session_metadata",
+            return_value=metadata,
+        ), patch(
+            "openjiuwen.agent_teams.spawn.shared_resources.get_shared_db",
+            return_value=fake_db,
+        ):
+            await manager.release_session(session_id, force=True)
+
+        assert fake_agent.stop_calls == 1
+        assert await manager.pool.has_active(team_name) is False
+        fake_db.drop_session_tables_by_id.assert_awaited_once_with(session_id)
+
+    @pytest.mark.asyncio
+    @pytest.mark.level0
     async def test_release_session_empty_session_id_returns_early(self):
         """release_session should return early for empty session_id."""
         from openjiuwen.agent_teams.runtime.manager import TeamRuntimeManager
@@ -976,6 +1015,53 @@ class TestTeamRuntimeManagerDeleteTeam:
         entry = await manager.pool.get(team_name)
         assert entry is not None
         assert entry.agent is fake_agent
+
+    @pytest.mark.asyncio
+    @pytest.mark.level0
+    async def test_delete_team_force_stops_active_runtime_before_cleanup(self):
+        """delete_team(force=True) stops the active runtime in-line."""
+        from openjiuwen.agent_teams.runtime.manager import (
+            TeamRuntimeManager,
+            TeamSessionMetadata,
+        )
+        from openjiuwen.agent_teams.tools.database import (
+            DatabaseConfig,
+            DatabaseType,
+        )
+
+        manager = TeamRuntimeManager()
+        team_name = "force_delete_team"
+        session_id = f"force_del_{uuid.uuid4().hex}"
+
+        fake_agent = FakeTeamAgent(team_name, stream_label="team.chunk")
+        await _activate_pool_entry(manager, team_name, session_id, fake_agent)
+
+        db_config = DatabaseConfig(db_type=DatabaseType.SQLITE, connection_string=":memory:")
+        metadata = TeamSessionMetadata(team_name=team_name, db_config=db_config)
+        fake_db = AsyncMock()
+        fake_db.initialize = AsyncMock()
+        fake_db.drop_session_tables_by_id = AsyncMock(return_value=[])
+        fake_db.team = AsyncMock()
+        fake_db.team.delete_team = AsyncMock(return_value=True)
+        fake_checkpointer = AsyncMock()
+        fake_checkpointer.release = AsyncMock()
+
+        with patch(
+            "openjiuwen.agent_teams.runtime.manager.TeamRuntimeManager.resolve_team_session_metadata",
+            return_value=metadata,
+        ), patch(
+            "openjiuwen.agent_teams.spawn.shared_resources.get_shared_db",
+            return_value=fake_db,
+        ), patch(
+            "openjiuwen.agent_teams.runtime.manager.CheckpointerFactory.get_checkpointer",
+            return_value=fake_checkpointer,
+        ):
+            ok = await manager.delete_team(team_name, [session_id], force=True)
+
+        assert ok is True
+        assert fake_agent.stop_calls == 1
+        assert await manager.pool.has_active(team_name) is False
+        fake_db.team.delete_team.assert_awaited_once_with(team_name)
 
 
 class TestRunnerReleaseAutoDispatch:

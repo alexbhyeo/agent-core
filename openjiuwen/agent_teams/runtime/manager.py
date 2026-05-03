@@ -218,21 +218,37 @@ class TeamRuntimeManager:
         self,
         team_name: str,
         session_ids: list[str],
+        *,
+        force: bool = False,
     ) -> bool:
         """Delete team runtime state, checkpoints, and persisted team metadata.
 
-        Refuses to run while the team has an active runtime in the pool —
-        callers must stop_team / pause_team and wait for completion first.
+        Default ``force=False`` refuses while the team has an active
+        runtime in the pool — callers must stop_team / pause_team first.
+        ``force=True`` stops the active runtime in-line before tearing
+        down persisted state, equivalent to ``stop_team`` then
+        ``delete_team`` but skips the busy precondition.
         """
         if await self._pool.has_active(team_name):
             entry = await self._pool.get(team_name)
             active_session = entry.current_session_id if entry else "?"
-            raise_error(
-                StatusCode.AGENT_TEAM_BUSY_INVALID,
-                team_name=team_name,
-                session_id=active_session,
-                reason="team has an active runtime; stop_team before delete_team",
-            )
+            if not force:
+                raise_error(
+                    StatusCode.AGENT_TEAM_BUSY_INVALID,
+                    team_name=team_name,
+                    session_id=active_session,
+                    reason="team has an active runtime; stop_team before delete_team or pass force=True",
+                )
+            if entry is not None:
+                team_logger.info(
+                    "delete_team(force=True) stopping active runtime team={} session={}",
+                    team_name,
+                    entry.current_session_id,
+                )
+                await self.stop_team(
+                    team_name=team_name,
+                    session_id=entry.current_session_id,
+                )
 
         db_config: Optional[DatabaseConfig] = None
         if session_ids:
@@ -257,20 +273,38 @@ class TeamRuntimeManager:
 
         return await db.team.delete_team(team_name)
 
-    async def release_session(self, session_id: str) -> None:
-        """Release per-session dynamic tables for an agent team session."""
+    async def release_session(
+        self,
+        session_id: str,
+        *,
+        force: bool = False,
+    ) -> None:
+        """Release per-session dynamic tables for an agent team session.
+
+        Default ``force=False`` refuses while any team is active on the
+        session. ``force=True`` stops every team currently bound to the
+        session, then proceeds with cleanup.
+        """
         if not session_id:
             return
 
         active_teams = await self._pool.teams_for_session(session_id)
         if active_teams:
-            blocked_names = ", ".join(t.team_name for t in active_teams)
-            raise_error(
-                StatusCode.AGENT_TEAM_BUSY_INVALID,
-                team_name=blocked_names,
-                session_id=session_id,
-                reason="team(s) active on this session; stop_team or pause_team first",
-            )
+            if not force:
+                blocked_names = ", ".join(t.team_name for t in active_teams)
+                raise_error(
+                    StatusCode.AGENT_TEAM_BUSY_INVALID,
+                    team_name=blocked_names,
+                    session_id=session_id,
+                    reason="team(s) active on this session; stop_team or pause_team first, or pass force=True",
+                )
+            for team in active_teams:
+                team_logger.info(
+                    "release_session(force=True) stopping active team={} session={}",
+                    team.team_name,
+                    session_id,
+                )
+                await self.stop_team(team_name=team.team_name, session_id=session_id)
 
         metadata = await self.resolve_team_session_metadata(session_id)
         if metadata is None:
