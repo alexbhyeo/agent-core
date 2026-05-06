@@ -87,7 +87,13 @@ STRINGS: dict[str, str] = {
     "member_complete_task.note": "可选的完成说明，便于团队了解你的执行结果或后续注意事项",
     # ===== send_message ========================================================
     # send_message._desc lives in descs/cn/send_message.md
-    "send_message.to": '收件人：填 member_name（如 "backend-dev-1"）发送点对点消息；填 "user"（仅 teammate 用于回复用户）；填 "*" 广播给所有成员',
+    "send_message.to": (
+        '收件人：填 member_name（如 "backend-dev-1"）发送点对点消息；'
+        '填成员名数组（如 ["m1","m2"]）多播——同一份内容分别发给每个成员，'
+        '开销随接收人数线性增长，同等规模下比广播更贵，仅在必要时使用，'
+        '禁止与 "*"/"user" 混用；'
+        '填 "user"（仅 teammate 用于回复用户）；填 "*" 广播给所有成员'
+    ),
     "send_message.content": "消息内容，应包含明确的行动指引或信息",
     "send_message.summary": "5-10 词摘要，用于消息预览和日志",
     # ===== enter_worktree =====================================================

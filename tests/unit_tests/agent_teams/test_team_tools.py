@@ -1110,6 +1110,224 @@ class TestSendMessageTool:
         assert result.success is False
         assert "not found" in result.error
 
+    @pytest.mark.asyncio
+    @pytest.mark.level1
+    async def test_invoke_multicast_all_success(self, agent_team, t, sample_agent_card):
+        """Multicast to existing members returns success with all delivered"""
+        await agent_team.spawn_member(
+            member_name="m1",
+            display_name="M1",
+            agent_card=sample_agent_card,
+        )
+        await agent_team.spawn_member(
+            member_name="m2",
+            display_name="M2",
+            agent_card=sample_agent_card,
+        )
+
+        tool = SendMessageTool(agent_team.message_manager, t, team=agent_team)
+        result = await tool.invoke({"to": ["m1", "m2"], "content": "Hello"})
+
+        assert result.success is True
+        assert result.data["type"] == "multicast"
+        assert result.data["delivered"] == ["m1", "m2"]
+        assert result.data["failed"] == []
+
+    @pytest.mark.asyncio
+    @pytest.mark.level1
+    async def test_invoke_multicast_partial_failure(
+        self,
+        agent_team,
+        t,
+        sample_agent_card,
+    ):
+        """Strict success: any failure flips overall success to False, delivered still listed"""
+        await agent_team.spawn_member(
+            member_name="m1",
+            display_name="M1",
+            agent_card=sample_agent_card,
+        )
+
+        tool = SendMessageTool(agent_team.message_manager, t, team=agent_team)
+        result = await tool.invoke({"to": ["m1", "ghost"], "content": "Hello"})
+
+        assert result.success is False
+        assert "Multicast partially failed" in result.error
+        assert result.data["delivered"] == ["m1"]
+        assert len(result.data["failed"]) == 1
+        assert result.data["failed"][0]["to"] == "ghost"
+        assert "not found" in result.data["failed"][0]["reason"]
+
+    @pytest.mark.asyncio
+    @pytest.mark.level1
+    async def test_invoke_multicast_all_fail(self, agent_team, t):
+        """All targets unknown -> success=False, delivered empty"""
+        tool = SendMessageTool(agent_team.message_manager, t, team=agent_team)
+        result = await tool.invoke({"to": ["ghost1", "ghost2"], "content": "Hi"})
+
+        assert result.success is False
+        assert result.data["delivered"] == []
+        assert len(result.data["failed"]) == 2
+
+    @pytest.mark.asyncio
+    @pytest.mark.level1
+    async def test_invoke_multicast_dedup_preserves_order(
+        self,
+        agent_team,
+        t,
+        sample_agent_card,
+    ):
+        """Duplicate names are removed while preserving first-seen order"""
+        await agent_team.spawn_member(
+            member_name="m1",
+            display_name="M1",
+            agent_card=sample_agent_card,
+        )
+        await agent_team.spawn_member(
+            member_name="m2",
+            display_name="M2",
+            agent_card=sample_agent_card,
+        )
+
+        tool = SendMessageTool(agent_team.message_manager, t, team=agent_team)
+        result = await tool.invoke({"to": ["m1", "m1", "m2"], "content": "Hi"})
+
+        assert result.success is True
+        assert result.data["delivered"] == ["m1", "m2"]
+
+    @pytest.mark.asyncio
+    @pytest.mark.level1
+    async def test_invoke_multicast_rejects_wildcard(self, agent_team, t):
+        """Mixing '*' inside a multicast list is rejected"""
+        tool = SendMessageTool(agent_team.message_manager, t)
+        result = await tool.invoke({"to": ["m1", "*"], "content": "Hi"})
+
+        assert result.success is False
+        assert "broadcast" in result.error
+
+    @pytest.mark.asyncio
+    @pytest.mark.level1
+    async def test_invoke_multicast_rejects_user(self, agent_team, t):
+        """Mixing 'user' inside a multicast list is rejected"""
+        tool = SendMessageTool(agent_team.message_manager, t)
+        result = await tool.invoke({"to": ["m1", "user"], "content": "Hi"})
+
+        assert result.success is False
+        assert "user" in result.error
+
+    @pytest.mark.asyncio
+    @pytest.mark.level1
+    async def test_invoke_multicast_empty_list(self, agent_team, t):
+        """Empty list rejected"""
+        tool = SendMessageTool(agent_team.message_manager, t)
+        result = await tool.invoke({"to": [], "content": "Hi"})
+
+        assert result.success is False
+        assert "at least one" in result.error
+
+    @pytest.mark.asyncio
+    @pytest.mark.level1
+    async def test_invoke_multicast_single_element_does_not_degrade(
+        self,
+        agent_team,
+        t,
+        sample_agent_card,
+    ):
+        """Single-element list still returns type=multicast (no auto-degrade)"""
+        await agent_team.spawn_member(
+            member_name="m1",
+            display_name="M1",
+            agent_card=sample_agent_card,
+        )
+
+        tool = SendMessageTool(agent_team.message_manager, t, team=agent_team)
+        result = await tool.invoke({"to": ["m1"], "content": "Hi"})
+
+        assert result.success is True
+        assert result.data["type"] == "multicast"
+        assert result.data["delivered"] == ["m1"]
+
+    @pytest.mark.asyncio
+    @pytest.mark.level1
+    async def test_invoke_multicast_skips_blank_entries(
+        self,
+        agent_team,
+        t,
+        sample_agent_card,
+    ):
+        """Blank/whitespace entries are dropped before validation"""
+        await agent_team.spawn_member(
+            member_name="m1",
+            display_name="M1",
+            agent_card=sample_agent_card,
+        )
+
+        tool = SendMessageTool(agent_team.message_manager, t, team=agent_team)
+        result = await tool.invoke({"to": ["m1", "  ", ""], "content": "Hi"})
+
+        assert result.success is True
+        assert result.data["delivered"] == ["m1"]
+
+    @pytest.mark.asyncio
+    @pytest.mark.level1
+    async def test_invoke_invalid_to_type(self, agent_team, t):
+        """Non-string non-list 'to' is rejected"""
+        tool = SendMessageTool(agent_team.message_manager, t)
+        result = await tool.invoke({"to": 123, "content": "Hi"})
+
+        assert result.success is False
+        assert "string" in result.error
+
+    @pytest.mark.asyncio
+    @pytest.mark.level1
+    async def test_invoke_string_path_unchanged(self, agent_team, t):
+        """Sanity: passing 'to' as string still goes through point-to-point path"""
+        tool = SendMessageTool(agent_team.message_manager, t)
+        result = await tool.invoke({"to": "m1", "content": "Hi"})
+
+        assert result.success is True
+        assert result.data["type"] == "message"
+        assert result.data["to"] == "m1"
+
+    @pytest.mark.level1
+    def test_send_message_map_result_multicast_success(self, agent_team, t):
+        """map_result renders multicast success with sender, delivered list and count"""
+        tool = SendMessageTool(agent_team.message_manager, t)
+        output = ToolOutput(
+            success=True,
+            data={
+                "type": "multicast",
+                "from": "leader",
+                "delivered": ["m1", "m2"],
+                "failed": [],
+                "summary": None,
+            },
+        )
+        text = tool.map_result(output)
+        assert "Multicast sent from leader" in text
+        assert "m1, m2" in text
+        assert "(2 delivered)" in text
+
+    @pytest.mark.level1
+    def test_send_message_map_result_multicast_partial(self, agent_team, t):
+        """map_result on failure carries delivered + failed details"""
+        tool = SendMessageTool(agent_team.message_manager, t)
+        output = ToolOutput(
+            success=False,
+            error="Multicast partially failed: 1/2 target(s) failed",
+            data={
+                "type": "multicast",
+                "from": "leader",
+                "delivered": ["m1"],
+                "failed": [{"to": "m2", "reason": "Member 'm2' not found"}],
+                "summary": None,
+            },
+        )
+        text = tool.map_result(output)
+        assert "partially failed" in text
+        assert "delivered: m1" in text
+        assert "m2 — Member 'm2' not found" in text
+
 
 # ========== Skipped Tests (tools temporarily removed) ==========
 
