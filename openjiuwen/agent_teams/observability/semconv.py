@@ -43,8 +43,8 @@ GEN_AI_TOOL_OUTPUT = "gen_ai.tool.output"
 # agentteam.* — Team-level collaboration attributes (Monitor handler)
 # ---------------------------------------------------------------------------
 
-AT_TEAM_ID = "agentteam.team.id"
 AT_TEAM_NAME = "agentteam.team.name"
+AT_TEAM_DISPLAY_NAME = "agentteam.team.display_name"
 AT_EVENT_TYPE = "agentteam.event_type"
 
 AT_AGENT_ID = "agentteam.agent.id"
@@ -52,7 +52,7 @@ AT_AGENT_ROLE = "agentteam.agent.role"
 AT_AGENT_INPUT = "agentteam.agent.input"
 AT_AGENT_OUTPUT = "agentteam.agent.output"
 
-AT_MEMBER_ID = "agentteam.member.id"
+AT_MEMBER_NAME = "agentteam.member.name"
 AT_MEMBER_STATUS_OLD = "agentteam.member.status.old"
 AT_MEMBER_STATUS_NEW = "agentteam.member.status.new"
 AT_MEMBER_RESTART_REASON = "agentteam.member.restart_reason"

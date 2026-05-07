@@ -33,7 +33,7 @@ from opentelemetry.trace import (
 from openjiuwen.agent_teams.observability.config import ObservabilityConfig
 from openjiuwen.agent_teams.observability.semconv import (
     AT_EVENT_TYPE,
-    AT_MEMBER_ID,
+    AT_MEMBER_NAME,
     AT_MEMBER_RESTART_COUNT,
     AT_MEMBER_RESTART_REASON,
     AT_MEMBER_SHUTDOWN_FORCE,
@@ -46,7 +46,7 @@ from openjiuwen.agent_teams.observability.semconv import (
     AT_TASK_ASSIGNEE,
     AT_TASK_ID,
     AT_TASK_STATUS,
-    AT_TEAM_ID,
+    AT_TEAM_DISPLAY_NAME,
     AT_TEAM_NAME,
 )
 from openjiuwen.agent_teams.schema.events import EventMessage, TeamEvent
@@ -118,24 +118,24 @@ class OtelTeamMonitorHandler:
         try:
             etype = event.event_type
             payload: dict[str, Any] = event.payload or {}
-            team_id = str(payload.get("team_name") or "")
+            team_name = str(payload.get("team_name") or "")
 
             if etype == TeamEvent.CREATED:
-                self._open_team_span(team_id, payload)
+                self._open_team_span(team_name, payload)
             elif etype == TeamEvent.CLEANED:
-                self._close_team_span(team_id)
+                self._close_team_span(team_name)
             elif etype == TeamEvent.STANDBY:
-                self._record_team_event(team_id, etype, attrs={AT_EVENT_TYPE: etype})
+                self._record_team_event(team_name, etype, attrs={AT_EVENT_TYPE: etype})
             elif etype in _TASK_OPEN_TYPES:
-                self._open_task_span(team_id, payload)
+                self._open_task_span(team_name, payload)
             elif etype in _TASK_CLOSE_TYPES:
                 self._close_task_span(payload, etype)
             elif etype == TeamEvent.TASK_UPDATED or etype == TeamEvent.TASK_CLAIMED:
                 self._record_task_event(payload, etype)
             elif etype in _MEMBER_TYPES:
-                self._record_member_event(team_id, payload, etype)
+                self._record_member_event(team_name, payload, etype)
             elif etype in _MESSAGE_TYPES:
-                self._record_message_event(team_id, payload, etype)
+                self._record_message_event(team_name, payload, etype)
             # Other internal events (worktree, workspace, plan_approval, ...)
             # are intentionally dropped. They can be added later by
             # extending the dispatch table.
@@ -150,22 +150,22 @@ class OtelTeamMonitorHandler:
     # Team span lifecycle
     # ------------------------------------------------------------------
 
-    def _open_team_span(self, team_id: str, payload: dict[str, Any]) -> None:
+    def _open_team_span(self, team_name: str, payload: dict[str, Any]) -> None:
         """Open a long-lived team root span."""
-        if team_id in self._team_spans:
+        if team_name in self._team_spans:
             return
-        span = self._tracer().start_span(name=f"team.{team_id}", kind=SpanKind.INTERNAL)
-        span.set_attribute(AT_TEAM_ID, team_id)
-        span.set_attribute(AT_TEAM_NAME, str(payload.get("display_name", team_id)))
+        span = self._tracer().start_span(name=f"team.{team_name}", kind=SpanKind.INTERNAL)
+        span.set_attribute(AT_TEAM_NAME, team_name)
+        span.set_attribute(AT_TEAM_DISPLAY_NAME, str(payload.get("display_name", team_name)))
         span.set_attribute(AT_EVENT_TYPE, TeamEvent.CREATED)
         leader = payload.get("leader_member_name")
         if leader:
             span.set_attribute("agentteam.team.leader", str(leader))
-        self._team_spans[team_id] = span
+        self._team_spans[team_name] = span
 
-    def _close_team_span(self, team_id: str) -> None:
+    def _close_team_span(self, team_name: str) -> None:
         """Close the long-lived team span if present."""
-        span = self._team_spans.pop(team_id, None)
+        span = self._team_spans.pop(team_name, None)
         if span is None:
             return
         span.set_status(Status(StatusCode.OK))
@@ -173,13 +173,13 @@ class OtelTeamMonitorHandler:
 
     def _record_team_event(
         self,
-        team_id: str,
+        team_name: str,
         name: str,
         *,
         attrs: dict[str, Any],
     ) -> None:
         """Add an event to the team span if it exists."""
-        span = self._team_spans.get(team_id)
+        span = self._team_spans.get(team_name)
         if span is None:
             return
         span.add_event(name=name, attributes=attrs)
@@ -188,15 +188,15 @@ class OtelTeamMonitorHandler:
     # Task span lifecycle
     # ------------------------------------------------------------------
 
-    def _open_task_span(self, team_id: str, payload: dict[str, Any]) -> None:
+    def _open_task_span(self, team_name: str, payload: dict[str, Any]) -> None:
         """Open a per-task span keyed by task_id."""
         task_id = str(payload.get("task_id") or "")
         if not task_id or task_id in self._task_spans:
             return
         span = self._tracer().start_span(name=f"task.{task_id}", kind=SpanKind.INTERNAL)
         span.set_attribute(AT_TASK_ID, task_id)
-        if team_id:
-            span.set_attribute(AT_TEAM_ID, team_id)
+        if team_name:
+            span.set_attribute(AT_TEAM_NAME, team_name)
         status = payload.get("status")
         if status:
             span.set_attribute(AT_TASK_STATUS, str(status))
@@ -233,14 +233,14 @@ class OtelTeamMonitorHandler:
 
     def _record_member_event(
         self,
-        team_id: str,
+        team_name: str,
         payload: dict[str, Any],
         etype: str,
     ) -> None:
         """Attach member event to the team span."""
         attrs: dict[str, Any] = {
             AT_EVENT_TYPE: etype,
-            AT_MEMBER_ID: str(payload.get("member_name") or ""),
+            AT_MEMBER_NAME: str(payload.get("member_name") or ""),
         }
         if "old_status" in payload:
             attrs[AT_MEMBER_STATUS_OLD] = str(payload.get("old_status") or "")
@@ -252,11 +252,11 @@ class OtelTeamMonitorHandler:
             attrs[AT_MEMBER_RESTART_COUNT] = int(payload.get("restart_count") or 0)
         if "force" in payload:
             attrs[AT_MEMBER_SHUTDOWN_FORCE] = bool(payload.get("force"))
-        self._record_team_event(team_id, etype, attrs=attrs)
+        self._record_team_event(team_name, etype, attrs=attrs)
 
     def _record_message_event(
         self,
-        team_id: str,
+        team_name: str,
         payload: dict[str, Any],
         etype: str,
     ) -> None:
@@ -268,4 +268,4 @@ class OtelTeamMonitorHandler:
             AT_MESSAGE_TO: str(payload.get("to_member_name") or ""),
             AT_MESSAGE_BROADCAST: etype == TeamEvent.BROADCAST,
         }
-        self._record_team_event(team_id, etype, attrs=attrs)
+        self._record_team_event(team_name, etype, attrs=attrs)

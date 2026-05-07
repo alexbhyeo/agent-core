@@ -333,8 +333,8 @@ async def test_team_monitor_handler_emits_team_and_task_spans(
     team_spans = _spans_by_name(in_memory_exporter, "team.alpha")
     assert team_spans, "team root span missing"
     team_span = team_spans[0]
-    assert _attr(team_span, "agentteam.team.id") == "alpha"
-    assert _attr(team_span, "agentteam.team.name") == "Alpha Team"
+    assert _attr(team_span, "agentteam.team.name") == "alpha"
+    assert _attr(team_span, "agentteam.team.display_name") == "Alpha Team"
 
     event_names = [e.name for e in team_span.events]
     assert "member_spawned" in event_names
