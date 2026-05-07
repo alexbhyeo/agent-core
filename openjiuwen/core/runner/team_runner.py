@@ -76,6 +76,7 @@ from openjiuwen.core.single_agent import (
 if TYPE_CHECKING:
     from openjiuwen.agent_teams.monitor import TeamMonitor
     from openjiuwen.agent_teams.runtime import (
+        ActiveTeamInfo,
         RunActionKind,
         TeamRuntimeManager,
     )
@@ -435,6 +436,16 @@ class _TeamRunnerMixin:
             session_id=session_id,
         )
 
+    async def list_active_teams(self) -> list["ActiveTeamInfo"]:
+        """Snapshot every TeamAgent runtime currently held by the pool.
+
+        Returns read-only ``ActiveTeamInfo`` entries (team_name /
+        current_session_id / state / gate_closed) — the live ``TeamAgent``
+        and ``InteractGate`` are intentionally excluded so callers cannot
+        mutate runtime state through the result.
+        """
+        return await self._get_team_runtime_manager().list_active_teams()
+
     async def delete_agent_team(
         self,
         *,
@@ -734,6 +745,11 @@ class _TeamRunnerClassMixin:
             team_name=team_name,
             session_id=session_id,
         )
+
+    @classmethod
+    async def list_active_teams(cls) -> list["ActiveTeamInfo"]:
+        """Snapshot every TeamAgent runtime currently held by the pool."""
+        return await _global_runner().list_active_teams()
 
     @classmethod
     async def stop_agent_team(

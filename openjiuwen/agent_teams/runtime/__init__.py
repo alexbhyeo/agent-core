@@ -12,12 +12,14 @@ from openjiuwen.agent_teams.runtime.manager import (
 )
 from openjiuwen.agent_teams.runtime.pool import (
     ActiveTeam,
+    ActiveTeamInfo,
     RuntimeState,
     TeamRuntimePool,
 )
 
 __all__ = [
     "ActiveTeam",
+    "ActiveTeamInfo",
     "RunAction",
     "RunActionKind",
     "RuntimeState",

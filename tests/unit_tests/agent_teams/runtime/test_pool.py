@@ -83,6 +83,27 @@ async def test_lifecycle_state_persists_across_get():
 
 
 @pytest.mark.asyncio
+async def test_list_all_info_returns_readonly_snapshots():
+    pool = TeamRuntimePool()
+    running = _make_team("alpha", session_id="s-running")
+    paused = _make_team("beta", session_id="s-paused")
+    paused.state = RuntimeState.PAUSED
+    await pool.add(running)
+    await pool.add(paused)
+
+    snapshots = await pool.list_all_info()
+
+    by_name = {info.team_name: info for info in snapshots}
+    assert by_name["alpha"].state is RuntimeState.RUNNING
+    assert by_name["alpha"].current_session_id == "s-running"
+    assert by_name["alpha"].gate_closed is False
+    assert by_name["beta"].state is RuntimeState.PAUSED
+    # ActiveTeamInfo is frozen — mutation must fail.
+    with pytest.raises(Exception):
+        by_name["alpha"].state = RuntimeState.PAUSED  # type: ignore[misc]
+
+
+@pytest.mark.asyncio
 async def test_concurrent_add_remove_keeps_pool_consistent():
     pool = TeamRuntimePool()
     names = [f"team-{i}" for i in range(20)]

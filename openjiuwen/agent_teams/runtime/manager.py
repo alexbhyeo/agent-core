@@ -49,6 +49,7 @@ from openjiuwen.agent_teams.runtime.metadata import (
 )
 from openjiuwen.agent_teams.runtime.pool import (
     ActiveTeam,
+    ActiveTeamInfo,
     RuntimeState,
     TeamRuntimePool,
 )
@@ -302,6 +303,14 @@ class TeamRuntimeManager:
         if entry is None:
             return None
         return create_monitor(entry.agent)
+
+    async def list_active_teams(self) -> list["ActiveTeamInfo"]:
+        """Return read-only snapshots of every team currently in the pool.
+
+        Excludes the live ``TeamAgent`` and ``InteractGate`` references so
+        SDK / CLI callers cannot mutate runtime state through the result.
+        """
+        return await self._pool.list_all_info()
 
     async def delete_team(
         self,

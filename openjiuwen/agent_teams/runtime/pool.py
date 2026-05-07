@@ -47,6 +47,21 @@ class ActiveTeam:
     interact_gate: InteractGate = field(default_factory=InteractGate)
 
 
+@dataclass(frozen=True, slots=True)
+class ActiveTeamInfo:
+    """Read-only snapshot of a pooled team for external observers.
+
+    Excludes the live ``TeamAgent`` reference and the ``InteractGate``
+    so SDK/CLI consumers cannot accidentally mutate runtime state by
+    holding the entry. Produced from :meth:`TeamRuntimePool.list_all_info`.
+    """
+
+    team_name: str
+    current_session_id: str
+    state: RuntimeState
+    gate_closed: bool
+
+
 class TeamRuntimePool:
     """Process-local pool of active TeamAgent runtimes keyed by team name."""
 
@@ -84,6 +99,27 @@ class TeamRuntimePool:
         async with self._lock:
             return [team for team in self._teams.values() if team.current_session_id == session_id]
 
+    async def list_all_info(self) -> list[ActiveTeamInfo]:
+        """Return read-only snapshots of every pooled team.
 
-__all__ = ["ActiveTeam", "RuntimeState", "TeamRuntimePool"]
+        Excludes the live ``TeamAgent`` reference so external consumers
+        cannot mutate runtime state through the returned entries.
+        """
+        async with self._lock:
+            return [
+                ActiveTeamInfo(
+                    team_name=entry.team_name,
+                    current_session_id=entry.current_session_id,
+                    state=entry.state,
+                    gate_closed=entry.interact_gate.closed,
+                )
+                for entry in self._teams.values()
+            ]
 
+
+__all__ = [
+    "ActiveTeam",
+    "ActiveTeamInfo",
+    "RuntimeState",
+    "TeamRuntimePool",
+]

@@ -113,6 +113,14 @@ x-shared-agent-spec: &shared_agent_spec
         args:
           - examples/agent_teams/blast-furnace-operation-team/mcp_server/server.py
         encoding_error_handler: strict
+        # mcp.client.stdio.get_default_environment() only inherits a small
+        # whitelist (HOME / PATH / USER / ...). Anything we need to push
+        # to the child must be listed here. FASTMCP_LOG_LEVEL silences
+        # fastmcp's RichHandler INFO logs ("Processing request of type ..."
+        # on every tool call) that would otherwise leak onto the cli's
+        # stderr because stdio MCP clients do not capture child stderr.
+        env:
+          FASTMCP_LOG_LEVEL: WARNING
 
 # ---------------------------------------------------------------------------
 # Agent specifications

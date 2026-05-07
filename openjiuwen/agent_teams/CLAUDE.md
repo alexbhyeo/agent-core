@@ -8,6 +8,7 @@
 - `runtime/CLAUDE.md` — 对象池 / 派发 / 并发门禁，spec 公共入口 + leader-only 不变量
 - `interaction/CLAUDE.md` — 三视角交互 inbox + HITT runtime 表面
 - `agent/CLAUDE.md` — TeamAgent 四象限分解 + spawn / coordination / stream 等 manager
+- `cli/CLAUDE.md` — 交互式 TUI / 斜杠命令子模块（prompt_toolkit + rich）
 
 ## 公开入口（public API）
 
@@ -18,6 +19,7 @@
 | `create_agent_team(agents={...}, ...)` | 从零组装 TeamAgent。`agents["leader"]` 必填，`agents["teammate"]` 可选 |
 | `resume_persistent_team(agent, new_session_id)` | 在新 session 中恢复已完成一轮的持久化团队 |
 | `TeamAgentSpec.build()` | 任何希望走 pydantic 模型路径的调用者的统一入口；`create_agent_team` 是它的便利封装 |
+| `cli.run_team_cli(*, specs=None, yaml_paths=None)` | 交互式 TUI 公共入口。`/team` `/session` `/spec` 子命令覆盖 lifecycle 全 facade，普通文本透传 `Runner.interact_agent_team`。详见 `cli/CLAUDE.md` |
 
 **新增配置项走 `TeamAgentSpec`，不要在 `create_agent_team` 上堆 `**kwargs` 或平铺参数。** 扩参数列表是 hack，扩 Spec 才是设计。
 
@@ -45,6 +47,7 @@ agent_teams/
 ├── spawn/               # 成员启动（process / inprocess）
 ├── monitor/             # 团队运行态监控
 ├── team_workspace/      # 团队共享工作空间（跨成员的文件/锁/版本）
+├── cli/                 # 交互式 TUI / 斜杠命令子模块（prompt_toolkit + rich）
 └── worktree_remote.py   # 跨机器 worktree 后端（团队专属，generic 实现见 harness/tools/worktree）
 ```
 
@@ -161,6 +164,10 @@ Messager 是点对点 + broadcast 的统一抽象，**任何直接新建 socket 
 三种交互视角（`GodViewMessage` / `OperatorMessage` / `HumanAgentMessage`）+ `UserInbox` / `HumanAgentInbox` 的实现层，所有 HITT runtime 表面（`enable_hitt` 分层开关、人类成员来源、一致性约束、运行约束）也落在这里。
 
 详见 [`interaction/CLAUDE.md`](interaction/CLAUDE.md)。
+
+### cli/ — 交互式 TUI / 斜杠命令
+
+prompt_toolkit + rich 驱动的交互式 CLI。`run_team_cli(*, specs, yaml_paths)` 是公共入口，把 `Runner` 暴露的 team lifecycle facade（`run_agent_team_streaming` / `interact_agent_team` / `pause_agent_team` / `stop_agent_team` / `delete_agent_team` / `release` / `list_active_teams` / `register_human_agent_inbound` / `get_agent_team_monitor`）映射成 `/team` `/session` `/spec` 子命令。普通文本透传 `Runner.interact_agent_team`，由 runtime 的 `parse_interact_str` 一处解析 `# / $ / @member` 前缀；CLI 不做二次解析。详见 [`cli/CLAUDE.md`](cli/CLAUDE.md)。
 
 ### worktree — Git worktree 隔离
 
