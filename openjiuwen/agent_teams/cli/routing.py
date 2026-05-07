@@ -55,7 +55,7 @@ def _translate_reason(reason: str | None) -> str:
         return direct
     for prefix, template in _REASON_PREFIX_HINTS:
         if reason.startswith(prefix):
-            return template.format(reason[len(prefix) :])
+            return template.format(reason[len(prefix):])
     return reason
 
 
@@ -125,7 +125,7 @@ async def route_text(cli: "TeamCli", raw: str) -> None:
     if not text.strip():
         return
     if text.startswith(_SHELL_PREFIX):
-        await _handle_shell(cli, text[len(_SHELL_PREFIX) :])
+        await _handle_shell(cli, text[len(_SHELL_PREFIX):])
         return
     if text.startswith(_SLASH_PREFIX):
         from openjiuwen.agent_teams.cli.commands import dispatch_slash

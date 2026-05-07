@@ -54,7 +54,11 @@ def _git(cwd: str, *args: str) -> None:
 def _init_git_repo(path: str) -> None:
     """Initialize a minimal git repo with one commit and an origin/main."""
     os.makedirs(path, exist_ok=True)
-    _git(path, "init", "--quiet", "--initial-branch=main")
+    # ``--initial-branch`` requires git >= 2.28; use ``symbolic-ref`` so the
+    # test works on any git version. HEAD must be repointed before the first
+    # commit so the initial commit lands on ``main``.
+    _git(path, "init", "--quiet")
+    _git(path, "symbolic-ref", "HEAD", "refs/heads/main")
     _git(path, "config", "user.email", "test@example.com")
     _git(path, "config", "user.name", "Test User")
     readme = os.path.join(path, "README.md")

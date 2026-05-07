@@ -353,7 +353,8 @@ class TeamRuntimeManager:
         if session_ids:
             release_info = await self.resolve_team_session_release_info(session_ids[0])
             if release_info is None:
-                raise RuntimeError(f"Cannot resolve team session release info for {session_ids[0]}, aborting delete_team")
+                raise RuntimeError(f"Cannot resolve team session release info for {session_ids[0]}, "
+                                   f"aborting delete_team")
             db_config = release_info.db_config
 
         from openjiuwen.agent_teams.spawn.shared_resources import get_shared_db
