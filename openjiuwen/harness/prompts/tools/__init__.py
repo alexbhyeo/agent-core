@@ -111,6 +111,11 @@ from openjiuwen.harness.prompts.tools.memory import (
     ReadMemoryMetadataProvider,
     WriteMemoryMetadataProvider,
 )
+from openjiuwen.harness.prompts.tools.coding_memory import (
+    CodingMemoryEditMetadataProvider,
+    CodingMemoryReadMetadataProvider,
+    CodingMemoryWriteMetadataProvider,
+)
 
 # ---------------------------------------------------------------------------
 # Provider registry
@@ -166,6 +171,9 @@ _PROVIDERS: List[ToolMetadataProvider] = [
     WriteMemoryMetadataProvider(),
     EditMemoryMetadataProvider(),
     ReadMemoryMetadataProvider(),
+    CodingMemoryReadMetadataProvider(),
+    CodingMemoryWriteMetadataProvider(),
+    CodingMemoryEditMetadataProvider(),
 ]
 
 _REGISTRY: Dict[str, ToolMetadataProvider] = {
