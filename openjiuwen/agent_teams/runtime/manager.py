@@ -129,63 +129,6 @@ class TeamRuntimeManager:
             inputs=inputs,
         )
 
-    async def register_instance(
-        self,
-        agent: "TeamAgent",
-        session: str | AgentTeamSession | None,
-    ) -> TeamRuntimeActivation:
-        """Register a pre-built ``TeamAgent`` as a pool entry without rebuild.
-
-        Used by the instance entry path of ``Runner.run_agent_team*`` so the
-        ``Runner.interact_agent_team`` / ``register_human_agent_inbound``
-        facades work uniformly whether the caller passed a ``TeamAgentSpec``
-        (handled by ``activate``) or a pre-built ``TeamAgent``. Without this
-        call the instance path stays out of the pool and SDK methods that
-        resolve through it return ``not_active`` / ``False``.
-
-        If the pool already holds an entry for ``agent.team_name``:
-          - same agent instance → reuse it, refresh ``current_session_id`` and
-            ``RuntimeState.RUNNING``, ``interact_gate.reset()`` so a follow-up
-            run cycle on the same instance can proceed.
-          - different agent instance → raise ``RuntimeError`` to surface the
-            collision rather than silently swapping the entry.
-        """
-        team_name = agent.team_name
-        if not team_name:
-            raise ValueError("agent.team_name is empty; instance is not bound to a team")
-        if isinstance(session, AgentTeamSession):
-            team_session = session
-        elif isinstance(session, str):
-            team_session = create_agent_team_session(session_id=session, team_id=team_name)
-        else:
-            team_session = create_agent_team_session(team_id=team_name)
-        session_id = team_session.get_session_id()
-
-        existing = await self._pool.get(team_name)
-        if existing is not None:
-            if existing.agent is not agent:
-                raise RuntimeError(
-                    f"Cannot register team instance: pool already holds a different "
-                    f"TeamAgent for team '{team_name}'. Stop the existing run first "
-                    f"or pass the same instance to re-enter."
-                )
-            existing.current_session_id = session_id
-            existing.state = RuntimeState.RUNNING
-            await existing.interact_gate.reset()
-            action = RunAction(kind=RunActionKind.WARM_RECOVER, require_spec=False)
-            return TeamRuntimeActivation(agent=agent, session=team_session, action=action)
-
-        await self._pool.add(
-            ActiveTeam(
-                team_name=team_name,
-                agent=agent,
-                current_session_id=session_id,
-                state=RuntimeState.RUNNING,
-            )
-        )
-        action = RunAction(kind=RunActionKind.CREATE, require_spec=False)
-        return TeamRuntimeActivation(agent=agent, session=team_session, action=action)
-
     async def pause(
         self,
         *,

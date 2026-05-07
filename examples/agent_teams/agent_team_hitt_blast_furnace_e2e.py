@@ -62,7 +62,6 @@ from _e2e_utils import (  # noqa: E402
     run_interactive,
 )
 
-from openjiuwen.agent_teams.agent.team_agent import TeamAgent  # noqa: E402
 from openjiuwen.agent_teams.constants import HUMAN_AGENT_MEMBER_NAME  # noqa: E402
 from openjiuwen.agent_teams.interaction import HumanAgentInboundEvent  # noqa: E402
 from openjiuwen.agent_teams.schema.blueprint import TeamAgentSpec  # noqa: E402
@@ -129,24 +128,38 @@ def _make_inbound_handler() -> Callable[[HumanAgentInboundEvent], Awaitable[None
     return _handler
 
 
-def _arm_inbound_callback(
-    leader: TeamAgent,
+def _make_arm_inbound_on_ready(
     member_name: str,
     callback: Callable[[HumanAgentInboundEvent], Awaitable[None]],
-) -> None:
-    """Register the SDK-facing inbound callback directly on the team backend.
+) -> Callable[[str, str], Awaitable[None]]:
+    """Build an ``on_runtime_ready`` hook that arms the inbound callback.
 
-    ``backend._human_agent_names`` is pre-seeded from ``spec.predefined_members``
-    in ``TeamBackend.__init__``, so the human_agent name is already known the
-    moment ``spec.build()`` returns. We can attach the callback right here
-    without polling for the runtime entry to land in the pool.
+    The hook is fired by ``run_interactive`` after the first
+    ``team.runtime_ready`` chunk lands — by then the leader's pool entry
+    is in place, so ``Runner.register_human_agent_inbound`` can resolve
+    it and reach the team backend without us holding a ``TeamAgent``
+    reference here.
     """
-    backend = leader.team_backend
-    if backend is None:
-        team_logger.warning("[hitt-e2e] leader has no team_backend; inbound callback not armed")
-        return
-    backend.register_human_agent_inbound(member_name, callback)
-    team_logger.info("[hitt-e2e] human-agent inbound callback armed for %s", member_name)
+
+    async def _on_ready(team_name: str, session_id: str) -> None:
+        ok = await Runner.register_human_agent_inbound(
+            team_name=team_name,
+            session_id=session_id,
+            member_name=member_name,
+            callback=callback,
+        )
+        if ok:
+            team_logger.info("[hitt-e2e] human-agent inbound callback armed for %s", member_name)
+        else:
+            team_logger.warning(
+                "[hitt-e2e] failed to arm inbound callback for %s "
+                "(no active runtime for team=%s session=%s)",
+                member_name,
+                team_name,
+                session_id,
+            )
+
+    return _on_ready
 
 
 async def main() -> None:
@@ -154,13 +167,6 @@ async def main() -> None:
     runtime_cfg = cfg.pop("runtime", {})
 
     spec = TeamAgentSpec.model_validate(cfg)
-    leader = spec.build()
-
-    _arm_inbound_callback(
-        leader,
-        member_name=HUMAN_AGENT_MEMBER_NAME,
-        callback=_make_inbound_handler(),
-    )
 
     await Runner.start()
 
@@ -170,10 +176,13 @@ async def main() -> None:
 
     try:
         await run_interactive(
-            leader,
+            spec,
             runtime_cfg,
             default_session_id=session_id,
-            team_name=spec.team_name,
+            on_runtime_ready=_make_arm_inbound_on_ready(
+                member_name=HUMAN_AGENT_MEMBER_NAME,
+                callback=_make_inbound_handler(),
+            ),
         )
     finally:
         await Runner.stop()

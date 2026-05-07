@@ -49,5 +49,5 @@
 ## 跟其他子目录的边界
 
 - 真正干活的 LLM 在 `harness/deep_agent.py`，本目录只组装 + 调度。
-- 跨 team 的对象池 / 派发 / 并发门禁在 `runtime/`（spec → pool entry，instance 路径走 `register_instance`）。
+- 跨 team 的对象池 / 派发 / 并发门禁在 `runtime/`（leader 进 pool 的唯一公共路径是 spec → `manager.activate`）。
 - 三视角交互（GodView / Operator / HumanAgent）通过 `interaction/` 进 dispatcher，不要让 dispatcher 自己解析 mention 字符串——那段已经搬到 `interaction/router.py`。

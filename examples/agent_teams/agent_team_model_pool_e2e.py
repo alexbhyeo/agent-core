@@ -130,8 +130,6 @@ async def main() -> None:
     print("Model pool:")
     _print_pool_summary(spec)
 
-    leader = spec.build()
-
     await Runner.start()
 
     print("=" * 70)
@@ -139,7 +137,7 @@ async def main() -> None:
     print("Type 'exit' or 'quit' to stop.")
     print("=" * 70)
 
-    await run_interactive(leader, runtime_cfg, default_session_id="model_pool_session")
+    await run_interactive(spec, runtime_cfg, default_session_id="model_pool_session")
 
     await Runner.stop()
     print("Done.")

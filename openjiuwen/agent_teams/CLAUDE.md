@@ -5,7 +5,7 @@
 本文件是本模块的入口索引。深入细节时跳转到：
 - `tools/CLAUDE.md` — 团队工具设计与描述契约
 - `prompts/CLAUDE.md` — Prompt 模板与语言切换
-- `runtime/CLAUDE.md` — 对象池 / 派发 / 并发门禁，spec vs 实例 pool 行为
+- `runtime/CLAUDE.md` — 对象池 / 派发 / 并发门禁，spec 公共入口 + leader-only 不变量
 - `interaction/CLAUDE.md` — 三视角交互 inbox + HITT runtime 表面
 - `agent/CLAUDE.md` — TeamAgent 四象限分解 + spawn / coordination / stream 等 manager
 
@@ -20,6 +20,8 @@
 | `TeamAgentSpec.build()` | 任何希望走 pydantic 模型路径的调用者的统一入口；`create_agent_team` 是它的便利封装 |
 
 **新增配置项走 `TeamAgentSpec`，不要在 `create_agent_team` 上堆 `**kwargs` 或平铺参数。** 扩参数列表是 hack，扩 Spec 才是设计。
+
+**Runner 入口签名收紧**：`Runner.run_agent_team` / `run_agent_team_streaming` 默认接 `str | TeamAgentSpec`——str 是 `team_name`，要求该 team 已被 spec 路径激活过、pool 里有 entry。已 build 的 `TeamAgent` 实例不再是合法入参。要跑 multi_agent 体系的 `BaseTeam`（`str | BaseTeam`），传同一个方法、加 `base=True` 切到 multi_agent 路径——`Runner` 公共表面只有这一对方法，由 `base` 参数分流。
 
 ## 模块地图
 
@@ -146,7 +148,7 @@ Messager 是点对点 + broadcast 的统一抽象，**任何直接新建 socket 
 
 ### runtime/ — TeamAgent 对象池 + 派发 + 并发门禁
 
-`TeamRuntimePool` + `TeamRuntimeManager` + 9 路 dispatch truth table + `InteractGate`，是 `Runner.run_agent_team*` / `interact_agent_team` / `register_human_agent_inbound` / `pause_agent_team` / `stop_team` / `release_session` / `delete_team` 这一组 SDK facade 的实现层。spec 路径走 `activate`，已 build 的 TeamAgent leader 实例走 `register_instance` —— 两条路径在 pool 中殊途同归。
+`TeamRuntimePool` + `TeamRuntimeManager` + 9 路 dispatch truth table + `InteractGate`，是 `Runner.run_agent_team*` / `interact_agent_team` / `register_human_agent_inbound` / `pause_agent_team` / `stop_team` / `release_session` / `delete_team` 这一组 SDK facade 的实现层。`Runner.run_agent_team*` 公共入口收紧到 `str | TeamAgentSpec`：spec 走 `manager.activate`（dispatch 决策 + pool 写入），str 是 `team_name`、复用已激活的 pool entry。spawn 出来的 teammate / human-agent 实例走 `Runner._run_team_member*` 内部入口、不入 pool。
 
 详见 [`runtime/CLAUDE.md`](runtime/CLAUDE.md)。
 

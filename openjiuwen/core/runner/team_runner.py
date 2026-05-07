@@ -3,23 +3,36 @@
 
 """Team-runtime surface mixed into the Runner.
 
-Keeps every ``TeamAgentSpec``-oriented hook in one place so ``runner.py``
-stays focused on the workflow / single-agent core.
+The public ``Runner`` facade exposes a single team entry pair:
 
-* :class:`_TeamRunnerMixin` carries the instance-side coroutines exposed
-  by ``_RunnerImpl``: ``run_agent_team`` / ``run_agent_team_streaming`` /
-  ``interact_agent_team`` / ``pause_agent_team`` / ``stop_agent_team`` /
-  ``delete_agent_team`` plus the helpers they need.
-* :class:`_TeamRunnerClassMixin` carries the matching classmethod facade
-  reused by :class:`Runner`; each call is a thin proxy back to the
-  ``GLOBAL_RUNNER`` instance.
+* ``Runner.run_agent_team`` / ``run_agent_team_streaming`` — accepts
+  ``str | TeamAgentSpec | BaseTeam`` and routes by the keyword-only
+  ``base: bool = False`` flag:
+
+  - ``base=False`` (default) → agent_teams TeamAgent path: spec or a
+    ``team_name`` str resolved against an already-active pool entry.
+  - ``base=True`` → multi_agent ``BaseTeam`` path: a ``BaseTeam``
+    instance or a ``team_id`` str resolved through ``resource_mgr``.
+
+Internally the facade still delegates to two physically separated
+instance methods on ``_RunnerImpl``: ``run_agent_team*`` (TeamAgentSpec
++ activate / pool) and ``_run_base_team*`` (BaseTeam + resource_mgr).
+Each instance method is type-tight and single-purpose; the routing
+``base`` flag lives only on the facade so SDK users see one method.
+
+Plus one internal helper used by spawn (not exposed on the facade):
+
+* ``_run_team_member`` / ``_run_team_member_streaming`` — runs an
+  already-built teammate / human-agent ``TeamAgent`` instance produced
+  by ``inprocess_spawn`` / ``child_process``. Pool entry is NOT
+  created; the leader-only pool invariant is preserved.
 
 The mixin reads two attributes initialised by the host class:
 
 * ``_team_runtime_manager`` (Optional[TeamRuntimeManager]) — created
   lazily on first use to avoid pulling ``openjiuwen.agent_teams`` during
   child-process bootstrap.
-* ``_resource_manager`` (ResourceMgr) — used by ``_prepare_agent_team``
+* ``_resource_manager`` (ResourceMgr) — used by ``_prepare_base_team``
   to resolve team_id strings into ``BaseTeam`` instances.
 
 Plus one method:
@@ -135,65 +148,50 @@ class _TeamRunnerMixin:
     # ------------------------------------------------------------------
     async def run_agent_team(
         self,
-        agent_team: Union[str, "BaseTeam", BaseAgent, "TeamAgentSpec"],
+        agent_team: Union[str, "TeamAgentSpec"],
         inputs: Any,
         *,
         session: Optional[Union[str, AgentTeamSession]] = None,
         context: Optional[ModelContext] = None,
         envs: Optional[dict[str, Any]] = None,
     ):
-        """Execute a team of agents with given inputs.
+        """Run an agent_teams TeamAgent identified by spec or team_name.
 
-        ``TeamAgent`` (a ``BaseAgent`` subclass) is also accepted; pass it
-        directly instead of using ``run_agent`` to get proper
-        ``AgentTeamSession`` lifecycle.
+        Accepts:
+        - ``TeamAgentSpec``: canonical assembly blueprint; goes through
+          ``TeamRuntimeManager.activate`` (cold/warm/recover dispatch).
+        - ``str`` (team_name): re-uses an already-active pool entry —
+          the first call must pass a spec to seed the pool.
+
+        Already-built ``TeamAgent`` instances are NOT accepted. For the
+        multi_agent ``BaseTeam`` path call the ``Runner.run_agent_team``
+        facade with ``base=True``.
         """
+        spec = await self._resolve_team_agent_spec(agent_team)
         with self._root_task_group_scope():
-            if self._is_team_agent_spec(agent_team):
-                activation = await self._get_team_runtime_manager().activate(agent_team, session, inputs)
-                try:
-                    action = activation.action
-                    if _is_team_reject_kind(action.kind):
-                        logger.warning(
-                            "run_agent_team rejected for team/session ({}, {}), kind={}, reason={}",
-                            agent_team.team_name,
-                            activation.session.get_session_id(),
-                            action.kind.value,
-                            action.reason or "",
-                        )
-                        return None
-                    return await activation.agent.invoke(inputs, session=activation.session)
-                finally:
-                    await self._close_team_interact_gate(
-                        team_name=agent_team.team_name,
-                        session_id=activation.session.get_session_id(),
-                    )
-                    await activation.session.post_run()
-            agent_team_instance = await self._prepare_agent_team(agent_team)
-            agent_team_session = self._create_agent_team_session(agent_team_instance, session)
-            await agent_team_session.pre_run(inputs=inputs if isinstance(inputs, dict) else None)
-            team_runtime = getattr(agent_team_instance, "runtime", None)
-            if team_runtime is not None:
-                team_runtime.bind_team_session(agent_team_session)
-            registered_team_name = await self._register_team_instance_if_eligible(
-                agent_team_instance,
-                agent_team_session,
-            )
+            activation = await self._get_team_runtime_manager().activate(spec, session, inputs)
             try:
-                return await agent_team_instance.invoke(inputs, session=agent_team_session)
-            finally:
-                if registered_team_name is not None:
-                    await self._close_team_interact_gate(
-                        team_name=registered_team_name,
-                        session_id=agent_team_session.get_session_id(),
+                action = activation.action
+                if _is_team_reject_kind(action.kind):
+                    logger.warning(
+                        "run_agent_team rejected for team/session ({}, {}), kind={}, reason={}",
+                        spec.team_name,
+                        activation.session.get_session_id(),
+                        action.kind.value,
+                        action.reason or "",
                     )
-                if team_runtime is not None:
-                    team_runtime.unbind_team_session(agent_team_session.get_session_id())
-                await agent_team_session.post_run()
+                    return None
+                return await activation.agent.invoke(inputs, session=activation.session)
+            finally:
+                await self._close_team_interact_gate(
+                    team_name=spec.team_name,
+                    session_id=activation.session.get_session_id(),
+                )
+                await activation.session.post_run()
 
     async def run_agent_team_streaming(
         self,
-        agent_team: Union[str, "BaseTeam", BaseAgent, "TeamAgentSpec"],
+        agent_team: Union[str, "TeamAgentSpec"],
         inputs: Any,
         *,
         session: Optional[Union[str, AgentTeamSession]] = None,
@@ -201,62 +199,148 @@ class _TeamRunnerMixin:
         stream_modes: Optional[list[BaseStreamMode]] = None,
         envs: Optional[dict[str, Any]] = None,
     ) -> AsyncIterator[Any]:
-        """Execute a team of agents with streaming output support.
+        """Stream-run an agent_teams TeamAgent identified by spec or team_name.
 
-        ``TeamAgent`` (a ``BaseAgent`` subclass) is also accepted; pass it
-        directly instead of using ``run_agent_streaming`` to get proper
-        ``AgentTeamSession`` lifecycle and checkpointing.
+        Same input contract as :meth:`run_agent_team`.
         """
+        spec = await self._resolve_team_agent_spec(agent_team)
         with self._root_task_group_scope():
-            if self._is_team_agent_spec(agent_team):
-                activation = await self._get_team_runtime_manager().activate(agent_team, session, inputs)
-                try:
-                    action = activation.action
-                    if _is_team_reject_kind(action.kind):
-                        logger.warning(
-                            "run_agent_team_streaming rejected for team/session ({}, {}), kind={}, reason={}",
-                            agent_team.team_name,
-                            activation.session.get_session_id(),
-                            action.kind.value,
-                            action.reason or "",
-                        )
-                        return
-                    yield self._build_team_runtime_ready_chunk(
-                        team_name=agent_team.team_name,
-                        session_id=activation.session.get_session_id(),
-                        action_kind=action.kind,
-                    )
-                    async for chunk in activation.agent.stream(inputs, session=activation.session):
-                        yield chunk
-                finally:
-                    await self._close_team_interact_gate(
-                        team_name=agent_team.team_name,
-                        session_id=activation.session.get_session_id(),
-                    )
-                    await activation.session.post_run()
-                return
-            agent_team_instance = await self._prepare_agent_team(agent_team)
-            agent_team_session = self._create_agent_team_session(agent_team_instance, session)
-            await agent_team_session.pre_run(inputs=inputs if isinstance(inputs, dict) else None)
-            team_runtime = getattr(agent_team_instance, "runtime", None)
-            if team_runtime is not None:
-                team_runtime.bind_team_session(agent_team_session)
-            registered_team_name = await self._register_team_instance_if_eligible(
-                agent_team_instance,
-                agent_team_session,
-            )
+            activation = await self._get_team_runtime_manager().activate(spec, session, inputs)
             try:
-                async for chunk in agent_team_instance.stream(inputs, session=agent_team_session):
+                action = activation.action
+                if _is_team_reject_kind(action.kind):
+                    logger.warning(
+                        "run_agent_team_streaming rejected for team/session ({}, {}), kind={}, reason={}",
+                        spec.team_name,
+                        activation.session.get_session_id(),
+                        action.kind.value,
+                        action.reason or "",
+                    )
+                    return
+                yield self._build_team_runtime_ready_chunk(
+                    team_name=spec.team_name,
+                    session_id=activation.session.get_session_id(),
+                    action_kind=action.kind,
+                )
+                async for chunk in activation.agent.stream(inputs, session=activation.session):
                     yield chunk
             finally:
-                if registered_team_name is not None:
-                    await self._close_team_interact_gate(
-                        team_name=registered_team_name,
-                        session_id=agent_team_session.get_session_id(),
-                    )
+                await self._close_team_interact_gate(
+                    team_name=spec.team_name,
+                    session_id=activation.session.get_session_id(),
+                )
+                await activation.session.post_run()
+
+    async def _run_base_team(
+        self,
+        base_team: Union[str, BaseTeam],
+        inputs: Any,
+        *,
+        session: Optional[Union[str, AgentTeamSession]] = None,
+        context: Optional[ModelContext] = None,
+        envs: Optional[dict[str, Any]] = None,
+    ):
+        """Internal: ``base=True`` branch of ``Runner.run_agent_team``.
+
+        Not part of the public surface — SDK callers go through
+        ``Runner.run_agent_team`` with ``base=True``.
+
+        Accepts:
+        - ``BaseTeam``: a concrete subclass instance (``HandoffTeam`` /
+          ``HierarchicalTeam`` / custom).
+        - ``str`` (team_id): resolved through ``Runner.resource_mgr``.
+        """
+        team_instance = await self._prepare_base_team(base_team)
+        with self._root_task_group_scope():
+            team_session = self._create_agent_team_session(team_instance, session)
+            await team_session.pre_run(inputs=inputs if isinstance(inputs, dict) else None)
+            team_runtime = getattr(team_instance, "runtime", None)
+            if team_runtime is not None:
+                team_runtime.bind_team_session(team_session)
+            try:
+                return await team_instance.invoke(inputs, session=team_session)
+            finally:
                 if team_runtime is not None:
-                    team_runtime.unbind_team_session(agent_team_session.get_session_id())
-                await agent_team_session.post_run()
+                    team_runtime.unbind_team_session(team_session.get_session_id())
+                await team_session.post_run()
+
+    async def _run_base_team_streaming(
+        self,
+        base_team: Union[str, BaseTeam],
+        inputs: Any,
+        *,
+        session: Optional[Union[str, AgentTeamSession]] = None,
+        context: Optional[ModelContext] = None,
+        stream_modes: Optional[list[BaseStreamMode]] = None,
+        envs: Optional[dict[str, Any]] = None,
+    ) -> AsyncIterator[Any]:
+        """Internal: ``base=True`` branch of ``Runner.run_agent_team_streaming``.
+
+        Same input contract as :meth:`_run_base_team`.
+        """
+        team_instance = await self._prepare_base_team(base_team)
+        with self._root_task_group_scope():
+            team_session = self._create_agent_team_session(team_instance, session)
+            await team_session.pre_run(inputs=inputs if isinstance(inputs, dict) else None)
+            team_runtime = getattr(team_instance, "runtime", None)
+            if team_runtime is not None:
+                team_runtime.bind_team_session(team_session)
+            try:
+                async for chunk in team_instance.stream(inputs, session=team_session):
+                    yield chunk
+            finally:
+                if team_runtime is not None:
+                    team_runtime.unbind_team_session(team_session.get_session_id())
+                await team_session.post_run()
+
+    async def _run_team_member(
+        self,
+        agent: BaseAgent,
+        inputs: Any,
+        *,
+        session: Optional[Union[str, AgentTeamSession]] = None,
+    ):
+        """Run a spawned teammate / human-agent ``TeamAgent`` instance.
+
+        Internal entry used by ``inprocess_spawn`` and ``child_process``
+        for already-built non-leader ``TeamAgent`` instances. Pool entry
+        is NOT created — the leader-only pool invariant (see
+        ``runtime/CLAUDE.md``) is preserved.
+        """
+        with self._root_task_group_scope():
+            team_session = self._create_agent_team_session(agent, session)
+            await team_session.pre_run(inputs=inputs if isinstance(inputs, dict) else None)
+            team_runtime = getattr(agent, "runtime", None)
+            if team_runtime is not None:
+                team_runtime.bind_team_session(team_session)
+            try:
+                return await agent.invoke(inputs, session=team_session)
+            finally:
+                if team_runtime is not None:
+                    team_runtime.unbind_team_session(team_session.get_session_id())
+                await team_session.post_run()
+
+    async def _run_team_member_streaming(
+        self,
+        agent: BaseAgent,
+        inputs: Any,
+        *,
+        session: Optional[Union[str, AgentTeamSession]] = None,
+    ) -> AsyncIterator[Any]:
+        """Stream-variant of :meth:`_run_team_member` (internal)."""
+        with self._root_task_group_scope():
+            team_session = self._create_agent_team_session(agent, session)
+            await team_session.pre_run(inputs=inputs if isinstance(inputs, dict) else None)
+            team_runtime = getattr(agent, "runtime", None)
+            if team_runtime is not None:
+                team_runtime.bind_team_session(team_session)
+            try:
+                async for chunk in agent.stream(inputs, session=team_session):
+                    yield chunk
+            finally:
+                if team_runtime is not None:
+                    team_runtime.unbind_team_session(team_session.get_session_id())
+                await team_session.post_run()
 
     async def interact_agent_team(
         self,
@@ -399,22 +483,67 @@ class _TeamRunnerMixin:
     # ------------------------------------------------------------------
     # internals
     # ------------------------------------------------------------------
-    @staticmethod
-    def _is_team_agent_spec(agent_team: object) -> bool:
-        try:
-            from openjiuwen.agent_teams.schema.blueprint import TeamAgentSpec
-        except ImportError:
-            return False
-        return isinstance(agent_team, TeamAgentSpec)
+    async def _resolve_team_agent_spec(
+        self,
+        agent_team: Union[str, "TeamAgentSpec"],
+    ) -> "TeamAgentSpec":
+        """Resolve ``run_agent_team`` input into a concrete ``TeamAgentSpec``.
 
-    async def _prepare_agent_team(self, agent_team: Union[str, BaseTeam]):
+        ``TeamAgentSpec`` is returned as-is. ``str`` is treated as a
+        ``team_name`` and resolved against the runtime pool — the first
+        call for a given team must pass a spec to seed the pool.
+        Anything else raises ``AGENT_TEAM_CONFIG_INVALID``.
+        """
+        from openjiuwen.agent_teams.schema.blueprint import TeamAgentSpec
+        from openjiuwen.core.common.exception.codes import StatusCode
+        from openjiuwen.core.common.exception.errors import raise_error
+
+        if isinstance(agent_team, TeamAgentSpec):
+            return agent_team
         if isinstance(agent_team, str):
-            return await self._resource_manager.get_agent_team(team_id=agent_team)
-        return agent_team
+            entry = await self._get_team_runtime_manager().pool.get(agent_team)
+            if entry is None or entry.agent.spec is None:
+                raise_error(
+                    StatusCode.AGENT_TEAM_CONFIG_INVALID,
+                    reason=(
+                        f"team '{agent_team}' is not active; the first run_agent_team "
+                        f"call for a team must pass a TeamAgentSpec to seed the pool"
+                    ),
+                )
+            return entry.agent.spec
+        raise_error(
+            StatusCode.AGENT_TEAM_CONFIG_INVALID,
+            reason=(
+                f"run_agent_team accepts str | TeamAgentSpec; got "
+                f"{type(agent_team).__name__}. For BaseTeam pass base=True."
+            ),
+        )
+
+    async def _prepare_base_team(self, base_team: Union[str, BaseTeam]) -> BaseTeam:
+        """Resolve ``_run_base_team`` input into a concrete ``BaseTeam``.
+
+        ``BaseTeam`` is returned as-is. ``str`` is treated as a
+        ``team_id`` and resolved through ``Runner.resource_mgr``.
+        Anything else raises ``AGENT_TEAM_CONFIG_INVALID``.
+        """
+        from openjiuwen.core.common.exception.codes import StatusCode
+        from openjiuwen.core.common.exception.errors import raise_error
+
+        if isinstance(base_team, str):
+            return await self._resource_manager.get_agent_team(team_id=base_team)
+        if isinstance(base_team, BaseTeam):
+            return base_team
+        raise_error(
+            StatusCode.AGENT_TEAM_CONFIG_INVALID,
+            reason=(
+                f"run_agent_team(base=True) accepts str | BaseTeam; got "
+                f"{type(base_team).__name__}. For TeamAgentSpec drop base=True."
+            ),
+        )
 
     @staticmethod
     def _create_agent_team_session(
-        agent_team: BaseTeam,
+        agent_team: Any,
         session: Optional[Union[str, AgentTeamSession, AgentSession]],
     ):
         if isinstance(session, AgentTeamSession):
@@ -429,48 +558,6 @@ class _TeamRunnerMixin:
         if isinstance(session, str):
             return create_agent_team_session(session_id=session, team_id=team_id)
         return create_agent_team_session(team_id=team_id)
-
-    async def _register_team_instance_if_eligible(
-        self,
-        agent_team_instance: Any,
-        agent_team_session: AgentTeamSession,
-    ) -> Optional[str]:
-        """Register a pre-built ``TeamAgent`` leader instance into the runtime pool.
-
-        Mirrors what the spec entry path does via ``manager.activate``: lets
-        ``Runner.interact_agent_team`` / ``register_human_agent_inbound``
-        resolve through ``_resolve_entry`` whether the caller passed a
-        ``TeamAgentSpec`` or a pre-built ``TeamAgent``. Skipped silently for:
-
-        * Non-``TeamAgent`` inputs (other ``BaseTeam`` / ``BaseAgent``
-          flavors).
-        * ``TeamAgent`` instances that are not the leader role: teammates
-          and human-agents enter ``Runner.run_agent_team`` via
-          ``inprocess_spawn`` for their own member loop, but the pool
-          entry must only ever hold the **leader** of a team — pool keys
-          on ``team_name``, and a team has exactly one leader. Letting a
-          teammate clobber or collide with the leader entry breaks
-          ``Runner.interact_agent_team`` and ``register_human_agent_inbound``.
-
-        Returns the registered ``team_name`` (so the caller can close the
-        gate in finally) or ``None`` when the instance was not eligible.
-        """
-        try:
-            from openjiuwen.agent_teams.agent.team_agent import TeamAgent
-            from openjiuwen.agent_teams.schema.team import TeamRole
-        except ImportError:
-            return None
-        if not isinstance(agent_team_instance, TeamAgent):
-            return None
-        if agent_team_instance.role != TeamRole.LEADER:
-            return None
-        if not agent_team_instance.team_name:
-            return None
-        await self._get_team_runtime_manager().register_instance(
-            agent_team_instance,
-            agent_team_session,
-        )
-        return agent_team_instance.team_name
 
     async def _close_team_interact_gate(
         self,
@@ -528,14 +615,26 @@ class _TeamRunnerClassMixin:
     @classmethod
     async def run_agent_team(
         cls,
-        agent_team: Union[str, "BaseTeam", BaseAgent, "TeamAgentSpec"],
+        agent_team: Union[str, "TeamAgentSpec", BaseTeam],
         inputs: Any,
         *,
+        base: bool = False,
         session: Optional[Union[str, AgentTeamSession]] = None,
         context: Optional[ModelContext] = None,
         envs: Optional[dict[str, Any]] = None,
     ) -> Any:
-        """Execute a team of agents with given inputs."""
+        """Run a team. Default routes to the agent_teams TeamAgent path
+        (``str | TeamAgentSpec``). Pass ``base=True`` to run a multi_agent
+        ``BaseTeam`` (``str | BaseTeam``).
+        """
+        if base:
+            return await _global_runner()._run_base_team(
+                base_team=agent_team,
+                inputs=inputs,
+                session=session,
+                context=context,
+                envs=envs,
+            )
         return await _global_runner().run_agent_team(
             agent_team=agent_team,
             inputs=inputs,
@@ -547,15 +646,30 @@ class _TeamRunnerClassMixin:
     @classmethod
     async def run_agent_team_streaming(
         cls,
-        agent_team: Union[str, "BaseTeam", BaseAgent, "TeamAgentSpec"],
+        agent_team: Union[str, "TeamAgentSpec", BaseTeam],
         inputs: Any,
         *,
+        base: bool = False,
         session: Optional[Union[str, AgentTeamSession]] = None,
         context: Optional[ModelContext] = None,
         stream_modes: Optional[list[BaseStreamMode]] = None,
         envs: Optional[dict[str, Any]] = None,
     ) -> AsyncIterator[Any]:
-        """Execute a team of agents with streaming output support."""
+        """Stream-run a team. ``base=True`` switches to the multi_agent
+        ``BaseTeam`` path (``str | BaseTeam``); default goes through the
+        agent_teams TeamAgent path (``str | TeamAgentSpec``).
+        """
+        if base:
+            async for chunk in _global_runner()._run_base_team_streaming(
+                base_team=agent_team,
+                inputs=inputs,
+                session=session,
+                context=context,
+                stream_modes=stream_modes,
+                envs=envs,
+            ):
+                yield chunk
+            return
         async for chunk in _global_runner().run_agent_team_streaming(
             agent_team=agent_team,
             inputs=inputs,

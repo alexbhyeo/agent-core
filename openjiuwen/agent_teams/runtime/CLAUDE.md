@@ -1,6 +1,6 @@
 # Agent Teams Runtime
 
-`TeamAgent` 对象池 + 派发 + 并发门禁子系统。`Runner` 通过这一层把 spec / 已 build 的 TeamAgent 映射成可被 SDK facade（`interact_agent_team` / `register_human_agent_inbound` / `pause_agent_team` / `stop_team` / `release_session` / `delete_team`）操纵的 pool entry。
+`TeamAgent` 对象池 + 派发 + 并发门禁子系统。`Runner` 通过这一层把 `TeamAgentSpec`（或已激活的 team_name 字符串）映射成可被 SDK facade（`interact_agent_team` / `register_human_agent_inbound` / `pause_agent_team` / `stop_team` / `release_session` / `delete_team`）操纵的 pool entry。
 
 ## 模块构成
 
@@ -10,7 +10,7 @@
 | `gate.py` | `InteractGate` / `AdmissionTicket`。run / interact 并发门禁：`admit / consume_done / close_and_drain / reset`。每个 `ActiveTeam` 自带一个 gate |
 | `dispatch.py` | `decide_run_action(...)` 纯函数 + `RunAction` / `RunActionKind`。9 路 truth table：`CREATE / NEW_TEAM_IN_SESSION / NEW_TEAM_IN_SESSION_WARM / COLD_RECOVER / WARM_RECOVER / RESUME_FROM_PAUSE / REJECT_RUNNING / REJECT_ORPHANED / REJECT_INCONSISTENT` |
 | `metadata.py` | session checkpoint 的 per-team namespace 读写：`read_team_namespace / write_team_namespace / merge_team_namespace / read_team_names_in_session`。状态结构 `state["teams"][team_name] = {spec, context, model_allocator_state, lifecycle}`，按 team 分桶 |
-| `manager.py` | `TeamRuntimeManager`：持有 `TeamRuntimePool`；`activate` 用 `decide_run_action` 派发后调用 `_apply_action` 执行副作用；`register_instance` 把已 build 的 `TeamAgent` leader 注入 pool；`pause / interact / stop_team / release_session / delete_team` 通过 pool 查 entry。`interact` 接 `InteractPayload`，走 gate 的 `admit / consume_done`，分发到 `UserInbox`（GodView / Operator）或 `HumanAgentInbox`（HumanAgent） |
+| `manager.py` | `TeamRuntimeManager`：持有 `TeamRuntimePool`；`activate` 用 `decide_run_action` 派发后调用 `_apply_action` 执行副作用；`pause / interact / stop_team / release_session / delete_team` 通过 pool 查 entry。`interact` 接 `InteractPayload`，走 gate 的 `admit / consume_done`，分发到 `UserInbox`（GodView / Operator）或 `HumanAgentInbox`（HumanAgent） |
 
 ## 行为铁律
 
@@ -24,17 +24,19 @@
 
 `Runner.run_agent_team_streaming` 的 stream 不会因为 leader DeepAgent 单轮 OuterLoop "all tasks completed, controller cleaned up" 就结束。stream 的真正终止由 team 层显式动作触发：`pause_agent_team` / `stop_agent_team` / `clean_team`（或退出时 `_close_team_interact_gate` 的 finally 收尾，但那也得 `agent.stream(...)` 自身先返回）。leader OuterLoop 跑完一轮后会 idle 等下一个唤醒事件（worker 回报、用户 interact 等），dispatcher 仍在调度，pool entry 仍 `RUNNING`。基于"OuterLoop 完成 = stream 结束 = entry 失活"做的判断都是错的——遇到 `interact_agent_team` 返回 `not_active` 时，先查 entry 是否在 pool 里，而不是怀疑 stream 已收尾。
 
-## Spec 路径 vs 实例路径：pool 入口统一（leader-only）
+## 公共入口：spec / team_name + base 分流（leader-only pool）
 
-`Runner.run_agent_team*` 同时接 `TeamAgentSpec` 和 `TeamAgent` 实例：
+`Runner.run_agent_team*` 公共表面只有这一对方法，按 keyword-only `base: bool = False` 分流：
 
-- **Spec 路径**：`manager.activate(spec, ...)` 走 dispatch truth table 拿 / 建 entry。
-- **实例路径**：`_register_team_instance_if_eligible` 调 `manager.register_instance(agent, session)` 把 leader 实例放进 pool。
+- **`base=False`（默认，agent_teams 路径）**：接 `str | TeamAgentSpec`。
+  - **Spec 路径**：`manager.activate(spec, ...)` 走 dispatch truth table 拿 / 建 entry。这是 leader 进 pool 的唯一公共路径。
+  - **str 路径**：把 `team_name` 当 shorthand，复用已被 spec 激活过的 pool entry（拿 `entry.agent.spec` 反推后再次 `activate`）。pool 里没 entry 直接 `AGENT_TEAM_CONFIG_INVALID`——首次必须传 spec。
+- **`base=True`（multi_agent 路径）**：接 `str | BaseTeam`。Facade 直接转到 instance method `_RunnerImpl._run_base_team*`（`str` 走 `resource_mgr.get_agent_team`，`BaseTeam` 直通），跟 pool / `manager.activate` 没有关系。该 instance method 是实现细节（`_` 前缀），**不在 `Runner` 上有 facade**。
 
-两条路径殊途同归——`Runner.interact_agent_team` / `register_human_agent_inbound` 通过 `_resolve_entry` 都能找到 entry。SDK 用户外面 `spec.build()` 后传 leader 给 streaming（典型 e2e 写法）跟传 spec 给 streaming 在 pool 行为上一致。
+已 build 的 `TeamAgent` 实例两个分支都不接受。`Runner.interact_agent_team` / `register_human_agent_inbound` 通过 `_resolve_entry` 找 entry，跟之前一样——只不过 entry 永远来自 `base=False` 的 spec 路径。
 
 约束：
 
-1. **Pool 只持 leader**。`_register_team_instance_if_eligible` 用 `agent.role == TeamRole.LEADER` 过滤——`inprocess_spawn` 路径下 teammate / human-agent 的 TeamAgent 实例也会路过 `Runner.run_agent_team(agent_team=teammate, ...)`，但它们不入 pool。pool key 是 `team_name`，一个 team 只有一个 leader 占位。
-2. **同实例 re-entry 是 reuse**：`register_instance` 检查 pool 已存在 entry 时，若 `entry.agent is agent` 就 reuse 并刷新 session_id；不同实例占同 team_name 抛 `RuntimeError` 防 stale state。
-3. **stream 退出 finally 关 gate**：实例路径的 finally 跟 spec 路径对齐调 `_close_team_interact_gate`，所以 run cycle 结束后 `interact_agent_team` 会得 `gate_closed` 而非 `not_active`——错误码语义跟 spec 路径一致。
+1. **Pool 只持 leader**。leader 由 spec 路径（`manager.activate` → `_apply_action` 写入）入 pool；teammate / human-agent 走 `Runner._run_team_member*` 内部入口（spawn 调用），完全不碰 pool。pool key 是 `team_name`，一个 team 只有一个 leader 占位。
+2. **`manager` 没有"已 build 实例 → pool"的快捷入口**。早期版本提供过 `register_instance` 作为这种快捷，已删除——pool 写入语义只剩一种（spec 经 `activate`），避免双入口下的 stale state 与漂移。
+3. **stream 退出 finally 关 gate**：`base=False` spec 路径的 finally 调 `_close_team_interact_gate`，run cycle 结束后 `interact_agent_team` 拿到的是 `gate_closed` 而非 `not_active`。`base=True` BaseTeam 路径与 `_run_team_member*` 因为不入 pool，不参与 gate 生命周期。

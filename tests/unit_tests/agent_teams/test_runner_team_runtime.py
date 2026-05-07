@@ -98,9 +98,10 @@ def stateful_team_db():
 
 
 class FakeTeamAgent:
-    def __init__(self, team_name: str, *, stream_label: str):
+    def __init__(self, team_name: str, *, stream_label: str, spec: TeamAgentSpec | None = None):
         self.team_name = team_name
         self.stream_label = stream_label
+        self.spec = spec
         self.resume_calls: list[str] = []
         self.pause_calls = 0
         self.cancel_calls = 0
@@ -1344,84 +1345,140 @@ class TestRunnerReleaseAutoDispatch:
 
 
 # ---------------------------------------------------------------------------
-# TeamRuntimeManager.register_instance — instance entry path joins the pool
+# Single facade with ``base`` flag: default agent_teams path,
+# ``base=True`` switches to multi_agent BaseTeam.
 # ---------------------------------------------------------------------------
+@pytest.mark.asyncio
+@pytest.mark.level0
+async def test_run_agent_team_rejects_unactivated_team_name():
+    """``str`` input must fail when no pool entry seeded the team yet."""
+    from openjiuwen.core.common.exception.errors import ValidationError
+
+    await Runner.start()
+    with pytest.raises(ValidationError, match="is not active"):
+        await Runner.run_agent_team(agent_team="never-seeded-team", inputs={"query": "x"})
 
 
 @pytest.mark.asyncio
 @pytest.mark.level0
-async def test_register_instance_creates_pool_entry_for_pre_built_agent():
-    """A pre-built TeamAgent instance must land in the pool so SDK facades resolve it.
+async def test_run_agent_team_resolves_team_name_via_pool(isolated_checkpointer, stateful_team_db):
+    """After spec activation seeds the pool, follow-up calls may pass team_name as str."""
+    await Runner.start()
+    team_name = f"reuse_{uuid.uuid4().hex}"
+    spec = TeamAgentSpec.model_construct(team_name=team_name, agents={})
+    agent = FakeTeamAgent(team_name, stream_label="team.chunk", spec=spec)
 
-    Without this the instance entry path of ``Runner.run_agent_team*`` stays
-    invisible to ``Runner.interact_agent_team`` / ``register_human_agent_inbound``
-    and they return ``not_active`` / ``False``.
-    """
-    from openjiuwen.agent_teams.runtime.manager import TeamRuntimeManager
-
-    manager = TeamRuntimeManager()
-    fake = FakeTeamAgent("team-register-1", stream_label="register_instance")
-
-    activation = await manager.register_instance(fake, "session-x")
-
-    assert activation.agent is fake
-    assert activation.session.get_session_id() == "session-x"
-    entry = await manager.pool.get("team-register-1")
-    assert entry is not None
-    assert entry.agent is fake
-    assert entry.current_session_id == "session-x"
+    with patch.object(TeamAgentSpec, "build", return_value=agent):
+        first_session = f"sess1_{uuid.uuid4().hex}"
+        first = await Runner.run_agent_team(
+            agent_team=spec,
+            inputs={"query": "first"},
+            session=first_session,
+        )
+        assert first["team_name"] == team_name
+        # FakeTeamAgent bypasses BuildTeamTool, so flip the DB-side
+        # team_exists signal manually before round 2 (see fixture docstring).
+        await stateful_team_db.team.create_team(team_name)
+        # Pool now holds an entry whose ``agent.spec`` is reachable —
+        # the str-shorthand should resolve through it without a rebuild.
+        second_session = f"sess2_{uuid.uuid4().hex}"
+        second = await Runner.run_agent_team(
+            agent_team=team_name,
+            inputs={"query": "second"},
+            session=second_session,
+        )
+        assert second["team_name"] == team_name
+        assert agent.invoke_calls == 2
 
 
 @pytest.mark.asyncio
 @pytest.mark.level0
-async def test_register_instance_reuses_pool_entry_for_same_agent():
-    """Re-registering the same agent for a new session refreshes the existing entry."""
-    from openjiuwen.agent_teams.runtime.manager import TeamRuntimeManager
+async def test_run_agent_team_rejects_team_agent_instance():
+    """``TeamAgent`` instances are no longer accepted on the public entry."""
+    from openjiuwen.core.common.exception.errors import ValidationError
 
-    manager = TeamRuntimeManager()
-    fake = FakeTeamAgent("team-register-2", stream_label="register_instance")
+    await Runner.start()
+    leader_card = AgentCard(id="leader_reject", name="leader", description="leader")
+    agent = TeamAgent(card=leader_card)
+    with pytest.raises(ValidationError, match="run_agent_team accepts"):
+        await Runner.run_agent_team(agent_team=agent, inputs={"query": "x"})
 
-    await manager.register_instance(fake, "session-a")
-    activation = await manager.register_instance(fake, "session-b")
 
-    assert activation.agent is fake
-    entry = await manager.pool.get("team-register-2")
-    assert entry is not None
-    assert entry.agent is fake
-    # Same entry object — only the session id rotated.
-    assert entry.current_session_id == "session-b"
-    # Pool still holds exactly one entry for this team_name.
-    assert await manager.pool.list_team_names() == ["team-register-2"]
+@pytest.mark.asyncio
+@pytest.mark.level0
+async def test_run_agent_team_base_true_rejects_team_agent_spec():
+    """``TeamAgentSpec`` belongs to the default path, not ``base=True``."""
+    from openjiuwen.core.common.exception.errors import ValidationError
+
+    await Runner.start()
+    spec = TeamAgentSpec.model_construct(team_name="mis_routed", agents={})
+    with pytest.raises(ValidationError, match=r"run_agent_team\(base=True\) accepts"):
+        await Runner.run_agent_team(agent_team=spec, inputs={"query": "x"}, base=True)
+
+
+@pytest.mark.asyncio
+@pytest.mark.level0
+async def test_run_agent_team_base_true_accepts_base_team_instance(isolated_checkpointer):
+    """``base=True`` + ``BaseTeam`` instance: invoke + post_run lifecycle wires correctly."""
+    from openjiuwen.core.multi_agent import BaseTeam, TeamCard, TeamConfig
+
+    class _StubTeam(BaseTeam):
+        def __init__(self) -> None:
+            super().__init__(
+                card=TeamCard(id="stub_base", name="stub_base", description="stub"),
+                config=TeamConfig(max_agents=1),
+            )
+            self.invoke_calls = 0
+
+        async def invoke(self, message: Any, session=None) -> Any:
+            self.invoke_calls += 1
+            return {"echo": message, "session_id": session.get_session_id()}
+
+        async def stream(self, message: Any, session=None) -> AsyncIterator[Any]:
+            yield await self.invoke(message, session=session)
+
+    await Runner.start()
+    team = _StubTeam()
+    session_id = f"base_team_{uuid.uuid4().hex}"
+    result = await Runner.run_agent_team(
+        agent_team=team,
+        inputs={"payload": "hello"},
+        base=True,
+        session=session_id,
+    )
+    assert team.invoke_calls == 1
+    assert result["echo"] == {"payload": "hello"}
+    assert result["session_id"] == session_id
 
 
 @pytest.mark.asyncio
 @pytest.mark.level1
-async def test_register_instance_rejects_different_agent_for_same_team_name():
-    """Distinct TeamAgent instances claiming the same team_name surface a hard error."""
-    from openjiuwen.agent_teams.runtime.manager import TeamRuntimeManager
+async def test_run_agent_team_base_true_resolves_team_id_via_resource_mgr(isolated_checkpointer):
+    """``base=True`` + ``str`` resolves through ``Runner.resource_mgr``."""
+    from openjiuwen.core.multi_agent import BaseTeam, TeamCard, TeamConfig
 
-    manager = TeamRuntimeManager()
-    fake_first = FakeTeamAgent("team-register-3", stream_label="register_instance")
-    fake_second = FakeTeamAgent("team-register-3", stream_label="register_instance")
+    class _StubTeam(BaseTeam):
+        def __init__(self) -> None:
+            super().__init__(
+                card=TeamCard(id="stub_resolve", name="stub_resolve", description="stub"),
+                config=TeamConfig(max_agents=1),
+            )
 
-    await manager.register_instance(fake_first, "session-1")
-    with pytest.raises(RuntimeError, match="pool already holds a different"):
-        await manager.register_instance(fake_second, "session-2")
-    # Existing entry stays untouched.
-    entry = await manager.pool.get("team-register-3")
-    assert entry is not None
-    assert entry.agent is fake_first
+        async def invoke(self, message: Any, session=None) -> Any:
+            return {"resolved": True, "session_id": session.get_session_id()}
 
+        async def stream(self, message: Any, session=None) -> AsyncIterator[Any]:
+            yield await self.invoke(message, session=session)
 
-@pytest.mark.asyncio
-@pytest.mark.level0
-async def test_register_instance_rejects_agent_without_team_name():
-    """``team_name`` is the pool key — empty values must fail loud."""
-    from openjiuwen.agent_teams.runtime.manager import TeamRuntimeManager
-
-    manager = TeamRuntimeManager()
-    fake = FakeTeamAgent("", stream_label="register_instance")
-
-    with pytest.raises(ValueError, match="team_name is empty"):
-        await manager.register_instance(fake, "session-x")
-    assert await manager.pool.list_team_names() == []
+    await Runner.start()
+    team = _StubTeam()
+    await Runner.resource_mgr.add_agent_team(team.card, lambda: team)
+    try:
+        result = await Runner.run_agent_team(
+            agent_team=team.card.id,
+            inputs={"x": 1},
+            base=True,
+        )
+        assert result["resolved"] is True
+    finally:
+        await Runner.resource_mgr.remove_agent_team(team_id=team.card.id)

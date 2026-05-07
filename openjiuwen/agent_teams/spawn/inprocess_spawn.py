@@ -42,7 +42,7 @@ async def inprocess_spawn(
     """
     from openjiuwen.agent_teams.agent.team_agent import TeamAgent as _TeamAgent
     from openjiuwen.agent_teams.context import set_session_id
-    from openjiuwen.core.runner.runner import Runner
+    from openjiuwen.core.runner.runner import GLOBAL_RUNNER
     from openjiuwen.core.single_agent.schema.agent_card import AgentCard
 
     spec = team_agent.spec
@@ -72,7 +72,9 @@ async def inprocess_spawn(
             set_session_id(session_id)
         team_logger.info("[inprocess] teammate {} started", member_name)
         try:
-            return await Runner.run_agent_team(agent_team=teammate, inputs=inputs, session=session_id)
+            # Spawned teammates are not leaders and never enter the pool —
+            # use the internal member entry to skip activate/dispatch.
+            return await GLOBAL_RUNNER._run_team_member(teammate, inputs, session=session_id)
         except asyncio.CancelledError:
             team_logger.info("[inprocess] teammate {} cancelled", member_name)
             raise
