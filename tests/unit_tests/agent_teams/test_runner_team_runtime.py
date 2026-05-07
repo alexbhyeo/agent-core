@@ -934,6 +934,43 @@ class TestTeamRuntimeManagerInteract:
         finally:
             await Runner.stop()
 
+    @pytest.mark.asyncio
+    @pytest.mark.level0
+    async def test_interact_runner_binds_target_team_session_context(self):
+        """Runner.interact_agent_team should bind the target session at the entrypoint."""
+        from openjiuwen.agent_teams.context import get_session_id
+        from openjiuwen.core.runner.team_runner import _global_runner
+
+        await Runner.start()
+        try:
+            manager = _global_runner()._get_team_runtime_manager()
+            team_name = "runner_context_team"
+            session_id = f"runner_context_{uuid.uuid4().hex}"
+
+            delivered: list[str] = []
+            seen_context: list[str] = []
+
+            class _Agent:
+                team_backend = None
+
+                async def deliver_input(self, content):
+                    delivered.append(content)
+                    seen_context.append(get_session_id())
+
+            await _activate_pool_entry(manager, team_name, session_id, _Agent())
+
+            result = await Runner.interact_agent_team(
+                "follow",
+                team_name=team_name,
+                session_id=session_id,
+            )
+
+            assert result.ok is True
+            assert delivered == ["follow"]
+            assert seen_context == [session_id]
+        finally:
+            await Runner.stop()
+
 
 class TestTeamRuntimeManagerStopTeam:
     """Test TeamRuntimeManager.stop_team."""
@@ -975,6 +1012,25 @@ class TestTeamRuntimeManagerStopTeam:
         assert result is False
         assert fake_agent.stop_calls == 0
         assert await manager.pool.has_active(team_name) is True
+
+    @pytest.mark.asyncio
+    @pytest.mark.level0
+    async def test_get_monitor_returns_monitor_for_matching_entry(self):
+        """get_monitor should create a monitor only for the exact team/session pair."""
+        from openjiuwen.agent_teams.runtime.manager import TeamRuntimeManager
+
+        manager = TeamRuntimeManager()
+        team_name = "monitor_team"
+        session_id = "s1"
+        fake_agent = FakeTeamAgent(team_name, stream_label="team.chunk")
+        await _activate_pool_entry(manager, team_name, session_id, fake_agent)
+
+        with patch("openjiuwen.agent_teams.runtime.manager.create_monitor", return_value="monitor") as mocked:
+            assert await manager.get_monitor(team_name=team_name, session_id=session_id) == "monitor"
+            mocked.assert_called_once_with(fake_agent)
+
+        assert await manager.get_monitor(team_name=team_name, session_id="other") is None
+        assert await manager.get_monitor(team_name="missing", session_id=session_id) is None
 
     @pytest.mark.asyncio
     @pytest.mark.level0

@@ -30,6 +30,7 @@ Plus one method:
 
 from __future__ import annotations
 
+from contextlib import contextmanager
 from typing import (
     TYPE_CHECKING,
     Any,
@@ -60,6 +61,7 @@ from openjiuwen.core.single_agent import (
 )
 
 if TYPE_CHECKING:
+    from openjiuwen.agent_teams.monitor import TeamMonitor
     from openjiuwen.agent_teams.runtime import (
         RunActionKind,
         TeamRuntimeManager,
@@ -108,6 +110,25 @@ class _TeamRunnerMixin:
 
             self._team_runtime_manager = TeamRuntimeManager()
         return self._team_runtime_manager
+
+    @staticmethod
+    @contextmanager
+    def _bind_interact_team_session(session_id: str):
+        """Bind the target team session for one interact call."""
+        from openjiuwen.agent_teams.context import (
+            get_session_id,
+            reset_session_id,
+            set_session_id,
+        )
+
+        token = None
+        if session_id and get_session_id() != session_id:
+            token = set_session_id(session_id)
+        try:
+            yield
+        finally:
+            if token is not None:
+                reset_session_id(token)
 
     # ------------------------------------------------------------------
     # public coroutines
@@ -241,11 +262,12 @@ class _TeamRunnerMixin:
 
         if team_name is None or session_id is None:
             return DeliverResult.failure("missing_target")
-        return await self._get_team_runtime_manager().interact(
-            payload,
-            team_name=team_name,
-            session_id=session_id,
-        )
+        with self._bind_interact_team_session(session_id):
+            return await self._get_team_runtime_manager().interact(
+                payload,
+                team_name=team_name,
+                session_id=session_id,
+            )
 
     async def register_human_agent_inbound(
         self,
@@ -295,6 +317,18 @@ class _TeamRunnerMixin:
         subsequent ``run_agent_team_streaming`` will cold-recover.
         """
         return await self._get_team_runtime_manager().stop_team(
+            team_name=team_name,
+            session_id=session_id,
+        )
+
+    async def get_agent_team_monitor(
+        self,
+        *,
+        team_name: str,
+        session_id: str,
+    ) -> Optional["TeamMonitor"]:
+        """Return a TeamMonitor for the active TeamAgent runtime, if present."""
+        return await self._get_team_runtime_manager().get_monitor(
             team_name=team_name,
             session_id=session_id,
         )
@@ -513,6 +547,19 @@ class _TeamRunnerClassMixin:
     ) -> bool:
         """Pause the active TeamAgent runtime for ``(team_name, session_id)``."""
         return await _global_runner().pause_agent_team(team_name=team_name, session_id=session_id)
+
+    @classmethod
+    async def get_agent_team_monitor(
+        cls,
+        *,
+        team_name: str,
+        session_id: str,
+    ):
+        """Return a TeamMonitor for the active TeamAgent runtime, if present."""
+        return await _global_runner().get_agent_team_monitor(
+            team_name=team_name,
+            session_id=session_id,
+        )
 
     @classmethod
     async def stop_agent_team(

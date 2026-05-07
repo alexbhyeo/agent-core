@@ -33,6 +33,10 @@ from openjiuwen.agent_teams.interaction import (
     UnknownHumanAgentError,
     UserInbox,
 )
+from openjiuwen.agent_teams.monitor import (
+    TeamMonitor,
+    create_monitor,
+)
 from openjiuwen.agent_teams.interaction.router import parse_interact_str
 from openjiuwen.agent_teams.runtime.dispatch import (
     RunAction,
@@ -286,6 +290,18 @@ class TeamRuntimeManager:
             )
         await self._pool.remove(team_name)
         return True
+
+    async def get_monitor(
+        self,
+        *,
+        team_name: str,
+        session_id: str,
+    ) -> Optional[TeamMonitor]:
+        """Return a TeamMonitor for the active runtime bound to ``(team_name, session_id)``."""
+        entry = await self._resolve_entry(team_name=team_name, session_id=session_id)
+        if entry is None:
+            return None
+        return create_monitor(entry.agent)
 
     async def delete_team(
         self,
@@ -581,7 +597,6 @@ class TeamRuntimeManager:
     async def _pre_run_with_inputs(session: AgentTeamSession, inputs: object) -> None:
         """Run ``session.pre_run`` only forwarding ``inputs`` when it's a dict."""
         await session.pre_run(inputs=inputs if isinstance(inputs, dict) else None)
-
 
 _REJECT_KINDS = frozenset(
     {

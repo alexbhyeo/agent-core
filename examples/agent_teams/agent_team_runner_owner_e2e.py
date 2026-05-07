@@ -13,6 +13,7 @@ from typing import Any
 
 import yaml
 
+from openjiuwen.agent_teams.paths import configure_openjiuwen_home
 from openjiuwen.agent_teams.schema.blueprint import TeamAgentSpec
 from openjiuwen.core.common.logging.log_config import (
     configure_log,
@@ -34,6 +35,8 @@ else:
 os.environ.setdefault("LLM_SSL_VERIFY", "false")
 os.environ.setdefault("IS_SENSITIVE", "false")
 
+openjiuwen_home = Path("./openjiuwen_home").resolve()
+configure_openjiuwen_home(str(openjiuwen_home))
 
 def _expand_env_vars(value: Any) -> Any:
     if isinstance(value, str):
@@ -177,14 +180,14 @@ class TeamStreamCli:
     async def _restart_stream(self, team_name: str, session_id: str, query: str) -> "StreamHandle":
         old_handle = self._stream_handle
         if old_handle is not None:
-            paused = await Runner.pause_agent_team(
+            stopped = await Runner.stop_agent_team(
                 team_name=old_handle.team_name,
                 session_id=old_handle.session_id,
             )
             print(
-                f"[system] pause old runtime before switch: "
+                f"[system] stop old runtime before switch: "
                 f"active_team={old_handle.team_name} active_session={old_handle.session_id} "
-                f"paused={paused}"
+                f"stopped={stopped}"
             )
             print(
                 f"[system] stopping old stream before switch: "

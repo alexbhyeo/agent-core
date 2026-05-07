@@ -4,7 +4,6 @@
 from __future__ import annotations
 
 import asyncio
-import contextlib
 import re
 import traceback
 from typing import (
@@ -203,7 +202,9 @@ class StreamController:
                     if len(drained) == 1:
                         combined = drained[0]
                     else:
-                        combined = "\n\n---\n\n".join(item if isinstance(item, str) else str(item) for item in drained)
+                        combined = "\n\n---\n\n".join(
+                            item if isinstance(item, str) else str(item) for item in drained
+                        )
                     await self.start_round(combined)
                 else:
                     await self._wake_mailbox_if_interrupt_cleared()
