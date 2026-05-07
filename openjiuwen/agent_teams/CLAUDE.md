@@ -160,6 +160,19 @@ Messager 是点对点 + broadcast 的统一抽象，**任何直接新建 socket 
 - **静止前置**：`release_session` / `delete_team` 在 pool 仍持有相关 entry 时报 `AGENT_TEAM_BUSY_INVALID`（ValidationError），调用方必须先 `stop_team`。
 - `Runner` 在 `_get_team_runtime_manager()` 里 lazy import 它，避免子进程 bootstrap 时拉链。
 
+#### Stream 生命周期 ≠ OuterLoop 单轮
+
+`Runner.run_agent_team_streaming` 的 stream 不会因为 leader DeepAgent 单轮 OuterLoop "all tasks completed, controller cleaned up" 就结束。stream 的真正终止由 team 层显式动作触发：`pause_agent_team` / `stop_agent_team` / `clean_team`（或 spec 路径下 `_close_team_interact_gate` 的 finally 收尾，但那也得 `agent.stream(...)` 自身先返回）。leader OuterLoop 跑完一轮后会 idle 等下一个唤醒事件（worker 回报、用户 interact 等），dispatcher 仍在调度，pool entry 仍 `RUNNING`。基于"OuterLoop 完成 = stream 结束 = entry 失活"做的判断都是错的——遇到 `interact_agent_team` 返回 `not_active` 时，先查 entry 是否在 pool 里、是否走了 spec 路径，而不是怀疑 stream 已收尾。
+
+#### Spec 路径 vs 实例路径：pool 行为不一致（已知坑）
+
+`Runner.run_agent_team_streaming` 同时接 `TeamAgentSpec` 和 `TeamAgent` 实例：
+
+- **Spec 路径**：`manager.activate(spec, ...)` 创建 pool entry，`Runner.interact_agent_team` / `register_human_agent_inbound` 都通过 `_resolve_entry` 找得到。
+- **实例路径**：`_prepare_agent_team` 直接调 `agent.stream(...)`，**不走 manager.activate，不入 pool**。后续 `Runner.interact_agent_team` 永远 `DeliverResult.failure("not_active")`，`Runner.register_human_agent_inbound` 永远返回 False。
+
+对 SDK 用户，标准用法是传 spec；如果你已经在外面 `spec.build()` 了（典型 e2e 写法），又要用 `Runner.interact_agent_team` 路由 HITT 输入，就会撞这个不一致。绕开的两种方式：(a) 不预先 `spec.build()`，把 spec 直接交给 streaming，回调用 `Runner.register_human_agent_inbound` 通过 pool 注册；(b) 直接调 `leader.team_backend.register_human_agent_inbound(...)` + `HumanAgentInbox.send(...)` 走 backend 层（绕过 pool / Runner facade）。两条路径要让行为对齐需要 framework 层支持"把已有实例注册为 pool entry"，目前没有这个 API。
+
 ### team_workspace/ — 共享工作空间
 
 跨成员的文件共享区，支持锁 / 版本 / 冲突策略。独立于 worktree：**worktree 管代码隔离，workspace 管产物协同**。

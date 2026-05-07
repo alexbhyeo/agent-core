@@ -175,9 +175,18 @@ class _TeamRunnerMixin:
             team_runtime = getattr(agent_team_instance, "runtime", None)
             if team_runtime is not None:
                 team_runtime.bind_team_session(agent_team_session)
+            registered_team_name = await self._register_team_instance_if_eligible(
+                agent_team_instance,
+                agent_team_session,
+            )
             try:
                 return await agent_team_instance.invoke(inputs, session=agent_team_session)
             finally:
+                if registered_team_name is not None:
+                    await self._close_team_interact_gate(
+                        team_name=registered_team_name,
+                        session_id=agent_team_session.get_session_id(),
+                    )
                 if team_runtime is not None:
                     team_runtime.unbind_team_session(agent_team_session.get_session_id())
                 await agent_team_session.post_run()
@@ -232,10 +241,19 @@ class _TeamRunnerMixin:
             team_runtime = getattr(agent_team_instance, "runtime", None)
             if team_runtime is not None:
                 team_runtime.bind_team_session(agent_team_session)
+            registered_team_name = await self._register_team_instance_if_eligible(
+                agent_team_instance,
+                agent_team_session,
+            )
             try:
                 async for chunk in agent_team_instance.stream(inputs, session=agent_team_session):
                     yield chunk
             finally:
+                if registered_team_name is not None:
+                    await self._close_team_interact_gate(
+                        team_name=registered_team_name,
+                        session_id=agent_team_session.get_session_id(),
+                    )
                 if team_runtime is not None:
                     team_runtime.unbind_team_session(agent_team_session.get_session_id())
                 await agent_team_session.post_run()
@@ -411,6 +429,48 @@ class _TeamRunnerMixin:
         if isinstance(session, str):
             return create_agent_team_session(session_id=session, team_id=team_id)
         return create_agent_team_session(team_id=team_id)
+
+    async def _register_team_instance_if_eligible(
+        self,
+        agent_team_instance: Any,
+        agent_team_session: AgentTeamSession,
+    ) -> Optional[str]:
+        """Register a pre-built ``TeamAgent`` leader instance into the runtime pool.
+
+        Mirrors what the spec entry path does via ``manager.activate``: lets
+        ``Runner.interact_agent_team`` / ``register_human_agent_inbound``
+        resolve through ``_resolve_entry`` whether the caller passed a
+        ``TeamAgentSpec`` or a pre-built ``TeamAgent``. Skipped silently for:
+
+        * Non-``TeamAgent`` inputs (other ``BaseTeam`` / ``BaseAgent``
+          flavors).
+        * ``TeamAgent`` instances that are not the leader role: teammates
+          and human-agents enter ``Runner.run_agent_team`` via
+          ``inprocess_spawn`` for their own member loop, but the pool
+          entry must only ever hold the **leader** of a team — pool keys
+          on ``team_name``, and a team has exactly one leader. Letting a
+          teammate clobber or collide with the leader entry breaks
+          ``Runner.interact_agent_team`` and ``register_human_agent_inbound``.
+
+        Returns the registered ``team_name`` (so the caller can close the
+        gate in finally) or ``None`` when the instance was not eligible.
+        """
+        try:
+            from openjiuwen.agent_teams.agent.team_agent import TeamAgent
+            from openjiuwen.agent_teams.schema.team import TeamRole
+        except ImportError:
+            return None
+        if not isinstance(agent_team_instance, TeamAgent):
+            return None
+        if agent_team_instance.role != TeamRole.LEADER:
+            return None
+        if not agent_team_instance.team_name:
+            return None
+        await self._get_team_runtime_manager().register_instance(
+            agent_team_instance,
+            agent_team_session,
+        )
+        return agent_team_instance.team_name
 
     async def _close_team_interact_gate(
         self,
