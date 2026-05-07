@@ -117,53 +117,6 @@ async def _wrap_stream(
         sink.flush()
 
 
-async def _consume(
-    spec: TeamAgentSpec,
-    session_id: str,
-    inputs: dict[str, Any],
-    handle: StreamHandle,
-    console: Console,
-    on_runtime_ready: OnRuntimeReady | None,
-    show_reasoning: bool,
-) -> None:
-    """Drive ``run_agent_team_streaming`` through the harness renderer."""
-    source = Runner.run_agent_team_streaming(
-        agent_team=spec,
-        inputs=inputs,
-        session=session_id,
-    )
-    filtered = _wrap_stream(source, handle, on_runtime_ready, console, show_reasoning)
-    console.print(
-        f"[dim cyan][{handle.team_name}] stream started (session={handle.session_id})[/dim cyan]",
-    )
-    try:
-        # Reasoning is rendered by `_wrap_stream` with a stable 🤔 prefix,
-        # so we tell the harness renderer to skip it (show_reasoning=False).
-        await render_stream(filtered, console, show_reasoning=False)
-    except asyncio.CancelledError:
-        if not handle.cancelled:
-            team_logger.info(
-                "[cli.stream] cancelled team={} session={}",
-                handle.team_name,
-                handle.session_id,
-            )
-        if not handle.runtime_ready.done():
-            handle.runtime_ready.cancel()
-        raise
-    except Exception as exc:
-        if not handle.runtime_ready.done():
-            handle.runtime_ready.set_exception(exc)
-        team_logger.exception(
-            "[cli.stream] failed team={} session={}: {}",
-            handle.team_name,
-            handle.session_id,
-            exc,
-        )
-        console.print(
-            f"[red]\\[{handle.team_name}] stream failed: {rich_escape(str(exc))}[/red]",
-        )
-
-
 def spawn_stream(
     *,
     spec: TeamAgentSpec,
@@ -201,17 +154,46 @@ def spawn_stream(
         runtime_ready=runtime_ready,
         task=asyncio.create_task(asyncio.sleep(0)),
     )
-    handle.task = asyncio.create_task(
-        _consume(
-            spec=spec,
-            session_id=session_id,
+
+    async def _consume() -> None:
+        """Drive ``run_agent_team_streaming`` through the harness renderer."""
+        source = Runner.run_agent_team_streaming(
+            agent_team=spec,
             inputs=inputs,
-            handle=handle,
-            console=console,
-            on_runtime_ready=on_runtime_ready,
-            show_reasoning=show_reasoning,
-        ),
-    )
+            session=session_id,
+        )
+        filtered = _wrap_stream(source, handle, on_runtime_ready, console, show_reasoning)
+        console.print(
+            f"[dim cyan][{handle.team_name}] stream started (session={handle.session_id})[/dim cyan]",
+        )
+        try:
+            # Reasoning is rendered by `_wrap_stream` with a stable 🤔 prefix,
+            # so we tell the harness renderer to skip it (show_reasoning=False).
+            await render_stream(filtered, console, show_reasoning=False)
+        except asyncio.CancelledError:
+            if not handle.cancelled:
+                team_logger.info(
+                    "[cli.stream] cancelled team={} session={}",
+                    handle.team_name,
+                    handle.session_id,
+                )
+            if not handle.runtime_ready.done():
+                handle.runtime_ready.cancel()
+            raise
+        except Exception as exc:
+            if not handle.runtime_ready.done():
+                handle.runtime_ready.set_exception(exc)
+            team_logger.exception(
+                "[cli.stream] failed team={} session={}: {}",
+                handle.team_name,
+                handle.session_id,
+                exc,
+            )
+            console.print(
+                f"[red]\\[{handle.team_name}] stream failed: {rich_escape(str(exc))}[/red]",
+            )
+
+    handle.task = asyncio.create_task(_consume())
     return handle
 
 

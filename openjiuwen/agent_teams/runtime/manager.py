@@ -545,14 +545,16 @@ class TeamRuntimeManager:
             return TeamRuntimeActivation(agent=agent, session=team_session, action=action)
 
         if kind is RunActionKind.RESUME_FROM_PAUSE:
-            assert pool_entry is not None
+            if pool_entry is None:
+                raise RuntimeError(f"{kind.value} requires an active pool entry")
             await self._pre_run_with_inputs(team_session, inputs)
             pool_entry.state = RuntimeState.RUNNING
             await pool_entry.interact_gate.reset()
             return TeamRuntimeActivation(agent=pool_entry.agent, session=team_session, action=action)
 
         if kind is RunActionKind.WARM_RECOVER:
-            assert pool_entry is not None
+            if pool_entry is None:
+                raise RuntimeError(f"{kind.value} requires an active pool entry")
             await recover_for_existing_session(pool_entry.agent, team_session)
             pool_entry.current_session_id = session_id
             pool_entry.state = RuntimeState.RUNNING
@@ -560,7 +562,8 @@ class TeamRuntimeManager:
             return TeamRuntimeActivation(agent=pool_entry.agent, session=team_session, action=action)
 
         if kind is RunActionKind.NEW_TEAM_IN_SESSION_WARM:
-            assert pool_entry is not None
+            if pool_entry is None:
+                raise RuntimeError(f"{kind.value} requires an active pool entry")
             await self._pre_run_with_inputs(team_session, inputs)
             await resume_persistent_team(pool_entry.agent, team_session)
             pool_entry.current_session_id = session_id

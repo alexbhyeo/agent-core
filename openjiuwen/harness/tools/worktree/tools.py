@@ -37,9 +37,6 @@ class _WorktreeToolBase(Tool):
     async def stream(self, inputs: Dict[str, Any], **kwargs: Any) -> AsyncIterator[Any]:
         """Streaming is not supported for worktree tools."""
         raise NotImplementedError("Worktree tools do not support streaming")
-        # Make this an async-generator-shaped function (unreachable).
-        if False:  # pragma: no cover
-            yield None
 
 
 def _generate_random_slug() -> str:

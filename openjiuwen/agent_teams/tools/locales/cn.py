@@ -38,8 +38,15 @@ STRINGS: dict[str, str] = {
         "**不接受** model_name 与 prompt（由框架内置模板托管），传入这两个字段会报错。"
         "选用 'human_agent' 需要 spec.enable_hitt=True 且当前 build_team 实例未禁用 HITT"
     ),
-    "spawn_member.prompt": "成员启动时收到的首条指令。用于说明首次启动后的优先关注点、任务选择原则、约束或协作要求；应提供明确方向，不要只写空泛的启动语句，也不要重复通用工作流程。当 role_type='human_agent' 时禁止传入",
-    "spawn_member.model_name": "可选。建议该成员使用的模型名称（如 gpt-4、claude-sonnet-4 等）；未指定时由系统自动选择合适的模型。当 role_type='human_agent' 时禁止传入",
+    "spawn_member.prompt": (
+        "成员启动时收到的首条指令。用于说明首次启动后的优先关注点、任务选择原则、约束或协作要求；"
+        "应提供明确方向，不要只写空泛的启动语句，也不要重复通用工作流程。"
+        "当 role_type='human_agent' 时禁止传入"
+    ),
+    "spawn_member.model_name": (
+        "可选。建议该成员使用的模型名称（如 gpt-4、claude-sonnet-4 等）；"
+        "未指定时由系统自动选择合适的模型。当 role_type='human_agent' 时禁止传入"
+    ),
     # ===== shutdown_member =====================================================
     # shutdown_member._desc lives in descs/cn/shutdown_member.md
     "shutdown_member.member_name": "要请求关闭的成员 member_name（语义化 slug，不是显示名）",

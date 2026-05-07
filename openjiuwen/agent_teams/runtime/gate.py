@@ -30,9 +30,11 @@ class AdmissionTicket:
 
     The caller must pass it back to ``consume_done`` after the agent
     has actually consumed the payload, so the gate can drain correctly.
+    Tickets are only constructed inside ``InteractGate.admit``; external
+    callers should treat the ``gate`` field as opaque.
     """
 
-    _gate: "InteractGate"
+    gate: "InteractGate"
 
 
 class InteractGate:
@@ -66,14 +68,14 @@ class InteractGate:
                 return None
             self._inflight += 1
             self._drained.clear()
-            return AdmissionTicket(_gate=self)
+            return AdmissionTicket(gate=self)
 
     async def consume_done(self, ticket: AdmissionTicket) -> None:
         """Mark the payload identified by ``ticket`` as consumed.
 
         Tickets from a different gate are silently ignored.
         """
-        if ticket._gate is not self:
+        if ticket.gate is not self:
             return
         async with self._lock:
             if self._inflight <= 0:

@@ -122,7 +122,8 @@ class CoordinationKernel:
                     member_name,
                     type(session).__name__,
                 )
-        if session and blueprint and blueprint.spec and host.role == TeamRole.LEADER:
+        has_leader_blueprint = blueprint is not None and blueprint.spec is not None
+        if session and has_leader_blueprint and host.role == TeamRole.LEADER:
             rm.persist_leader_config(session)
         if infra.team_backend:
             await infra.team_backend.db.initialize()

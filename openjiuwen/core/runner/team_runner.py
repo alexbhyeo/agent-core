@@ -6,26 +6,24 @@
 The public ``Runner`` facade exposes a single team entry pair:
 
 * ``Runner.run_agent_team`` / ``run_agent_team_streaming`` — accepts
-  ``str | TeamAgentSpec | BaseTeam`` and routes by the keyword-only
-  ``base: bool = False`` flag:
+  ``str | TeamAgentSpec | BaseTeam | BaseAgent`` and routes by two
+  keyword-only flags:
 
-  - ``base=False`` (default) → agent_teams TeamAgent path: spec or a
-    ``team_name`` str resolved against an already-active pool entry.
+  - ``base=False, member=False`` (default) → agent_teams TeamAgent
+    path: spec or a ``team_name`` str resolved against an
+    already-active pool entry.
   - ``base=True`` → multi_agent ``BaseTeam`` path: a ``BaseTeam``
     instance or a ``team_id`` str resolved through ``resource_mgr``.
+  - ``member=True`` → spawn-only path: an already-built teammate /
+    human-agent ``BaseAgent`` instance produced by ``inprocess_spawn``
+    / ``child_process``. Pool entry is NOT created; the leader-only
+    pool invariant is preserved.
 
 Internally the facade still delegates to two physically separated
-instance methods on ``_RunnerImpl``: ``run_agent_team*`` (TeamAgentSpec
-+ activate / pool) and ``_run_base_team*`` (BaseTeam + resource_mgr).
-Each instance method is type-tight and single-purpose; the routing
+instance methods on ``_RunnerImpl``: ``run_agent_team*`` (handles both
+the TeamAgentSpec + activate/pool path and the ``member=True`` spawn
+path) and ``_run_base_team*`` (BaseTeam + resource_mgr). The routing
 ``base`` flag lives only on the facade so SDK users see one method.
-
-Plus one internal helper used by spawn (not exposed on the facade):
-
-* ``_run_team_member`` / ``_run_team_member_streaming`` — runs an
-  already-built teammate / human-agent ``TeamAgent`` instance produced
-  by ``inprocess_spawn`` / ``child_process``. Pool entry is NOT
-  created; the leader-only pool invariant is preserved.
 
 The mixin reads two attributes initialised by the host class:
 
@@ -149,9 +147,10 @@ class _TeamRunnerMixin:
     # ------------------------------------------------------------------
     async def run_agent_team(
         self,
-        agent_team: Union[str, "TeamAgentSpec"],
+        agent_team: Union[str, "TeamAgentSpec", BaseAgent],
         inputs: Any,
         *,
+        member: bool = False,
         session: Optional[Union[str, AgentTeamSession]] = None,
         context: Optional[ModelContext] = None,
         envs: Optional[dict[str, Any]] = None,
@@ -164,10 +163,17 @@ class _TeamRunnerMixin:
         - ``str`` (team_name): re-uses an already-active pool entry —
           the first call must pass a spec to seed the pool.
 
-        Already-built ``TeamAgent`` instances are NOT accepted. For the
-        multi_agent ``BaseTeam`` path call the ``Runner.run_agent_team``
-        facade with ``base=True``.
+        For the multi_agent ``BaseTeam`` path call the
+        ``Runner.run_agent_team`` facade with ``base=True``.
+
+        Pass ``member=True`` when ``agent_team`` is an already-built
+        teammate / human-agent ``BaseAgent`` instance produced by
+        ``inprocess_spawn`` / ``child_process``: the call skips
+        activate/dispatch and the leader-only pool invariant
+        (see ``runtime/CLAUDE.md``) is preserved.
         """
+        if member:
+            return await self._run_team_member(agent_team, inputs, session=session)
         spec = await self._resolve_team_agent_spec(agent_team)
         with self._root_task_group_scope():
             activation = await self._get_team_runtime_manager().activate(spec, session, inputs)
@@ -192,9 +198,10 @@ class _TeamRunnerMixin:
 
     async def run_agent_team_streaming(
         self,
-        agent_team: Union[str, "TeamAgentSpec"],
+        agent_team: Union[str, "TeamAgentSpec", BaseAgent],
         inputs: Any,
         *,
+        member: bool = False,
         session: Optional[Union[str, AgentTeamSession]] = None,
         context: Optional[ModelContext] = None,
         stream_modes: Optional[list[BaseStreamMode]] = None,
@@ -202,8 +209,13 @@ class _TeamRunnerMixin:
     ) -> AsyncIterator[Any]:
         """Stream-run an agent_teams TeamAgent identified by spec or team_name.
 
-        Same input contract as :meth:`run_agent_team`.
+        Same input contract as :meth:`run_agent_team`. Pass ``member=True``
+        for the spawned-teammate path (``agent_team`` is a ``BaseAgent``).
         """
+        if member:
+            async for chunk in self._run_team_member_streaming(agent_team, inputs, session=session):
+                yield chunk
+            return
         spec = await self._resolve_team_agent_spec(agent_team)
         with self._root_task_group_scope():
             activation = await self._get_team_runtime_manager().activate(spec, session, inputs)
@@ -626,19 +638,23 @@ class _TeamRunnerClassMixin:
     @classmethod
     async def run_agent_team(
         cls,
-        agent_team: Union[str, "TeamAgentSpec", BaseTeam],
+        agent_team: Union[str, "TeamAgentSpec", BaseTeam, BaseAgent],
         inputs: Any,
         *,
         base: bool = False,
+        member: bool = False,
         session: Optional[Union[str, AgentTeamSession]] = None,
         context: Optional[ModelContext] = None,
         envs: Optional[dict[str, Any]] = None,
     ) -> Any:
         """Run a team. Default routes to the agent_teams TeamAgent path
         (``str | TeamAgentSpec``). Pass ``base=True`` to run a multi_agent
-        ``BaseTeam`` (``str | BaseTeam``).
+        ``BaseTeam`` (``str | BaseTeam``). Pass ``member=True`` to run an
+        already-built teammate / human-agent ``BaseAgent`` instance
+        (spawn-only entry; bypasses pool / activate).
         """
         if base:
+            # pylint: disable=protected-access — designated internal facade hook, see module docstring.
             return await _global_runner()._run_base_team(
                 base_team=agent_team,
                 inputs=inputs,
@@ -649,6 +665,7 @@ class _TeamRunnerClassMixin:
         return await _global_runner().run_agent_team(
             agent_team=agent_team,
             inputs=inputs,
+            member=member,
             session=session,
             context=context,
             envs=envs,
@@ -657,10 +674,11 @@ class _TeamRunnerClassMixin:
     @classmethod
     async def run_agent_team_streaming(
         cls,
-        agent_team: Union[str, "TeamAgentSpec", BaseTeam],
+        agent_team: Union[str, "TeamAgentSpec", BaseTeam, BaseAgent],
         inputs: Any,
         *,
         base: bool = False,
+        member: bool = False,
         session: Optional[Union[str, AgentTeamSession]] = None,
         context: Optional[ModelContext] = None,
         stream_modes: Optional[list[BaseStreamMode]] = None,
@@ -668,9 +686,12 @@ class _TeamRunnerClassMixin:
     ) -> AsyncIterator[Any]:
         """Stream-run a team. ``base=True`` switches to the multi_agent
         ``BaseTeam`` path (``str | BaseTeam``); default goes through the
-        agent_teams TeamAgent path (``str | TeamAgentSpec``).
+        agent_teams TeamAgent path (``str | TeamAgentSpec``). Pass
+        ``member=True`` to stream an already-built teammate / human-agent
+        ``BaseAgent`` (spawn-only entry; bypasses pool / activate).
         """
         if base:
+            # pylint: disable=protected-access — designated internal facade hook, see module docstring.
             async for chunk in _global_runner()._run_base_team_streaming(
                 base_team=agent_team,
                 inputs=inputs,
@@ -684,6 +705,7 @@ class _TeamRunnerClassMixin:
         async for chunk in _global_runner().run_agent_team_streaming(
             agent_team=agent_team,
             inputs=inputs,
+            member=member,
             session=session,
             context=context,
             stream_modes=stream_modes,

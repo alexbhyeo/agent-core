@@ -26,17 +26,18 @@
 
 ## 公共入口：spec / team_name + base 分流（leader-only pool）
 
-`Runner.run_agent_team*` 公共表面只有这一对方法，按 keyword-only `base: bool = False` 分流：
+`Runner.run_agent_team*` 公共表面只有这一对方法，按 keyword-only flag 分流（互斥）：
 
-- **`base=False`（默认，agent_teams 路径）**：接 `str | TeamAgentSpec`。
+- **`base=False, member=False`（默认，agent_teams 路径）**：接 `str | TeamAgentSpec`。
   - **Spec 路径**：`manager.activate(spec, ...)` 走 dispatch truth table 拿 / 建 entry。这是 leader 进 pool 的唯一公共路径。
   - **str 路径**：把 `team_name` 当 shorthand，复用已被 spec 激活过的 pool entry（拿 `entry.agent.spec` 反推后再次 `activate`）。pool 里没 entry 直接 `AGENT_TEAM_CONFIG_INVALID`——首次必须传 spec。
 - **`base=True`（multi_agent 路径）**：接 `str | BaseTeam`。Facade 直接转到 instance method `_RunnerImpl._run_base_team*`（`str` 走 `resource_mgr.get_agent_team`，`BaseTeam` 直通），跟 pool / `manager.activate` 没有关系。该 instance method 是实现细节（`_` 前缀），**不在 `Runner` 上有 facade**。
+- **`member=True`（spawn 路径）**：接已构建的 `BaseAgent` 实例（teammate / human-agent）。跳过 activate/dispatch，**不入 pool**，直接 `agent.invoke` / `agent.stream`，专供 `inprocess_spawn` / `child_process` 使用。
 
-已 build 的 `TeamAgent` 实例两个分支都不接受。`Runner.interact_agent_team` / `register_human_agent_inbound` 通过 `_resolve_entry` 找 entry，跟之前一样——只不过 entry 永远来自 `base=False` 的 spec 路径。
+`Runner.interact_agent_team` / `register_human_agent_inbound` 通过 `_resolve_entry` 找 entry，entry 永远来自 `base=False, member=False` 的 spec 路径。
 
 约束：
 
-1. **Pool 只持 leader**。leader 由 spec 路径（`manager.activate` → `_apply_action` 写入）入 pool；teammate / human-agent 走 `Runner._run_team_member*` 内部入口（spawn 调用），完全不碰 pool。pool key 是 `team_name`，一个 team 只有一个 leader 占位。
+1. **Pool 只持 leader**。leader 由 spec 路径（`manager.activate` → `_apply_action` 写入）入 pool；teammate / human-agent 走 `Runner.run_agent_team*(member=True)` 入口（spawn 调用），完全不碰 pool。pool key 是 `team_name`，一个 team 只有一个 leader 占位。
 2. **`manager` 没有"已 build 实例 → pool"的快捷入口**。早期版本提供过 `register_instance` 作为这种快捷，已删除——pool 写入语义只剩一种（spec 经 `activate`），避免双入口下的 stale state 与漂移。
-3. **stream 退出 finally 关 gate**：`base=False` spec 路径的 finally 调 `_close_team_interact_gate`，run cycle 结束后 `interact_agent_team` 拿到的是 `gate_closed` 而非 `not_active`。`base=True` BaseTeam 路径与 `_run_team_member*` 因为不入 pool，不参与 gate 生命周期。
+3. **stream 退出 finally 关 gate**：默认 spec 路径的 finally 调 `_close_team_interact_gate`，run cycle 结束后 `interact_agent_team` 拿到的是 `gate_closed` 而非 `not_active`。`base=True` BaseTeam 路径与 `member=True` spawn 路径因为不入 pool，不参与 gate 生命周期。

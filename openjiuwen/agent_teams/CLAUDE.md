@@ -151,7 +151,7 @@ Messager 是点对点 + broadcast 的统一抽象，**任何直接新建 socket 
 
 ### runtime/ — TeamAgent 对象池 + 派发 + 并发门禁
 
-`TeamRuntimePool` + `TeamRuntimeManager` + 9 路 dispatch truth table + `InteractGate`，是 `Runner.run_agent_team*` / `interact_agent_team` / `register_human_agent_inbound` / `pause_agent_team` / `stop_team` / `release_session` / `delete_team` 这一组 SDK facade 的实现层。`Runner.run_agent_team*` 公共入口收紧到 `str | TeamAgentSpec`：spec 走 `manager.activate`（dispatch 决策 + pool 写入），str 是 `team_name`、复用已激活的 pool entry。spawn 出来的 teammate / human-agent 实例走 `Runner._run_team_member*` 内部入口、不入 pool。
+`TeamRuntimePool` + `TeamRuntimeManager` + 9 路 dispatch truth table + `InteractGate`，是 `Runner.run_agent_team*` / `interact_agent_team` / `register_human_agent_inbound` / `pause_agent_team` / `stop_team` / `release_session` / `delete_team` 这一组 SDK facade 的实现层。`Runner.run_agent_team*` 公共入口接 `str | TeamAgentSpec`（默认）：spec 走 `manager.activate`（dispatch 决策 + pool 写入），str 是 `team_name`、复用已激活的 pool entry。spawn 出来的 teammate / human-agent 实例走 `Runner.run_agent_team*(member=True)` 入口、跳过 activate/dispatch、不入 pool。
 
 详见 [`runtime/CLAUDE.md`](runtime/CLAUDE.md)。
 

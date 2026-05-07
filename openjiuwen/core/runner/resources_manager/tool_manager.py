@@ -132,7 +132,7 @@ class ToolMgr:
             except Exception as e:
                 raise build_error(
                     StatusCode.RESOURCE_MCP_SERVER_ADD_ERROR, cause=e, server_config=server_config, reason=str(e)
-                )
+                ) from e
 
     @staticmethod
     def _create_client(config: McpServerConfig) -> McpClient:
