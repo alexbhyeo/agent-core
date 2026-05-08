@@ -364,7 +364,7 @@ class LongTermMemory(metaclass=Singleton):
                 scope_id=scope_id
             )
             return False
-        scope_user_data = await self.scope_user_mapping_manager.get_by_scope_id(scope_id=scope_id)
+        scope_user_data = await self.scope_user_mapping_manager.get_by_scope_id(scope_id=scope_id) or []
         user_ids = [scope_user["user_id"] for scope_user in scope_user_data]
         # Use write_manager to delete all memories associated with the scope
         semantic_store = await self._create_semantic_store_with_embedding(scope_id)
