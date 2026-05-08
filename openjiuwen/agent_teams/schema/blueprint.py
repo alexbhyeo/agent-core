@@ -27,7 +27,7 @@ from openjiuwen.agent_teams.constants import (
     RESERVED_MEMBER_NAMES,
 )
 from openjiuwen.agent_teams.i18n import t
-from openjiuwen.agent_teams.models.pool import ModelPoolEntry
+from openjiuwen.agent_teams.models.pool import ModelPoolEntry, ModelRouterConfig
 from openjiuwen.agent_teams.schema.deep_agent_spec import DeepAgentSpec
 from openjiuwen.agent_teams.schema.team import (
     TeamLifecycle,
@@ -135,12 +135,15 @@ class LeaderSpec(BaseModel):
     persona: str = Field(default_factory=lambda: t("blueprint.default_persona"))
     model_name: Optional[str] = None
     """Optional pool model_name to allocate from when ``TeamSpec.model_pool``
-    is configured with ``by_model_name`` strategy.
+    is configured with ``by_model_name`` or ``router`` strategy.
 
     Forwarded to ``ModelAllocator.allocate`` at ``build()`` time so the
-    leader draws an endpoint from the named group. Ignored by the
-    ``round_robin`` strategy (which always allocates regardless of name).
-    ``None`` (default) means the leader uses its per-agent model.
+    leader draws an endpoint from the named group (``by_model_name``) or
+    the named router entry (``router``). Ignored by the ``round_robin``
+    strategy (which always allocates regardless of name). ``None``
+    (default) means the leader uses its per-agent model — except under
+    ``router``, where it falls back to the router's first declared
+    model_name.
     """
 
 
@@ -170,13 +173,33 @@ class TeamAgentSpec(BaseModel):
     in ``agents`` and behavior is unchanged. Propagated to ``TeamSpec``
     at ``build()`` time so allocators reachable from runtime context
     see the same pool.
+
+    Mutually exclusive with ``model_router``: configure one or the other,
+    never both.
     """
-    model_pool_strategy: Literal["round_robin", "by_model_name"] = "round_robin"
+    model_router: Optional[ModelRouterConfig] = None
+    """Optional single-endpoint router configuration.
+
+    Convenience input for backends that serve many model names through
+    one ``(api_key, api_base_url, api_provider)`` triple (OpenRouter,
+    LiteLLM proxy, ...). At ``build()`` time the router is expanded into
+    ``TeamSpec.model_pool`` (one entry per declared name) and
+    ``model_pool_strategy`` is set to ``"router"``, so all downstream
+    machinery (``resolve_member_model``, ``inherit_pool_ids``,
+    ``update_model_pool``) keeps working against the flat pool view.
+
+    Mutually exclusive with ``model_pool``. The first declared model
+    name acts as the team's default — ``RouterAllocator.allocate()``
+    with no hint returns it, so the leader can run without an explicit
+    ``leader.model_name``.
+    """
+    model_pool_strategy: Literal["round_robin", "by_model_name", "router"] = "round_robin"
     """Allocation strategy applied to ``model_pool``.
 
     Mirrors ``TeamSpec.model_pool_strategy`` and propagates to it at
     ``build()`` time. See ``TeamSpec.model_pool_strategy`` for the
-    semantics of each option.
+    semantics of each option. When ``model_router`` is set, ``build()``
+    forces this to ``"router"`` regardless of the configured value.
     """
     team_mode: Literal["default", "predefined", "hybrid"] | None = None
     """Team operating mode.
@@ -251,6 +274,22 @@ class TeamAgentSpec(BaseModel):
     """
 
     @model_validator(mode="after")
+    def _validate_pool_router_exclusive(self) -> "TeamAgentSpec":
+        """Reject configs that set both ``model_pool`` and ``model_router``.
+
+        The two fields describe overlapping concerns — a flat list of
+        endpoints versus a router-shaped declaration that expands into
+        the same kind of list. Allowing both leaves the strategy and
+        the materialized pool ambiguous, so we surface the conflict
+        early instead of silently picking one.
+        """
+        if self.model_router is not None and self.model_pool:
+            raise ValueError(
+                "model_pool and model_router are mutually exclusive; configure one or the other",
+            )
+        return self
+
+    @model_validator(mode="after")
     def _default_transport_for_spawn_mode(self) -> "TeamAgentSpec":
         """Fill an in-process transport default when spawn_mode='inprocess'.
 
@@ -305,13 +344,24 @@ class TeamAgentSpec(BaseModel):
             if role_spec.language is None:
                 role_spec.language = resolved_language
 
+        # ``model_router`` is a convenience input that expands into the
+        # flat ``model_pool`` view at build time. Doing the expansion here
+        # keeps every downstream component (resolver, pool refresh, DB
+        # ref lookup) on a single code path — they only ever see entries.
+        if self.model_router is not None:
+            team_pool = self.model_router.to_pool_entries()
+            team_strategy: Literal["round_robin", "by_model_name", "router"] = "router"
+        else:
+            team_pool = list(self.model_pool)
+            team_strategy = self.model_pool_strategy
+
         team_spec = TeamSpec(
             team_name=self.team_name,
             display_name=self.team_name,
             leader_member_name=self.leader.member_name,
             language=resolved_language,
-            model_pool=list(self.model_pool),
-            model_pool_strategy=self.model_pool_strategy,
+            model_pool=team_pool,
+            model_pool_strategy=team_strategy,
         )
 
         messager_config = self.transport.build() if self.transport else None
@@ -335,7 +385,7 @@ class TeamAgentSpec(BaseModel):
 
         model_allocator = build_model_allocator(self, team_spec)
         leader_allocation = (
-            model_allocator.allocate(model_name=self.leader.model_name) if team_spec.model_pool else None
+            model_allocator.allocate(model_name=self.leader.model_name) if model_allocator is not None else None
         )
         leader_member_model = leader_allocation.to_team_model_config() if leader_allocation else None
         self._validate_leader_model_resolved(leader_agent, leader_member_model, team_spec)
@@ -375,6 +425,11 @@ class TeamAgentSpec(BaseModel):
         and the failure surfaces only at the first LLM invocation as
         a confusing "model_client_config is required" error.
 
+        ``RouterAllocator`` always falls back to the first declared
+        ``model_name`` when no hint is given, so this path only trips
+        when ``leader.model_name`` is set to a name that isn't in the
+        router's list (or, under ``by_model_name``, in any pool group).
+
         Surface it at ``build()`` time with a clear remediation list
         so the inconsistency is caught while the user is still looking
         at the spec.
@@ -391,18 +446,28 @@ class TeamAgentSpec(BaseModel):
         strategy = team_spec.model_pool_strategy
         leader_name = self.leader.model_name
         if leader_name and leader_name not in available_names:
-            cause = f"leader.model_name='{leader_name}' is not present in the pool (available names: {available_names})"
+            scope = "router" if strategy == "router" else "pool"
+            cause = (
+                f"leader.model_name='{leader_name}' is not present in the {scope} (available names: {available_names})"
+            )
         elif strategy == "by_model_name":
             cause = "model_pool_strategy='by_model_name' requires leader.model_name to be set to one of the pool names"
         else:
             cause = "the allocator did not produce a model for the leader"
 
-        reason = (
-            f"{cause}; resolve by either: "
-            f"(1) set leader.model_name to one of {available_names}, "
-            f"(2) provide an explicit agents['leader'].model in the spec, "
-            f"(3) switch model_pool_strategy to 'round_robin' (always allocates)"
-        )
+        if strategy == "router":
+            tail = (
+                f"(1) leave leader.model_name unset to fall back on the router's first declared name, "
+                f"(2) set leader.model_name to one of {available_names}, "
+                f"(3) provide an explicit agents['leader'].model in the spec"
+            )
+        else:
+            tail = (
+                f"(1) set leader.model_name to one of {available_names}, "
+                f"(2) provide an explicit agents['leader'].model in the spec, "
+                f"(3) switch model_pool_strategy to 'round_robin' (always allocates)"
+            )
+        reason = f"{cause}; resolve by either: {tail}"
         raise_error(StatusCode.AGENT_TEAM_CONFIG_INVALID, reason=reason)
 
     def _validate_reserved_names(self) -> None:

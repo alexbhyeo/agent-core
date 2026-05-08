@@ -23,11 +23,12 @@ against rotated credentials.
 
 from __future__ import annotations
 
+import copy
 import json
 import uuid
 from typing import Optional
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from openjiuwen.agent_teams.schema.deep_agent_spec import TeamModelConfig
 
@@ -127,6 +128,94 @@ class ModelPoolEntry(BaseModel):
         )
 
 
+class ModelRouterConfig(BaseModel):
+    """Single-endpoint router configuration shared across many model names.
+
+    Use this when a router-style backend (OpenRouter, LiteLLM proxy, an
+    in-house gateway, ...) serves many model names through one URL plus
+    one API key. Instead of repeating ``(api_key, api_base_url, api_provider)``
+    in every ``ModelPoolEntry``, declare them once and list the model
+    names served by that endpoint.
+
+    The router is converted into a flat ``list[ModelPoolEntry]`` by
+    ``to_pool_entries`` at ``TeamAgentSpec.build()`` time so all downstream
+    machinery (``resolve_member_model``, ``inherit_pool_ids``,
+    ``update_model_pool``) stays unchanged. The runtime allocator picked
+    is ``RouterAllocator``, selected by ``model_pool_strategy="router"``.
+
+    Mutually exclusive with ``TeamAgentSpec.model_pool``: the spec layer
+    rejects configs that set both, since the strategy choice would be
+    ambiguous.
+    """
+
+    model_config = ConfigDict(protected_namespaces=())
+
+    api_base_url: str
+    api_key: str
+    api_provider: str
+    model_names: list[str] = Field(min_length=1)
+    """Ordered list of model names served by the router endpoint.
+
+    The first name is the default (``RouterAllocator.allocate()`` with no
+    hint returns it). Constraints enforced at validation time:
+
+    * The list itself must be non-empty (a router with no model has
+      nothing to serve and would silently break leader allocation).
+    * Each name must be a non-empty, non-whitespace string (entries
+      like ``""`` or ``"  "`` are rejected — they pass ``min_length=1``
+      on the list but are meaningless model identifiers).
+    * Names must be unique within the list — duplicates make
+      ``allocate(model_name=...)`` ambiguous.
+    """
+    metadata: dict = Field(default_factory=dict)
+    """Optional ``ModelPoolEntry.metadata`` payload, copied into every
+    expanded entry. See ``ModelPoolEntry.metadata`` for reserved keys
+    (``client``, ``request``).
+    """
+
+    @model_validator(mode="after")
+    def _validate_model_names(self) -> "ModelRouterConfig":
+        """Enforce the model_names invariants.
+
+        The list non-emptiness is enforced by ``Field(min_length=1)``;
+        this validator additionally rejects entries that are blank or
+        whitespace-only (which pass ``min_length`` but aren't real
+        model names) and entries that duplicate another entry (which
+        would make ``allocate(model_name=...)`` ambiguous and silently
+        drop one endpoint).
+        """
+        blanks = [i for i, name in enumerate(self.model_names) if not name or not name.strip()]
+        if blanks:
+            raise ValueError(
+                f"ModelRouterConfig.model_names must contain non-empty strings; blank at indices: {blanks}",
+            )
+        if len(set(self.model_names)) != len(self.model_names):
+            duplicates = sorted({n for n in self.model_names if self.model_names.count(n) > 1})
+            raise ValueError(
+                f"ModelRouterConfig.model_names must be unique; duplicates: {duplicates}",
+            )
+        return self
+
+    def to_pool_entries(self) -> list[ModelPoolEntry]:
+        """Expand the router into one ``ModelPoolEntry`` per model name.
+
+        Every expanded entry shares ``api_key`` / ``api_base_url`` /
+        ``api_provider`` and a deep-copied ``metadata`` dict so callers
+        cannot accidentally cross-pollinate per-entry tweaks back into
+        the router config or sibling entries.
+        """
+        return [
+            ModelPoolEntry(
+                model_name=name,
+                api_key=self.api_key,
+                api_base_url=self.api_base_url,
+                api_provider=self.api_provider,
+                metadata=copy.deepcopy(self.metadata),
+            )
+            for name in self.model_names
+        ]
+
+
 def _entry_signature(entry: ModelPoolEntry) -> str:
     """Canonical signature of an entry's full config, excluding ``model_id``.
 
@@ -195,5 +284,6 @@ def inherit_pool_ids(
 
 __all__ = [
     "ModelPoolEntry",
+    "ModelRouterConfig",
     "inherit_pool_ids",
 ]

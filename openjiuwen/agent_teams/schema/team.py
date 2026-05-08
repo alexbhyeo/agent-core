@@ -79,12 +79,13 @@ class TeamMemberSpec(BaseModel):
     prompt_hint: Optional[str] = None
     model_name: Optional[str] = None
     """Optional pool model_name to allocate from when ``TeamSpec.model_pool``
-    is configured with ``by_model_name`` strategy.
+    is configured with ``by_model_name`` or ``router`` strategy.
 
     Forwarded to ``ModelAllocator.allocate`` at ``build_team`` time so
-    this member draws an endpoint from the named group. Ignored by the
-    ``round_robin`` strategy. ``None`` (default) means the member uses
-    its per-agent model (or no allocation when the pool is empty).
+    this member draws an endpoint from the named group (``by_model_name``)
+    or the named router entry (``router``). Ignored by the ``round_robin``
+    strategy. ``None`` (default) means the member uses its per-agent model
+    (or, under ``router``, the router's first declared model_name).
     """
 
 
@@ -107,7 +108,7 @@ class TeamSpec(BaseModel):
     empty (default), members fall back to their per-agent model config
     declared in ``TeamAgentSpec.agents`` and behavior is unchanged.
     """
-    model_pool_strategy: Literal["round_robin", "by_model_name"] = "round_robin"
+    model_pool_strategy: Literal["round_robin", "by_model_name", "router"] = "round_robin"
     """Allocation strategy applied to ``model_pool`` entries.
 
     * ``round_robin`` (default): linear rotation across every entry in
@@ -118,6 +119,12 @@ class TeamSpec(BaseModel):
       regardless of how many endpoints back it. Use when the pool mixes
       models with different cost / capability tiers and you want fair
       distribution across tiers rather than across raw endpoints.
+    * ``router``: single-endpoint router (``RouterAllocator``) where one
+      ``(api_key, api_base_url, api_provider)`` serves many model names
+      and each name maps to exactly one entry. Set automatically when
+      ``TeamAgentSpec.model_router`` is configured; the pool is then the
+      flat expansion of that router. Lookup-by-name semantics; no hint
+      yields the first declared name as the default.
     """
 
 

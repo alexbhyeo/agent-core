@@ -98,14 +98,18 @@ task.py            # TaskSummary / TaskDetail —— 任务返回模型
 ### models/ — 多模型部署原语
 
 ```
-pool.py        # ModelPoolEntry / inherit_pool_ids —— 池条目数据结构 + 池刷新 model_id 继承
-allocator.py   # Allocation / ModelAllocator(Protocol) / RoundRobinModelAllocator / ByModelNameAllocator
+pool.py        # ModelPoolEntry / ModelRouterConfig / inherit_pool_ids
+               # —— 池条目 + 单端点 router 便利配置 + 池刷新 model_id 继承
+allocator.py   # Allocation / ModelAllocator(Protocol)
+               # / RoundRobinModelAllocator / ByModelNameAllocator / RouterAllocator
                # build_model_allocator / resolve_member_model
 ```
 
 - `ModelPoolEntry` 是 `TeamSpec.model_pool` 的元素，描述一个 LLM 端点 + 凭证 + provider；通过 `to_team_model_config()` 物化为 `TeamModelConfig`。
 - 持久化身份用 `(model_name, group_index)`，运行时 client 身份用自动 uuid `model_id`；`inherit_pool_ids` 在池刷新时只对 bit-exact 旧条目继承 `model_id`，避免基础设施层缓存到旧凭证的 client。
-- 两条分配策略：`RoundRobinModelAllocator`（线性轮转，无视 `model_name`）/ `ByModelNameAllocator`（按 `model_name` 分组、组内轮转）。新策略实现 `ModelAllocator` 协议即可；`build_model_allocator` 读 `team_spec.model_pool_strategy` 派发。
+- 三条分配策略：`RoundRobinModelAllocator`（线性轮转，无视 `model_name`）/ `ByModelNameAllocator`（按 `model_name` 分组、组内轮转）/ `RouterAllocator`（单端点路由，model_name 唯一映射，无 hint 时返回首项）。新策略实现 `ModelAllocator` 协议即可；`build_model_allocator` 读 `team_spec.model_pool_strategy` 派发。
+- `ModelRouterConfig` 是用户面向的便利输入：一份 `(api_key, api_base_url, api_provider)` + `model_names: list[str]`。在 `TeamAgentSpec.build()` 时通过 `to_pool_entries()` 展开成 `model_pool` 并把 `model_pool_strategy` 设为 `"router"`，下游 `resolve_member_model` / `inherit_pool_ids` / `update_model_pool` 全部复用 pool 路径，没有特殊分支。
+- `model_router` 与 `model_pool` 在 `TeamAgentSpec` 上**互斥**：同时配置直接 `ValueError`。strategy `"router"` 也可以由用户手动配 pool + 设置 strategy 触发，但必须保证 pool 内 `model_name` 唯一（RouterAllocator 在构造时校验）。
 - 空池 → `build_model_allocator` 返回 `None` → 走 `TeamAgentSpec.agents` per-agent 模型配置兜底。
 - 新增模型相关原语优先放本目录，避免渗回 `schema/team.py`（schema 层只声明字段引用，实现在 models/）。
 

@@ -3,7 +3,7 @@
 
 When ``TeamSpec.model_pool`` is non-empty, an allocator distributes pool
 entries across leader and teammates so concurrent calls spread across
-endpoints instead of saturating a single one. Two strategies ship:
+endpoints instead of saturating a single one. Three strategies ship:
 
 * ``RoundRobinModelAllocator`` — linear rotation through every entry,
   ignoring ``model_name``. Good for pools where every entry is an
@@ -12,6 +12,11 @@ endpoints instead of saturating a single one. Two strategies ship:
   within it. The caller must pass ``model_name``; the allocator returns
   ``None`` when the name is missing or absent from the pool, in which
   case the caller falls back to its per-agent model.
+* ``RouterAllocator`` — single-endpoint router serving many model names
+  (OpenRouter, LiteLLM proxy, ...). Built when ``TeamSpec.model_pool``
+  is materialized from a ``ModelRouterConfig``. Lookup-by-name like
+  ``ByModelNameAllocator``, but ``allocate()`` with no hint returns the
+  first declared name so the leader has a deterministic default.
 
 Identity model: every assignment is referenced as
 ``(model_name, group_index)`` — the entry's position within its
@@ -261,6 +266,89 @@ class ByModelNameAllocator:
                 self._inner_indexes[name] = 0
 
 
+class RouterAllocator:
+    """Single-endpoint router allocator.
+
+    Drives a pool whose entries all share ``api_base_url`` / ``api_key``
+    / ``api_provider`` and only differ in ``model_name`` — the canonical
+    shape produced by ``ModelRouterConfig.to_pool_entries``. Pool layout:
+
+    * Each ``model_name`` appears exactly once. Lookup-by-name therefore
+      points at a unique entry, no within-group rotation.
+    * ``allocate(model_name=X)``: returns the entry for ``X``, or
+      ``None`` when ``X`` is not in the pool (caller falls back to its
+      per-agent model).
+    * ``allocate()`` (no hint): returns the first entry in pool order.
+      The router's first-declared model is the team's default model
+      so the leader can run without an explicit ``leader.model_name``.
+
+    Allocation is deterministic — there's no rotation counter to
+    persist. ``state_dict`` only carries a pool digest so a layout
+    change between save and load is detectable; ``load_state_dict`` is
+    a no-op when the digest matches and a no-op otherwise (no counter
+    to reset).
+    """
+
+    def __init__(self, pool: list[ModelPoolEntry]) -> None:
+        """Initialize from a router-shaped pool.
+
+        Args:
+            pool: Pool entries, typically produced by
+                ``ModelRouterConfig.to_pool_entries``. Each entry's
+                ``model_name`` must be unique within the pool.
+
+        Raises:
+            ValueError: when ``pool`` is empty (a router without any
+                model name is meaningless) or when entries share a
+                ``model_name`` (lookup would be ambiguous).
+        """
+        if not pool:
+            raise ValueError("RouterAllocator requires a non-empty pool")
+        names = [entry.model_name for entry in pool]
+        if len(set(names)) != len(names):
+            duplicates = sorted({n for n in names if names.count(n) > 1})
+            raise ValueError(
+                f"RouterAllocator pool must have unique model_names; duplicates: {duplicates}",
+            )
+        self._pool: list[ModelPoolEntry] = list(pool)
+        self._by_name: dict[str, ModelPoolEntry] = {entry.model_name: entry for entry in self._pool}
+        self._pool_digest = _pool_digest(self._pool)
+
+    def allocate(self, model_name: Optional[str] = None) -> Optional[Allocation]:
+        """Return the entry for the requested name, or the default.
+
+        Args:
+            model_name: When set, look up the unique entry whose
+                ``model_name`` matches. ``None`` (or unknown) yields the
+                first declared entry so the leader gets a deterministic
+                default model.
+
+        Returns:
+            ``Allocation`` with ``group_index=0`` (each name has a single
+            endpoint under a router); ``None`` when ``model_name`` is
+            given but absent from the pool.
+        """
+        if model_name is None:
+            return Allocation(entry=self._pool[0], group_index=0)
+        entry = self._by_name.get(model_name)
+        if entry is None:
+            return None
+        return Allocation(entry=entry, group_index=0)
+
+    def state_dict(self) -> dict:
+        """Snapshot the pool digest for layout-change detection."""
+        return {"pool_digest": self._pool_digest}
+
+    def load_state_dict(self, state: dict) -> None:
+        """No-op restore (router allocation has no rotating counter).
+
+        Defined for ``ModelAllocator`` protocol compatibility. Layout
+        changes between save and load are still observable via the
+        ``pool_digest`` snapshot if a caller wants to inspect drift.
+        """
+        del state  # router allocation is deterministic; nothing to restore
+
+
 def resolve_member_model(
     team_spec: "TeamSpec",
     *,
@@ -335,9 +423,10 @@ def build_model_allocator(
         return RoundRobinModelAllocator(team_spec.model_pool)
     if strategy == "by_model_name":
         return ByModelNameAllocator(team_spec.model_pool)
+    if strategy == "router":
+        return RouterAllocator(team_spec.model_pool)
     raise ValueError(
-        f"Unknown model_pool_strategy '{strategy}'; "
-        f"expected one of: round_robin, by_model_name"
+        f"Unknown model_pool_strategy '{strategy}'; expected one of: round_robin, by_model_name, router",
     )
 
 
@@ -346,6 +435,7 @@ __all__ = [
     "ByModelNameAllocator",
     "ModelAllocator",
     "RoundRobinModelAllocator",
+    "RouterAllocator",
     "build_model_allocator",
     "resolve_member_model",
 ]

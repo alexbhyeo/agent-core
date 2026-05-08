@@ -17,10 +17,11 @@ from openjiuwen.agent_teams.models.allocator import (
     Allocation,
     ByModelNameAllocator,
     RoundRobinModelAllocator,
+    RouterAllocator,
     build_model_allocator,
     resolve_member_model,
 )
-from openjiuwen.agent_teams.models.pool import ModelPoolEntry
+from openjiuwen.agent_teams.models.pool import ModelPoolEntry, ModelRouterConfig
 from openjiuwen.agent_teams.schema.blueprint import TeamAgentSpec
 from openjiuwen.agent_teams.schema.deep_agent_spec import DeepAgentSpec
 from openjiuwen.agent_teams.schema.team import TeamSpec
@@ -1049,3 +1050,276 @@ def test_update_model_pool_preserves_id_only_when_entry_is_unchanged():
     stored = agent._configurator.ctx.team_spec.model_pool[0]
     assert stored.model_id != old_id
     assert stored.api_key == "ROTATED"
+
+
+# ---------------------------------------------------------------------------
+# ModelRouterConfig + RouterAllocator
+# ---------------------------------------------------------------------------
+
+
+def _make_router_config(
+    *,
+    model_names: list[str] | None = None,
+    metadata: dict | None = None,
+) -> ModelRouterConfig:
+    """Build a router config for tests.
+
+    The default metadata sets ``verify_ssl=False`` so ``spec.build()``
+    paths that go through real client validation don't trip on the
+    missing ssl_cert requirement — same convention the existing
+    ``test_build_*`` cases use for ``ModelPoolEntry``.
+    """
+    return ModelRouterConfig(
+        api_base_url="https://router.test/v1",
+        api_key="sk-shared",
+        api_provider="OpenAI",
+        model_names=model_names or ["gpt-4o", "claude-opus", "gemini-pro"],
+        metadata=metadata if metadata is not None else {"client": {"verify_ssl": False}},
+    )
+
+
+def test_model_router_config_to_pool_entries_shares_credentials():
+    cfg = _make_router_config()
+    entries = cfg.to_pool_entries()
+    assert [e.model_name for e in entries] == ["gpt-4o", "claude-opus", "gemini-pro"]
+    # All entries share the router's single credential triple.
+    assert {e.api_key for e in entries} == {"sk-shared"}
+    assert {e.api_base_url for e in entries} == {"https://router.test/v1"}
+    assert {e.api_provider for e in entries} == {"OpenAI"}
+
+
+def test_model_router_config_to_pool_entries_carries_metadata():
+    cfg = _make_router_config(metadata={"client": {"timeout": 45.0}})
+    entries = cfg.to_pool_entries()
+    for entry in entries:
+        cfg_out = entry.to_team_model_config()
+        assert cfg_out.model_client_config.timeout == 45.0
+
+
+def test_model_router_config_metadata_is_isolated_per_entry():
+    """Mutating one entry's metadata must not bleed into siblings or the router."""
+    cfg = _make_router_config(metadata={"client": {"timeout": 30.0}})
+    entries = cfg.to_pool_entries()
+    entries[0].metadata["client"]["timeout"] = 99.0
+    assert entries[1].metadata == {"client": {"timeout": 30.0}}
+    assert cfg.metadata == {"client": {"timeout": 30.0}}
+
+
+def test_model_router_config_rejects_duplicate_names():
+    with pytest.raises(ValueError, match="duplicates"):
+        ModelRouterConfig(
+            api_base_url="https://router.test/v1",
+            api_key="k",
+            api_provider="OpenAI",
+            model_names=["gpt-4o", "gpt-4o", "claude-opus"],
+        )
+
+
+def test_model_router_config_rejects_empty_model_names():
+    with pytest.raises(Exception):  # pydantic ValidationError on min_length=1
+        ModelRouterConfig(
+            api_base_url="https://router.test/v1",
+            api_key="k",
+            api_provider="OpenAI",
+            model_names=[],
+        )
+
+
+def test_model_router_config_rejects_blank_model_name():
+    """An entry like "" or "  " passes min_length=1 on the list but is
+    meaningless as a model identifier — must still be rejected."""
+    with pytest.raises(ValueError, match="non-empty strings"):
+        ModelRouterConfig(
+            api_base_url="https://router.test/v1",
+            api_key="k",
+            api_provider="OpenAI",
+            model_names=["gpt-4o", ""],
+        )
+
+
+def test_model_router_config_rejects_whitespace_only_model_name():
+    with pytest.raises(ValueError, match="non-empty strings"):
+        ModelRouterConfig(
+            api_base_url="https://router.test/v1",
+            api_key="k",
+            api_provider="OpenAI",
+            model_names=["   ", "claude-opus"],
+        )
+
+
+def test_router_allocator_returns_first_entry_without_hint():
+    pool = _make_router_config().to_pool_entries()
+    allocator = RouterAllocator(pool)
+    alloc = allocator.allocate()
+    assert alloc is not None
+    assert alloc.entry.model_name == "gpt-4o"
+    assert alloc.group_index == 0
+
+
+def test_router_allocator_first_entry_is_deterministic():
+    """No hint always picks the first declared name — every call, no rotation."""
+    pool = _make_router_config().to_pool_entries()
+    allocator = RouterAllocator(pool)
+    names = [allocator.allocate().entry.model_name for _ in range(5)]
+    assert names == ["gpt-4o"] * 5
+
+
+def test_router_allocator_returns_named_entry_when_hint_in_list():
+    pool = _make_router_config().to_pool_entries()
+    allocator = RouterAllocator(pool)
+    alloc = allocator.allocate(model_name="claude-opus")
+    assert alloc is not None
+    cfg = alloc.to_team_model_config()
+    assert cfg.model_request_config.model_name == "claude-opus"
+    assert cfg.model_client_config.api_base == "https://router.test/v1"
+    assert cfg.model_client_config.api_key == "sk-shared"
+
+
+def test_router_allocator_returns_none_for_unknown_name():
+    pool = _make_router_config().to_pool_entries()
+    allocator = RouterAllocator(pool)
+    assert allocator.allocate(model_name="missing-model") is None
+
+
+def test_router_allocator_rejects_empty_pool():
+    with pytest.raises(ValueError, match="non-empty pool"):
+        RouterAllocator([])
+
+
+def test_router_allocator_rejects_duplicate_names_in_pool():
+    pool = [
+        _make_named_entry("gpt-4o", "a1"),
+        _make_named_entry("gpt-4o", "a2"),
+    ]
+    with pytest.raises(ValueError, match="unique model_names"):
+        RouterAllocator(pool)
+
+
+def test_router_allocator_state_dict_round_trips_through_json():
+    import json
+
+    pool = _make_router_config().to_pool_entries()
+    a = RouterAllocator(pool)
+    a.allocate(model_name="claude-opus")
+    encoded = json.loads(json.dumps(a.state_dict()))
+    assert "pool_digest" in encoded
+
+    b = RouterAllocator(pool)
+    b.load_state_dict(encoded)
+    # No rotation counter to restore — first entry is still first.
+    assert b.allocate().entry.model_name == "gpt-4o"
+
+
+def test_router_allocator_load_state_dict_is_no_op_on_digest_mismatch():
+    """No counter exists, so digest mismatch simply doesn't matter."""
+    pool_a = _make_router_config(model_names=["a", "b"]).to_pool_entries()
+    pool_b = _make_router_config(model_names=["c", "d"]).to_pool_entries()
+
+    snapshot = RouterAllocator(pool_a).state_dict()
+    b = RouterAllocator(pool_b)
+    b.load_state_dict(snapshot)
+    # First entry still wins regardless of stale snapshot.
+    assert b.allocate().entry.model_name == "c"
+
+
+def test_build_model_allocator_dispatches_router_strategy():
+    pool = _make_router_config().to_pool_entries()
+    spec = TeamAgentSpec(agents={"leader": DeepAgentSpec()})
+    team_spec = TeamSpec(
+        team_name="t",
+        display_name="t",
+        model_pool=pool,
+        model_pool_strategy="router",
+    )
+    allocator = build_model_allocator(spec, team_spec)
+    assert isinstance(allocator, RouterAllocator)
+
+
+def test_team_agent_spec_rejects_pool_and_router_simultaneously():
+    pool = _make_pool(2)
+    router = _make_router_config()
+    with pytest.raises(ValueError, match="mutually exclusive"):
+        TeamAgentSpec(
+            agents={"leader": DeepAgentSpec()},
+            model_pool=pool,
+            model_router=router,
+        )
+
+
+def test_team_agent_spec_model_router_round_trips_through_json():
+    spec = TeamAgentSpec(
+        agents={"leader": DeepAgentSpec()},
+        model_router=_make_router_config(),
+    )
+    restored = TeamAgentSpec.model_validate_json(spec.model_dump_json())
+    assert restored.model_router is not None
+    assert restored.model_router.model_names == ["gpt-4o", "claude-opus", "gemini-pro"]
+    assert restored.model_router.api_key == "sk-shared"
+
+
+def test_build_expands_router_into_team_spec_model_pool():
+    """build() materializes the router into a flat pool + 'router' strategy
+    so all downstream code paths keep working against the pool view."""
+    from openjiuwen.agent_teams.schema.blueprint import LeaderSpec
+
+    spec = TeamAgentSpec(
+        agents={"leader": DeepAgentSpec()},
+        team_name="t",
+        spawn_mode="inprocess",
+        model_router=_make_router_config(model_names=["m1", "m2"]),
+        leader=LeaderSpec(member_name="leader"),
+    )
+    agent = spec.build()
+    team_spec = agent._configurator.ctx.team_spec
+    assert team_spec.model_pool_strategy == "router"
+    assert [e.model_name for e in team_spec.model_pool] == ["m1", "m2"]
+    # Allocator picked at build time matches the dispatched strategy.
+    assert isinstance(agent._configurator.model_allocator, RouterAllocator)
+
+
+def test_build_router_falls_back_to_first_name_when_leader_model_name_unset():
+    """leader.model_name unset under router → leader gets the first declared name."""
+    from openjiuwen.agent_teams.schema.blueprint import LeaderSpec
+
+    spec = TeamAgentSpec(
+        agents={"leader": DeepAgentSpec()},
+        team_name="t",
+        spawn_mode="inprocess",
+        model_router=_make_router_config(model_names=["primary", "secondary"]),
+        leader=LeaderSpec(member_name="leader"),
+    )
+    agent = spec.build()
+    leader_model = agent._configurator.ctx.member_model
+    assert leader_model is not None
+    assert leader_model.model_request_config.model_name == "primary"
+
+
+def test_build_router_honors_explicit_leader_model_name():
+    from openjiuwen.agent_teams.schema.blueprint import LeaderSpec
+
+    spec = TeamAgentSpec(
+        agents={"leader": DeepAgentSpec()},
+        team_name="t",
+        spawn_mode="inprocess",
+        model_router=_make_router_config(model_names=["primary", "secondary"]),
+        leader=LeaderSpec(member_name="leader", model_name="secondary"),
+    )
+    agent = spec.build()
+    leader_model = agent._configurator.ctx.member_model
+    assert leader_model.model_request_config.model_name == "secondary"
+
+
+def test_build_router_rejects_unknown_leader_model_name():
+    """leader.model_name not in router list → fail fast with router-aware message."""
+    from openjiuwen.agent_teams.schema.blueprint import LeaderSpec
+    from openjiuwen.core.common.exception.errors import ValidationError
+
+    spec = TeamAgentSpec(
+        agents={"leader": DeepAgentSpec()},
+        team_name="t",
+        spawn_mode="inprocess",
+        model_router=_make_router_config(model_names=["primary", "secondary"]),
+        leader=LeaderSpec(member_name="leader", model_name="missing"),
+    )
+    with pytest.raises(ValidationError, match="not present in the router"):
+        spec.build()
