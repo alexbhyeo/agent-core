@@ -53,20 +53,16 @@ class SessionManager:
     def team_session(self, value: Optional[AgentTeamSession]) -> None:
         self._state.team_session = value
 
-    async def bind_session(self, session: Optional[AgentTeamSession]) -> None:
-        """Bind this team agent to ``session`` (None clears the binding).
+    async def bind_session(self, session: AgentTeamSession) -> None:
+        """Full attach to ``session``.
 
         Wires session_id into the state and the global contextvar,
         creates per-session DB tables, and persists leader config when
-        the team is leader-side. Idempotent for ``session=None`` —
-        repeated unbinds simply leave the agent unbound.
+        the team is leader-side. The session must be non-None — for
+        the "no session at all" path use :meth:`unbind_session`; for
+        the pause / stop tear-down path use :meth:`release_session`.
         """
         from openjiuwen.agent_teams.context import set_session_id
-
-        if session is None:
-            self._state.session_id = None
-            self._state.team_session = None
-            return
 
         self._state.session_id = session.get_session_id()
         set_session_id(self._state.session_id)
@@ -80,15 +76,30 @@ class SessionManager:
         if spec and self._configurator.role == TeamRole.LEADER:
             self._recovery_manager.persist_leader_config(session)
 
-    def release_team_session(self) -> None:
-        """Drop the live ``AgentTeamSession`` reference.
+    def release_session(self) -> None:
+        """Release the live session object, keep ``session_id`` intact.
 
-        Used by coordination tear-down to make sure a paused/stopped
-        agent does not keep a stale session pinned.
+        Used by coordination pause / stop tear-down: the runtime
+        ``AgentTeamSession`` is dropped so it cannot be mutated after
+        the round ends, while ``session_id`` (and the contextvar)
+        survive for log correlation, post-round persistence, and the
+        resume path that re-binds a fresh session object under the
+        same id. Use :meth:`unbind_session` instead when the agent
+        should be fully detached.
         """
         self._state.team_session = None
 
-    async def resume_for_new_session(self, session) -> None:
+    def unbind_session(self) -> None:
+        """Fully detach from any session.
+
+        Clears both ``session_id`` and the live ``team_session``. Used
+        by entry points that explicitly start the agent without a
+        session, so prior identity does not bleed into the new round.
+        """
+        self._state.session_id = None
+        self._state.team_session = None
+
+    async def resume_for_new_session(self, session: AgentTeamSession) -> None:
         """Switch to a new session and rebind live teammate runtimes.
 
         Persistent teams keep team rows and old session data intact across
@@ -107,7 +118,7 @@ class SessionManager:
             cleanup_first=True,
         )
 
-    async def recover_for_existing_session(self, session) -> None:
+    async def recover_for_existing_session(self, session: AgentTeamSession) -> None:
         """Rebind to a checkpoint-restored session without cleanup.
 
         Caller must have already torn down coordination (which already

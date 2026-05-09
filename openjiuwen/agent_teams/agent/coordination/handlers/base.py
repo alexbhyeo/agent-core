@@ -38,8 +38,7 @@ class BaseCoordinationHandler:
           ``self._blueprint`` / ``self._infra``
         - drive the round through ``self._round``, trigger lifecycle
           effects through ``self._lifecycle``, and toggle the
-          coordination poll timers through ``self._poll`` — the host
-          object is no longer involved in the poll path
+          coordination poll timers through ``self._poll``
 
     Multiple handlers may register the same ``event_key`` — the
     framework fans out callbacks in registration order, so handlers
@@ -55,13 +54,12 @@ class BaseCoordinationHandler:
         infra: TeamInfra,
         poll_ctrl: "PollController",
     ) -> None:
-        # ``host`` and ``poll_ctrl`` are physically distinct: the
-        # owning TeamAgent satisfies AgentRoundController +
-        # TeamLifecycleController, while the coordination event bus
-        # satisfies PollController. Aliasing them under narrower
-        # protocol-typed fields documents which surface each call site
-        # actually depends on.
-        self._host = host
+        # ``host`` satisfies both AgentRoundController and
+        # TeamLifecycleController (it is the owning TeamAgent);
+        # ``poll_ctrl`` is the coordination event bus. Aliasing under
+        # narrower protocol-typed fields documents which surface each
+        # call site actually depends on — handlers must not reach for
+        # ``host`` directly.
         self._round: "AgentRoundController" = host
         self._lifecycle: "TeamLifecycleController" = host
         self._poll = poll_ctrl

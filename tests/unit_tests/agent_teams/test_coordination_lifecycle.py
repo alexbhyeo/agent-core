@@ -54,11 +54,8 @@ async def test_wake_callback_invoked_on_event():
     async def on_wake(event: CoordinationEvent) -> None:
         woke.append(event)
 
-    loop = EventBus(
-        role=TeamRole.LEADER,
-        wake_callback=on_wake,
-    )
-    await loop.start()
+    loop = EventBus(role=TeamRole.LEADER)
+    await loop.start(wake_callback=on_wake)
 
     event = EventMessage(
         event_type=TeamEvent.MESSAGE,
@@ -83,11 +80,10 @@ async def test_poll_timer_fires_periodically():
 
     loop = EventBus(
         role=TeamRole.LEADER,
-        wake_callback=on_wake,
         mailbox_poll_interval=0.05,
         task_poll_interval=0.05,
     )
-    await loop.start()
+    await loop.start(wake_callback=on_wake)
 
     await asyncio.sleep(0.15)
     await loop.stop()

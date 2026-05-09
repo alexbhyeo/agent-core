@@ -155,10 +155,9 @@ class EventDispatcher:
         infra: TeamInfra,
         poll_ctrl: PollController,
     ) -> None:
-        self._host = host
-        # Same physical object reused under a narrower name to document
-        # which surface dispatch() actually depends on (round-state
-        # readiness, nothing else).
+        # dispatch() only needs the round-readiness query; the lifecycle
+        # surface is the handlers' concern, not ours. Alias under
+        # ``_round`` to document the actual dependency.
         self._round: AgentRoundController = host
         self._blueprint = blueprint
         self._infra = infra

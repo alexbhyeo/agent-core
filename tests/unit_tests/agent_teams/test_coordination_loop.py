@@ -27,11 +27,8 @@ async def test_message_event_wakes_loop():
     async def on_wake(event: CoordinationEvent) -> None:
         woke.append(event)
 
-    loop = EventBus(
-        role=TeamRole.LEADER,
-        wake_callback=on_wake,
-    )
-    await loop.start()
+    loop = EventBus(role=TeamRole.LEADER)
+    await loop.start(wake_callback=on_wake)
 
     event = EventMessage(
         event_type=TeamEvent.MESSAGE,
@@ -54,11 +51,8 @@ async def test_task_event_wakes_loop():
     async def on_wake(event: CoordinationEvent) -> None:
         woke.append(event)
 
-    loop = EventBus(
-        role=TeamRole.TEAMMATE,
-        wake_callback=on_wake,
-    )
-    await loop.start()
+    loop = EventBus(role=TeamRole.TEAMMATE)
+    await loop.start(wake_callback=on_wake)
 
     event = EventMessage(
         event_type=TeamEvent.TASK_COMPLETED,
@@ -81,11 +75,8 @@ async def test_multiple_events_wake_in_order():
     async def on_wake(event: CoordinationEvent) -> None:
         woke.append(event)
 
-    loop = EventBus(
-        role=TeamRole.LEADER,
-        wake_callback=on_wake,
-    )
-    await loop.start()
+    loop = EventBus(role=TeamRole.LEADER)
+    await loop.start(wake_callback=on_wake)
 
     for et in [
         TeamEvent.MESSAGE,

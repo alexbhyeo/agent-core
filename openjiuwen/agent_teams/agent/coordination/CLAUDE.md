@@ -6,10 +6,10 @@
 
 | 文件 | 类 | 职责 |
 |---|---|---|
-| `event_bus.py` | `EventBus` / `InnerEventType` / `InnerEventMessage` | 事件入队 + 周期 poll timer + lifecycle（start / stop）；`set_wake_callback()` 支持后置 wire dispatcher.dispatch；天然实现 `PollController`（`pause_polls` / `resume_polls`） |
+| `event_bus.py` | `EventBus` / `InnerEventType` / `InnerEventMessage` | 事件入队 + 周期 poll timer + lifecycle（`start(wake_callback=...)` / `stop`）；天然实现 `PollController`（`pause_polls` / `resume_polls`） |
 | `dispatcher.py` | `EventDispatcher` + `AgentRoundController` / `TeamLifecycleController` / `PollController` / `DispatcherHost` | 三类 narrow protocol 划分调用面；触发规则（agent_ready / inner-vs-transport / 角色级粗筛）+ 持有私有 `AsyncCallbackFramework` 实例 + 把 5 个场景 handler 的 `get_callbacks()` 注册到 framework；handler 实例作为字段直接暴露（`dispatcher.lifecycle / .member / .message / .task_board / .stale_task`） |
 | `handlers/` | `BaseCoordinationHandler` + 5 个场景 handler | 见下文"handler 拆分" |
-| `kernel.py` | `CoordinationKernel` | 整体协调 facade：构造 event_bus → 注入到 dispatcher 作 `poll_ctrl` → `event_bus.set_wake_callback(dispatcher.dispatch)`；start 委托 `SessionManager.bind_session`；pause / resume / drain |
+| `kernel.py` | `CoordinationKernel` | 整体协调 facade：`setup` 时构造 event_bus → 注入到 dispatcher 作 `poll_ctrl`；`start` 时调 `event_bus.start(wake_callback=dispatcher.dispatch)` 闭合循环依赖；start 委托 `SessionManager.bind_session`；pause / resume / drain |
 
 ## handler 拆分
 
@@ -25,7 +25,7 @@
 | `self._lifecycle` | `TeamLifecycleController` | TeamAgent 级副作用（shutdown_self）|
 | `self._poll` | `PollController` | EventBus 自身的 poll 控制（pause_polls / resume_polls）|
 
-`self._host` 仍保留为指向 TeamAgent 的复合引用，但 handler 代码**不应再用它做新的访问**——任何新的依赖都应该通过 narrow protocol 字段或显式构造参数注入，避免重新滑回上帝接口。
+handler **不持有原始 host 引用**。新增依赖一律通过 narrow protocol 字段或显式构造参数注入，避免重新滑回上帝接口。
 
 | handler | 监听 event | 状态 | 关键方法 |
 |---|---|---|---|
@@ -50,8 +50,12 @@
 - **fan-out 顺序由注册顺序决定**：`EventDispatcher.__init__` 中 `(lifecycle, member, message, task_board, stale_task)` 元组顺序就是 framework 注册顺序。同 priority（默认 0）下 Python `list.sort` 稳定，故 `MEMBER_SHUTDOWN` 上 `MemberHandler.on_member_event` 先于 `MessageHandler.on_member_shutdown_drain`。改这个元组顺序前先评估 fan-out 影响。
 - **`kernel.pause` 会等 in-flight round drain**：相关 `contextlib.suppress(asyncio.CancelledError, Exception)` 在 `stream_controller.drain_agent_task` —— 改清理路径时检查 `import contextlib` 是否还在（之前漏过一次）。
 - **三个 narrow protocol 是 host ↔ handler 的公共契约**：`AgentRoundController` / `TeamLifecycleController` 由 TeamAgent 实现，`PollController` 由 EventBus 实现。新增 handler 依赖前先想清楚：是 round 行为、TeamAgent 级生命周期、还是 poll 控制？把方法加到对应 protocol，不要把所有东西重新塞回 `DispatcherHost`。`start_agent` / `follow_up` / `steer` 故意不在 `AgentRoundController` 上——handler 走 `deliver_input` 让 host 按 round 状态自己分流。
-- **构造顺序敏感**：`kernel.setup()` 必须先建 EventBus、再建 EventDispatcher（注入 `poll_ctrl=event_bus`）、最后 `event_bus.set_wake_callback(dispatcher.dispatch)`。EventBus 支持 `wake_callback=None` 构造 + `set_wake_callback()` 后置绑定就是为了打断这个循环依赖。
-- **session 绑定走 `SessionManager.bind_session`**：`kernel.start()` 不直接写 `session_manager.session_id` / `team_session` 字段，调 `await sess_mgr.bind_session(session)`（None 清空）；teardown 走 `release_team_session()`。在 kernel 里手工再写一遍 session_id + contextvar + DB 表初始化 + persist_leader_config 就是在重复 `_switch_session` 时代的烂代码。
+- **构造顺序敏感**：`kernel.setup()` 先建 EventBus，再建 EventDispatcher（注入 `poll_ctrl=event_bus`）；`kernel.start()` 调 `event_bus.start(wake_callback=dispatcher.dispatch)` 闭合循环依赖。EventBus 在 `__init__` 期间不接受 wake_callback——晚到 `start()` 时绑定，避免暴露 setter。
+- **session 绑定走 `SessionManager` 的状态机三方法**：
+  - `await bind_session(session)`：完整绑定，session 必须非 None。kernel.start 在拿到 session 时调它（同时落 contextvar、建 per-session DB 表、leader 持久化 config）。
+  - `release_session()`：pause/stop tear-down 用，丢弃 live `AgentTeamSession`，**保留 `session_id` 与 contextvar**——log correlation、resume 路径要复用同一个 id。
+  - `unbind_session()`：完全解绑，两字段一并清掉。kernel.start 在 session=None 路径走它，避免上一轮 `release_session` 留下的 session_id 渗到新一轮无 session 的启动里。
+  在 kernel 里手工再写一遍 session_id + contextvar + DB 表初始化 + persist_leader_config 就是在重复 `_switch_session` 时代的烂代码。
 
 ## 跟其它子目录的边界
 

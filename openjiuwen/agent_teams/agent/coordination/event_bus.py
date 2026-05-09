@@ -78,17 +78,17 @@ class EventBus:
         self,
         *,
         role: TeamRole,
-        wake_callback: Optional[WakeCallback] = None,
         mailbox_poll_interval: float = 30.0,
         task_poll_interval: float = 30.0,
     ) -> None:
         self._role = role
-        self._wake_callback = wake_callback
         self._mailbox_poll_interval = mailbox_poll_interval
         self._task_poll_interval = task_poll_interval
-        # Allow late wiring: callers (e.g. CoordinationKernel) construct
-        # the bus before the dispatcher exists, then bind the dispatch
-        # method via ``set_wake_callback``.
+        # ``wake_callback`` is bound at ``start()``; constructing the bus
+        # before the dispatcher exists is intentional, so the kernel can
+        # hand the bus to the dispatcher as a poll controller and only
+        # wire ``dispatcher.dispatch`` back in at start time.
+        self._wake_callback: Optional[WakeCallback] = None
         self._running = False
         self._polls_paused = False
         self._event_queue: asyncio.Queue[CoordinationEvent] = asyncio.Queue()
@@ -115,25 +115,24 @@ class EventBus:
         """Whether periodic polling is paused."""
         return self._polls_paused
 
-    def set_wake_callback(self, callback: WakeCallback) -> None:
-        """Bind the wake callback after construction.
-
-        Used by the coordination kernel to wire the dispatcher's
-        ``dispatch`` once both objects exist (the dispatcher needs the
-        bus's poll controls in its constructor, so the bus must exist
-        first; the bus's wake callback is the dispatcher, so the
-        dispatcher must exist second).
-        """
-        self._wake_callback = callback
-
     # ------------------------------------------------------
     # Lifecycle
     # ------------------------------------------------------
 
-    async def start(self) -> None:
-        """Start the event loop and polling timer."""
+    async def start(self, *, wake_callback: Optional[WakeCallback] = None) -> None:
+        """Start the event loop and polling timer.
+
+        The wake callback is bound here rather than at construction so
+        the coordination kernel can break the bus ↔ dispatcher
+        circular dependency: build bus → build dispatcher (with bus as
+        poll controller) → start bus with dispatcher.dispatch.
+        Passing ``None`` keeps any previously bound callback (or
+        ``None`` for tests that exercise the bus without a dispatcher).
+        """
         if self._running:
             return
+        if wake_callback is not None:
+            self._wake_callback = wake_callback
         team_logger.info("EventBus[{}] starting", self._role.value)
         self._running = True
         self._loop_task = asyncio.create_task(self._run_loop())
