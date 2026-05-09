@@ -17,17 +17,18 @@ import pytest
 
 from openjiuwen.agent_teams.agent.spawn_manager import SpawnManager
 from openjiuwen.agent_teams.agent.stream_controller import StreamController
+from openjiuwen.agent_teams.schema.team import TeamRole
 from openjiuwen.agent_teams.spawn.inprocess_handle import InProcessSpawnHandle
 from openjiuwen.core.session.stream.base import OutputSchema
 
 
-def _make_stream_controller(member_name: str) -> StreamController:
+def _make_stream_controller(member_name: str, *, role: TeamRole = TeamRole.TEAMMATE) -> StreamController:
     """Build a StreamController with the minimum wiring for observer tests."""
     from openjiuwen.agent_teams.agent.resources import PrivateAgentResources
     from openjiuwen.agent_teams.agent.state import TeamAgentState
 
     state = TeamAgentState(session_id="sess")
-    blueprint = SimpleNamespace(member_name=member_name)
+    blueprint = SimpleNamespace(member_name=member_name, role=role)
 
     async def _noop(_: Any) -> None:
         return None
@@ -67,7 +68,7 @@ async def test_wire_forward_routes_teammate_chunk_to_leader_queue() -> None:
     """After wiring, a chunk on the teammate stream_controller observer
     chain must land in the leader's stream_queue.
     """
-    leader_sc = _make_stream_controller("leader_m")
+    leader_sc = _make_stream_controller("leader_m", role=TeamRole.LEADER)
     leader_sc.stream_queue = asyncio.Queue()
 
     teammate_sc = _make_stream_controller("teammate_m")
@@ -87,6 +88,7 @@ async def test_wire_forward_routes_teammate_chunk_to_leader_queue() -> None:
     received = await asyncio.wait_for(leader_sc.stream_queue.get(), timeout=1.0)
     assert received is tagged
     assert received.source_member == "teammate_m"
+    assert received.role == TeamRole.TEAMMATE
 
 
 @pytest.mark.asyncio
@@ -94,7 +96,7 @@ async def test_cleanup_detaches_forward_observer() -> None:
     """cleanup_teammate must remove the forwarder so post-cleanup chunks
     cannot leak into the leader queue.
     """
-    leader_sc = _make_stream_controller("leader_m")
+    leader_sc = _make_stream_controller("leader_m", role=TeamRole.LEADER)
     leader_sc.stream_queue = asyncio.Queue()
 
     teammate_sc = _make_stream_controller("teammate_m")
@@ -123,7 +125,7 @@ async def test_wire_skips_when_leader_or_agent_ref_missing() -> None:
     sm_no_leader._wire_inprocess_chunk_forward(handle)
     assert handle._chunk_forward is None
 
-    leader_sc = _make_stream_controller("leader_m")
+    leader_sc = _make_stream_controller("leader_m", role=TeamRole.LEADER)
     sm = _make_spawn_manager_with(leader_sc)
     handle_no_ref = InProcessSpawnHandle(process_id="inproc-test", agent_ref=None)
     sm._wire_inprocess_chunk_forward(handle_no_ref)

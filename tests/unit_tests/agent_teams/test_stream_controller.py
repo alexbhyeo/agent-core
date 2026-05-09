@@ -30,7 +30,7 @@ from openjiuwen.core.session.stream.base import OutputSchema
 def _make_controller(harness: TeamHarness) -> StreamController:
     """Wire a StreamController against a fake harness, no team_member needed."""
     state = TeamAgentState(session_id="sess")
-    blueprint = SimpleNamespace(member_name="m")
+    blueprint = SimpleNamespace(member_name="m", role=TeamRole.LEADER)
 
     async def _noop(_: Any) -> None:
         return None
@@ -131,7 +131,7 @@ async def test_cancel_agent_records_execution_transitions(
     harness = _make_harness_with_abort(abort_calls)
 
     state = TeamAgentState(session_id="sess")
-    blueprint = SimpleNamespace(member_name="m")
+    blueprint = SimpleNamespace(member_name="m", role=TeamRole.LEADER)
     transitions: list[ExecutionStatus] = []
 
     async def _record_exec(status: ExecutionStatus) -> None:
@@ -194,7 +194,7 @@ async def test_execute_round_emits_cancelled_on_cooperative_abort_success() -> N
     harness = _make_harness_with_abort(abort_calls)
 
     state = TeamAgentState(session_id="sess")
-    blueprint = SimpleNamespace(member_name="m")
+    blueprint = SimpleNamespace(member_name="m", role=TeamRole.LEADER)
     transitions: list[ExecutionStatus] = []
 
     async def _record_exec(status: ExecutionStatus) -> None:
@@ -227,7 +227,7 @@ async def test_execute_round_emits_completed_on_normal_finish() -> None:
     harness = _make_harness_with_abort(abort_calls)
 
     state = TeamAgentState(session_id="sess")
-    blueprint = SimpleNamespace(member_name="m")
+    blueprint = SimpleNamespace(member_name="m", role=TeamRole.LEADER)
     transitions: list[ExecutionStatus] = []
 
     async def _record_exec(status: ExecutionStatus) -> None:
@@ -281,7 +281,7 @@ def _harness_yielding(chunks: list[Any]) -> TeamHarness:
 
 
 def test_tag_chunk_upgrades_plain_outputschema() -> None:
-    """Plain OutputSchema gets upgraded to TeamOutputSchema with source_member."""
+    """Plain OutputSchema gets upgraded to TeamOutputSchema with source_member + role."""
     harness = _make_harness_with_abort([])
     sc = _make_controller(harness)
 
@@ -290,34 +290,37 @@ def test_tag_chunk_upgrades_plain_outputschema() -> None:
 
     assert isinstance(tagged, TeamOutputSchema)
     assert tagged.source_member == "m"
+    assert tagged.role == TeamRole.LEADER
     assert tagged.type == "message"
     assert tagged.payload == {"text": "hi"}
     # Original chunk must not be mutated — DeepAgent internals may keep a ref.
     assert not isinstance(raw, TeamOutputSchema)
 
 
-def test_tag_chunk_passes_through_team_output_with_matching_member() -> None:
-    """An already-tagged chunk with matching member is returned unchanged."""
+def test_tag_chunk_passes_through_team_output_with_matching_identity() -> None:
+    """An already-tagged chunk with matching member + role is returned unchanged."""
     harness = _make_harness_with_abort([])
     sc = _make_controller(harness)
 
-    pre_tagged = TeamOutputSchema(type="message", index=0, payload={}, source_member="m")
+    pre_tagged = TeamOutputSchema(type="message", index=0, payload={}, source_member="m", role=TeamRole.LEADER)
     out = sc._tag_chunk(pre_tagged)
 
     assert out is pre_tagged
 
 
 def test_tag_chunk_rewrites_team_output_with_mismatched_member() -> None:
-    """An already-tagged chunk with a different member name is re-tagged."""
+    """An already-tagged chunk with a different member is re-tagged."""
     harness = _make_harness_with_abort([])
     sc = _make_controller(harness)
 
-    pre_tagged = TeamOutputSchema(type="message", index=0, payload={}, source_member="other")
+    pre_tagged = TeamOutputSchema(type="message", index=0, payload={}, source_member="other", role=TeamRole.TEAMMATE)
     out = sc._tag_chunk(pre_tagged)
 
     assert isinstance(out, TeamOutputSchema)
     assert out.source_member == "m"
+    assert out.role == TeamRole.LEADER
     assert pre_tagged.source_member == "other"  # original untouched
+    assert pre_tagged.role == TeamRole.TEAMMATE
 
 
 def test_tag_chunk_passes_through_non_outputschema() -> None:
@@ -356,7 +359,7 @@ async def test_stream_one_round_tags_and_fans_out_to_observers() -> None:
     while not sc.stream_queue.empty():
         queued.append(sc.stream_queue.get_nowait())
     assert len(queued) == 2
-    assert all(isinstance(c, TeamOutputSchema) and c.source_member == "m" for c in queued)
+    assert all(isinstance(c, TeamOutputSchema) and c.source_member == "m" and c.role == TeamRole.LEADER for c in queued)
     # Observer saw the same tagged objects (no copies between queue and fan-out).
     assert received == queued
 
@@ -410,10 +413,12 @@ def test_remove_chunk_observer_is_idempotent() -> None:
     assert sc._chunk_observers == []
 
 
-def _make_controller_with(*, member_name: str, harness: TeamHarness) -> StreamController:
-    """Variant of _make_controller that lets the test fix a member name."""
+def _make_controller_with(
+    *, member_name: str, harness: TeamHarness, role: TeamRole = TeamRole.TEAMMATE
+) -> StreamController:
+    """Variant of _make_controller that lets the test fix member identity."""
     state = TeamAgentState(session_id="sess")
-    blueprint = SimpleNamespace(member_name=member_name)
+    blueprint = SimpleNamespace(member_name=member_name, role=role)
 
     async def _noop(_: Any) -> None:
         return None
@@ -438,10 +443,14 @@ async def test_teammate_chunks_reach_leader_queue_via_forward_observer() -> None
         OutputSchema(type="message", index=1, payload={"step": 2}),
     ]
 
-    leader_sc = _make_controller_with(member_name="leader_m", harness=_make_harness_with_abort([]))
+    leader_sc = _make_controller_with(
+        member_name="leader_m", harness=_make_harness_with_abort([]), role=TeamRole.LEADER
+    )
     leader_sc.stream_queue = asyncio.Queue()
 
-    teammate_sc = _make_controller_with(member_name="teammate_m", harness=_harness_yielding(raw_chunks))
+    teammate_sc = _make_controller_with(
+        member_name="teammate_m", harness=_harness_yielding(raw_chunks), role=TeamRole.TEAMMATE
+    )
     teammate_sc.stream_queue = asyncio.Queue()
 
     # Mimic SpawnManager._wire_inprocess_chunk_forward.
@@ -462,6 +471,7 @@ async def test_teammate_chunks_reach_leader_queue_via_forward_observer() -> None
     assert len(leader_seen) == 2
     assert all(isinstance(ch, TeamOutputSchema) for ch in leader_seen)
     assert {ch.source_member for ch in leader_seen} == {"teammate_m"}
+    assert {ch.role for ch in leader_seen} == {TeamRole.TEAMMATE}
     assert [ch.payload for ch in leader_seen] == [{"step": 1}, {"step": 2}]
 
 
@@ -473,10 +483,14 @@ async def test_forward_observer_drops_when_leader_queue_unset() -> None:
     """
     raw_chunks = [OutputSchema(type="message", index=0, payload={"step": 1})]
 
-    leader_sc = _make_controller_with(member_name="leader_m", harness=_make_harness_with_abort([]))
+    leader_sc = _make_controller_with(
+        member_name="leader_m", harness=_make_harness_with_abort([]), role=TeamRole.LEADER
+    )
     # Intentionally leave leader_sc.stream_queue as None.
 
-    teammate_sc = _make_controller_with(member_name="teammate_m", harness=_harness_yielding(raw_chunks))
+    teammate_sc = _make_controller_with(
+        member_name="teammate_m", harness=_harness_yielding(raw_chunks), role=TeamRole.TEAMMATE
+    )
     teammate_sc.stream_queue = asyncio.Queue()
 
     forwarded: list[Any] = []

@@ -86,7 +86,7 @@ deep_agent_spec.py # DeepAgentSpec / SubAgentSpec / RailSpec 等 —— DeepAgen
 team.py            # TeamSpec / TeamRole / TeamLifecycle / TeamRuntimeContext / TeamMemberSpec
 events.py          # EventMessage / TeamTopic —— 跨进程事件
 status.py          # MemberStatus / ExecutionStatus —— 状态机枚举
-stream.py          # TeamOutputSchema —— OutputSchema 子类，带 source_member 成员归属字段
+stream.py          # TeamOutputSchema —— OutputSchema 子类，带 source_member / role 成员归属字段
 task.py            # TaskSummary / TaskDetail —— 任务返回模型
 ```
 
@@ -95,7 +95,7 @@ task.py            # TaskSummary / TaskDetail —— 任务返回模型
 - 新增 spec 字段要想清楚：**属于装配数据**（放 Spec）还是**运行时资源**（放 Config/Manager/Runtime）。不要让 Spec 持有 `Runner`、`Session`、文件句柄。
 - **Session checkpoint 状态结构按 team 分桶**：`session.update_state` 的全局状态根上有一个 `teams` namespace —— `state["teams"][team_name] = {spec, context, model_allocator_state, lifecycle}`。同一 session 可以承载多个 team 的状态；读写一律走 `runtime/metadata.py` 的 `read_team_namespace / merge_team_namespace`，不要直接在 root 上 `update_state({"spec": ...})`。
 - `MemberStatus.PAUSED`：teammate 协程退出但状态保留，可经 `RESTARTING` 重新拉起；与 `SHUTDOWN`（永久退出）区分。`schema.team.TeamLifecycle`（temporary / persistent）描述静态团队类型，`runtime.pool.RuntimeState`（running / paused）描述对象池中 team 的运行时状态——两个枚举各管各的。
-- `TeamOutputSchema` 是 `core.session.stream.OutputSchema` 的子类（不污染 core 层），扩出 `source_member: str | None`。`Runner.run_agent_team_streaming` 的所有输出 chunk 在 team 路径下都会被 `StreamController` 自动升级为 `TeamOutputSchema` 并打上来源成员名。**inprocess 模式**下，`SpawnManager` 在 spawn teammate 时通过 `StreamController.add_chunk_observer` 把 teammate chunk fan-out 到 leader 的 `stream_queue`，让 leader 的 streaming 流出全成员 chunk；subprocess 模式不做转发（chunk 留在 teammate 进程内），扩展点已留好（messager-driven observer）。详见 `agent/CLAUDE.md` 的 StreamController 段。
+- `TeamOutputSchema` 是 `core.session.stream.OutputSchema` 的子类（不污染 core 层），扩出 `source_member: str | None` 与 `role: TeamRole | None`。`Runner.run_agent_team_streaming` 的所有输出 chunk 在 team 路径下都会被 `StreamController` 自动升级为 `TeamOutputSchema` 并打上 `(member_name, role)` 标签。**inprocess 模式**下，`SpawnManager` 在 spawn teammate 时通过 `StreamController.add_chunk_observer` 把 teammate chunk fan-out 到 leader 的 `stream_queue`，让 leader 的 streaming 流出全成员 chunk；subprocess 模式不做转发（chunk 留在 teammate 进程内），扩展点已留好（messager-driven observer）。详见 `agent/CLAUDE.md` 的 StreamController 段。
 
 ### models/ — 多模型部署原语
 

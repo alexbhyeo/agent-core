@@ -230,16 +230,15 @@ class _TeamRunnerMixin:
                         action.reason or "",
                     )
                     return
-                leader_member_name = getattr(
-                    getattr(activation.agent, "blueprint", None),
-                    "member_name",
-                    None,
-                )
+                blueprint = getattr(activation.agent, "blueprint", None)
+                leader_member_name = getattr(blueprint, "member_name", None)
+                leader_role = getattr(blueprint, "role", None)
                 yield self._build_team_runtime_ready_chunk(
                     team_name=spec.team_name,
                     session_id=activation.session.get_session_id(),
                     action_kind=action.kind,
                     leader_member_name=leader_member_name,
+                    leader_role=leader_role,
                 )
                 async for chunk in activation.agent.stream(inputs, session=activation.session):
                     yield chunk
@@ -613,10 +612,12 @@ class _TeamRunnerMixin:
         session_id: str,
         action_kind: "RunActionKind",
         leader_member_name: Optional[str] = None,
+        leader_role: Optional[Any] = None,
     ) -> OutputSchema:
         # Emit a TeamOutputSchema so leader-side ready signals carry the
-        # same source_member tag as every other chunk in the stream.
-        # Lazy import keeps agent_teams off the child-process bootstrap path.
+        # same source_member / role tags as every other chunk in the
+        # stream. Lazy import keeps agent_teams off the child-process
+        # bootstrap path.
         from openjiuwen.agent_teams.schema.stream import TeamOutputSchema
 
         return TeamOutputSchema(
@@ -629,6 +630,7 @@ class _TeamRunnerMixin:
                 "activation_kind": action_kind.value,
             },
             source_member=leader_member_name,
+            role=leader_role,
         )
 
 

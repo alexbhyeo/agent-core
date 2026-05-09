@@ -25,13 +25,22 @@
 ```python
 class TeamOutputSchema(OutputSchema):
     source_member: str | None = None
+    role: TeamRole | None = None
 
     @classmethod
-    def from_output(cls, base: OutputSchema, *, source_member: str | None) -> "TeamOutputSchema":
-        return cls(**base.model_dump(), source_member=source_member)
+    def from_output(
+        cls,
+        base: OutputSchema,
+        *,
+        source_member: str | None,
+        role: TeamRole | None = None,
+    ) -> "TeamOutputSchema":
+        return cls(**base.model_dump(), source_member=source_member, role=role)
 ```
 
 放在 `agent_teams/schema/stream.py`，**不动 core 层 `OutputSchema`**——core 跨子系统共享，不应被 team-specific 字段污染。子类对 `isinstance(x, OutputSchema)` 透明，现有消费端访问 `chunk.type / chunk.payload` 不变。
+
+`role` 字段用 `TeamRole` 枚举（`LEADER` / `TEAMMATE` / `HUMAN_AGENT`）。消费端拿到 chunk 后能立即区分协调指令 vs 子任务输出 vs 人类输入的语义，无需维护 `member_name → role` 外部映射。`TeamRole` 是 `str` 枚举，pydantic 序列化得到字符串值，跨进程兼容。
 
 ### 数据流（inprocess 模式）
 
@@ -40,7 +49,7 @@ Teammate DeepAgent
    │ run_streaming() yields raw OutputSchema chunk
    ▼
 Teammate StreamController._stream_one_round
-   │ _tag_chunk(): 升级为 TeamOutputSchema(source_member=teammate_name)
+   │ _tag_chunk(): 升级为 TeamOutputSchema(source_member, role)
    ├──────► teammate.stream_queue.put(chunk)        [本地]
    └──────► for observer in _chunk_observers:       [fan-out]
                 forward(chunk)

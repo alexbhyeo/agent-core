@@ -138,22 +138,24 @@ class StreamController:
             self._chunk_observers.remove(cb)
 
     def _tag_chunk(self, chunk: Any) -> Any:
-        """Stamp the producing member name onto the chunk.
+        """Stamp the producing member name and role onto the chunk.
 
         Plain ``OutputSchema`` instances are upgraded to
         ``TeamOutputSchema`` via :meth:`TeamOutputSchema.from_output`;
-        already-tagged chunks whose ``source_member`` matches stay
-        untouched. Non-OutputSchema chunks pass through unchanged so
-        custom stream payloads are preserved.
+        already-tagged chunks whose ``source_member`` and ``role``
+        match are returned untouched. Non-OutputSchema chunks pass
+        through unchanged so custom stream payloads are preserved.
         """
-        member_name = self._member_name()
+        bp = self._get_blueprint()
+        member_name = bp.member_name if bp else None
+        role = bp.role if bp else None
         if not member_name or not isinstance(chunk, OutputSchema):
             return chunk
         if isinstance(chunk, TeamOutputSchema):
-            if chunk.source_member == member_name:
+            if chunk.source_member == member_name and chunk.role == role:
                 return chunk
-            return chunk.model_copy(update={"source_member": member_name})
-        return TeamOutputSchema.from_output(chunk, source_member=member_name)
+            return chunk.model_copy(update={"source_member": member_name, "role": role})
+        return TeamOutputSchema.from_output(chunk, source_member=member_name, role=role)
 
     def is_agent_running(self) -> bool:
         return self.streaming_active

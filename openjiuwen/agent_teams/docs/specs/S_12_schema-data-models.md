@@ -29,7 +29,7 @@
    `TaskStatus` / `MemberMode`，以及对应的合法转移表与
    `is_valid_transition`。
 6. **Team 流式输出扩展**（`stream.py`）：`TeamOutputSchema` —— `OutputSchema`
-   子类，扩 `source_member`，不污染 core 层。
+   子类，扩 `source_member` / `role`，不污染 core 层。
 7. **任务返回模型与写路径结果包装**（`task.py`）：`TaskSummary` /
    `TaskDetail` / `TaskListResult` / `NewTaskSpec` 以及 `TaskOpResult` /
    `TaskCreateResult` / `GraphMutationResult`。
@@ -170,12 +170,15 @@ RESTARTING / ERROR 不能覆盖。
 ### I-13 `TeamOutputSchema` 不污染 core
 
 `TeamOutputSchema` 继承 `core.session.stream.OutputSchema`，**只在 team 层**新增
-`source_member: str | None`。规则：
+`source_member: str | None` 与 `role: TeamRole | None`。规则：
 
-- core 层不感知该字段，非 team 路径产出的 chunk 仍是裸 `OutputSchema`。
+- core 层不感知这些字段，非 team 路径产出的 chunk 仍是裸 `OutputSchema`。
 - 升级语义只发生在 team 路径的 `StreamController` 入口 ——
-  `TeamOutputSchema.from_output(base, source_member=...)` 构造新实例，
+  `TeamOutputSchema.from_output(base, source_member=..., role=...)` 构造新实例，
   原 `base` 不被 mutate（DeepAgent 内部对象身份保留）。
+- `(source_member, role)` 是一对：`source_member` 是 producer 的 `member_name`，
+  `role` 是它在 team 中的角色（`LEADER` / `TEAMMATE` / `HUMAN_AGENT`）。`TeamRole`
+  是 `str` 枚举，pydantic 序列化得到字符串值，跨进程兼容。
 - inprocess 模式下，`SpawnManager` 通过
   `StreamController.add_chunk_observer` 把 teammate chunk fan-out 到 leader 的
   `stream_queue`；subprocess 模式不做转发（chunk 留在 teammate 进程内）。
@@ -545,15 +548,17 @@ MESSAGE = "message"
 | 字段 | 类型 | 默认 |
 |---|---|---|
 | `source_member` | `str \| None` | `None` |
+| `role` | `TeamRole \| None` | `None` |
 
-`from_output(base: OutputSchema, *, source_member: str | None) -> TeamOutputSchema`：
-不可 mutate `base`，返回新实例。`source_member=None` 表示 producer 不属于任何
-team（如直接 streaming 的单 agent）。
+`from_output(base: OutputSchema, *, source_member: str | None, role: TeamRole | None = None) -> TeamOutputSchema`：
+不可 mutate `base`，返回新实例。两字段同时为 `None` 表示 producer 不属于任何
+team（如直接 streaming 的单 agent）。`role` 用 `TeamRole`（`str` 枚举）保持跨
+进程序列化兼容。
 
 升级路径：
 
 1. team 路径下，`Runner.run_agent_team_streaming` 输出的所有 chunk 经
-   `StreamController` 入口升级为 `TeamOutputSchema`，自动打来源 `member_name`。
+   `StreamController` 入口升级为 `TeamOutputSchema`，自动打 `(member_name, role)`。
 2. inprocess spawn 模式下，`SpawnManager` 在 spawn 每个 teammate 时调
    `StreamController.add_chunk_observer`，把 teammate chunk fan-out 到 leader
    的 `stream_queue`，使 leader streaming 流出整团 chunk 序列。

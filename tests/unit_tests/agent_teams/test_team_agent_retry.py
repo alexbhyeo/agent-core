@@ -86,7 +86,7 @@ def _make_stream_controller_stub() -> StreamController:
         member_name="stub",
     )
     resources = PrivateAgentResources(harness=fake_harness)
-    fake_blueprint = SimpleNamespace(member_name="stub")
+    fake_blueprint = SimpleNamespace(member_name="stub", role=TeamRole.LEADER)
 
     sc = StreamController(
         blueprint_getter=lambda: fake_blueprint,
