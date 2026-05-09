@@ -15,8 +15,10 @@ from __future__ import annotations
 import time
 from typing import TYPE_CHECKING, ClassVar
 
+from openjiuwen.agent_teams.agent.blueprint import TeamAgentBlueprint
 from openjiuwen.agent_teams.agent.coordination.event_bus import CoordinationEvent
 from openjiuwen.agent_teams.agent.coordination.handlers.base import BaseCoordinationHandler
+from openjiuwen.agent_teams.agent.infra import TeamInfra
 from openjiuwen.agent_teams.i18n import t
 from openjiuwen.agent_teams.schema.events import EventMessage, TeamEvent
 from openjiuwen.agent_teams.schema.status import MemberStatus, TaskStatus
@@ -24,7 +26,7 @@ from openjiuwen.agent_teams.schema.team import TeamRole
 from openjiuwen.core.common.logging import team_logger
 
 if TYPE_CHECKING:
-    from openjiuwen.agent_teams.agent.coordination.dispatcher import DispatcherHost
+    from openjiuwen.agent_teams.agent.coordination.dispatcher import DispatcherHost, PollController
 
 
 class MemberHandler(BaseCoordinationHandler):
@@ -54,9 +56,12 @@ class MemberHandler(BaseCoordinationHandler):
     def __init__(
         self,
         host: "DispatcherHost",
+        blueprint: TeamAgentBlueprint,
+        infra: TeamInfra,
+        poll_ctrl: "PollController",
         stale_claim_throttle: dict[str, float],
     ) -> None:
-        super().__init__(host)
+        super().__init__(host, blueprint, infra, poll_ctrl)
         # task_id -> wall-clock seconds when we last fired a stale-claim
         # nudge. Shared by reference with StaleTaskHandler so a member
         # status flip and a poll tick within the same window cannot
@@ -70,7 +75,7 @@ class MemberHandler(BaseCoordinationHandler):
         on-shutdown drain is MessageHandler's concern).
         Leader: observe all members' lifecycle transitions.
         """
-        if self._host.blueprint.role == TeamRole.LEADER:
+        if self._blueprint.role == TeamRole.LEADER:
             await self._handle_leader_member_event(event)
         else:
             await self._handle_teammate_member_event(event)
@@ -83,12 +88,12 @@ class MemberHandler(BaseCoordinationHandler):
         (also registered on this event_key, fanned out by the
         framework after this callback runs).
         """
-        member_name = self._host.blueprint.member_name
+        member_name = self._blueprint.member_name
         target_id = event.get_payload().member_name
         if target_id is None or target_id != member_name:
             return
         if event.event_type == TeamEvent.MEMBER_CANCELED:
-            await self._host.cancel_agent()
+            await self._round.cancel_agent()
 
     async def _handle_leader_member_event(self, event: CoordinationEvent) -> None:
         """Handle member events as the leader — observe other members' lifecycle."""
@@ -150,8 +155,8 @@ class MemberHandler(BaseCoordinationHandler):
             return
         if new_status == old_status:
             return
-        task_manager = self._host.infra.task_manager
-        message_manager = self._host.infra.message_manager
+        task_manager = self._infra.task_manager
+        message_manager = self._infra.message_manager
         if task_manager is None or message_manager is None:
             return
 

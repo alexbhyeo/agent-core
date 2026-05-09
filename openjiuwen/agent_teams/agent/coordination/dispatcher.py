@@ -20,11 +20,12 @@ framework swallowing as silent error handling.
 from __future__ import annotations
 
 from typing import (
-    TYPE_CHECKING,
+    Any,
     Protocol,
     runtime_checkable,
 )
 
+from openjiuwen.agent_teams.agent.blueprint import TeamAgentBlueprint
 from openjiuwen.agent_teams.agent.coordination.event_bus import (
     CoordinationEvent,
     InnerEventMessage,
@@ -37,40 +38,27 @@ from openjiuwen.agent_teams.agent.coordination.handlers import (
     StaleTaskHandler,
     TaskBoardHandler,
 )
+from openjiuwen.agent_teams.agent.infra import TeamInfra
 from openjiuwen.agent_teams.schema.events import TeamEvent
 from openjiuwen.agent_teams.schema.team import TeamRole
 from openjiuwen.core.common.logging import team_logger
 from openjiuwen.core.runner.callback import AsyncCallbackFramework
 
-if TYPE_CHECKING:
-    from openjiuwen.agent_teams.agent.blueprint import TeamAgentBlueprint
-    from openjiuwen.agent_teams.agent.infra import TeamInfra
-
 
 @runtime_checkable
-class DispatcherHost(Protocol):
-    """Contract between EventDispatcher and its owning agent.
+class AgentRoundController(Protocol):
+    """Round-level control surface against the owning agent.
 
-    Splits into:
-    - data access: ``blueprint`` (static config) and ``infra``
-      (per-process infrastructure including message_manager /
-      task_manager).
-    - behavior callbacks: round control, polling, message delivery.
+    Everything dispatched by this protocol ultimately drives the
+    underlying ``TeamHarness`` / ``DeepAgent``: status queries on the
+    current round, plus the mutation primitives that feed input into
+    or tear down the round.
 
-    The dispatcher reads role / lifecycle / member_name / team_spec /
-    message_manager / task_manager off these two containers directly
-    rather than going through one-off accessor methods on the host.
+    Only the entry points that handlers actually call are declared.
+    ``start_agent`` / ``follow_up`` / ``steer`` are intentionally not
+    part of the public surface — handlers go through ``deliver_input``
+    and let the host pick the right primitive based on round state.
     """
-
-    @property
-    def blueprint(self) -> "TeamAgentBlueprint":
-        """Return the static assembly blueprint."""
-        ...
-
-    @property
-    def infra(self) -> "TeamInfra":
-        """Return the per-process team infrastructure container."""
-        ...
 
     def is_agent_ready(self) -> bool:
         """Return whether the agent has been fully initialized."""
@@ -88,41 +76,63 @@ class DispatcherHost(Protocol):
         """Return whether an unresolved tool interrupt is pending."""
         ...
 
-    async def start_agent(self, content: str) -> None:
-        """Start a new agent round with the given content."""
-        ...
-
-    async def follow_up(self, content: str) -> None:
-        """Feed content to the currently running agent."""
-        ...
-
     async def cancel_agent(self) -> None:
         """Cancel the running agent task."""
         ...
+
+    async def deliver_input(self, content: Any, *, use_steer: bool = True) -> None:
+        """Guarantee that content reaches the DeepAgent regardless of state."""
+        ...
+
+    async def resume_interrupt(self, user_input: Any) -> None:
+        """Resume a pending HITL interrupt with structured input."""
+        ...
+
+
+@runtime_checkable
+class TeamLifecycleController(Protocol):
+    """TeamAgent-level lifecycle effects that span multiple managers.
+
+    Currently only ``shutdown_self`` — invoked when the team has been
+    dissolved and a non-leader member must abandon its loop. Future
+    cross-manager orchestration (e.g. ``recover_team``) belongs here
+    rather than on the round controller.
+    """
 
     async def shutdown_self(self) -> None:
         """Force-shutdown this agent in response to team dissolution."""
         ...
 
+
+@runtime_checkable
+class PollController(Protocol):
+    """Periodic-poll control surface owned by the coordination's own
+    event bus.
+
+    Handlers reach into this protocol directly instead of bouncing the
+    pause/resume call through the host; the bus already knows how to
+    suspend its mailbox/task poll tasks, no TeamAgent indirection
+    needed.
+    """
+
     async def pause_polls(self) -> None:
-        """Pause periodic polling in the coordination loop."""
+        """Pause periodic polling on the event bus."""
         ...
 
     async def resume_polls(self) -> None:
-        """Resume periodic polling in the coordination loop."""
+        """Resume periodic polling on the event bus."""
         ...
 
-    async def steer(self, content: str) -> None:
-        """Steer instruction into the running agent."""
-        ...
 
-    async def deliver_input(self, content: str, *, use_steer: bool = True) -> None:
-        """Guarantee that content reaches the DeepAgent regardless of state."""
-        ...
+@runtime_checkable
+class DispatcherHost(AgentRoundController, TeamLifecycleController, Protocol):
+    """Composite host contract used by the kernel and the dispatcher.
 
-    async def resume_interrupt(self, user_input) -> None:
-        """Resume a pending HITL interrupt with structured input."""
-        ...
+    Combines the round controller and the team lifecycle controller —
+    the two surfaces the host has to expose for coordination to drive
+    behavior on the owning agent. Poll control no longer goes through
+    the host; handlers receive a :class:`PollController` directly.
+    """
 
 
 class EventDispatcher:
@@ -138,19 +148,31 @@ class EventDispatcher:
     ``stale_task``) for direct access in tests.
     """
 
-    def __init__(self, host: DispatcherHost) -> None:
+    def __init__(
+        self,
+        host: DispatcherHost,
+        blueprint: TeamAgentBlueprint,
+        infra: TeamInfra,
+        poll_ctrl: PollController,
+    ) -> None:
         self._host = host
+        # Same physical object reused under a narrower name to document
+        # which surface dispatch() actually depends on (round-state
+        # readiness, nothing else).
+        self._round: AgentRoundController = host
+        self._blueprint = blueprint
+        self._infra = infra
         # Throttle dict shared by reference between MemberHandler
         # (status-change path) and StaleTaskHandler (poll path) so the
         # same task cannot be nudged twice within one stale window
         # regardless of trigger source.
         stale_claim_throttle: dict[str, float] = {}
 
-        self.lifecycle = AgentLifecycleHandler(host)
-        self.member = MemberHandler(host, stale_claim_throttle)
-        self.message = MessageHandler(host)
-        self.task_board = TaskBoardHandler(host)
-        self.stale_task = StaleTaskHandler(host, stale_claim_throttle)
+        self.lifecycle = AgentLifecycleHandler(host, blueprint, infra, poll_ctrl)
+        self.member = MemberHandler(host, blueprint, infra, poll_ctrl, stale_claim_throttle)
+        self.message = MessageHandler(host, blueprint, infra, poll_ctrl)
+        self.task_board = TaskBoardHandler(host, blueprint, infra, poll_ctrl)
+        self.stale_task = StaleTaskHandler(host, blueprint, infra, poll_ctrl, stale_claim_throttle)
 
         self._framework = AsyncCallbackFramework(
             enable_metrics=False,
@@ -174,10 +196,11 @@ class EventDispatcher:
 
     async def dispatch(self, event: CoordinationEvent) -> None:
         """Wake-up entry. Applies coarse rules, then triggers framework."""
-        host = self._host
-        if not host.is_agent_ready():
+        if not self._round.is_agent_ready():
             team_logger.debug("agent not ready, skipping coordination wake")
             return
+
+        role = self._blueprint.role
 
         if isinstance(event, InnerEventMessage):
             # Human agents must never autonomously poll. USER_INPUT
@@ -185,7 +208,7 @@ class EventDispatcher:
             # leader's god-view input); a human agent never reaches
             # that path because the leader is the one whose invoke()
             # carries it. Defensively short-circuit polling branches.
-            if host.blueprint.role == TeamRole.HUMAN_AGENT and event.event_type in (
+            if role == TeamRole.HUMAN_AGENT and event.event_type in (
                 InnerEventType.POLL_TASK,
                 InnerEventType.POLL_MAILBOX,
             ):
@@ -195,8 +218,7 @@ class EventDispatcher:
             return
 
         # --- Transport events (cross-process EventMessage) ---
-        member_name = host.blueprint.member_name
-        if not member_name:
+        if not self._blueprint.member_name:
             team_logger.debug("no member_name, skipping transport event")
             return
 
@@ -209,7 +231,7 @@ class EventDispatcher:
         # the periodic poll timers so a paused leader does not leave
         # human-agent avatars polling forever. Everything else stays
         # muted.
-        if host.blueprint.role == TeamRole.HUMAN_AGENT:
+        if role == TeamRole.HUMAN_AGENT:
             if event.event_type not in (
                 TeamEvent.CLEANED,
                 TeamEvent.MEMBER_CANCELED,

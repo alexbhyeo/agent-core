@@ -12,7 +12,7 @@ agent before tear-down.
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any, ClassVar
+from typing import Any, ClassVar
 
 from openjiuwen.agent_teams.agent.coordination.event_bus import (
     CoordinationEvent,
@@ -23,9 +23,6 @@ from openjiuwen.agent_teams.i18n import t
 from openjiuwen.agent_teams.schema.events import EventMessage, MessageEvent, TeamEvent
 from openjiuwen.agent_teams.schema.team import TeamRole
 from openjiuwen.core.common.logging import team_logger
-
-if TYPE_CHECKING:
-    pass
 
 
 class MessageHandler(BaseCoordinationHandler):
@@ -62,23 +59,21 @@ class MessageHandler(BaseCoordinationHandler):
         and notifies the SDK's human-agent inbound callbacks. All
         members then resume polls and drain their unread mailbox.
         """
-        host = self._host
-        member_name = host.blueprint.member_name
-        if not member_name or host.infra.message_manager is None:
+        member_name = self._blueprint.member_name
+        if not member_name or self._infra.message_manager is None:
             return
-        if host.blueprint.role == TeamRole.LEADER:
+        if self._blueprint.role == TeamRole.LEADER:
             if event.event_type == TeamEvent.MESSAGE:
                 await self._ack_user_bound_message(event)
             await self._notify_human_agent_inbound(event)
-        await host.resume_polls()
+        await self._poll.resume_polls()
         await self._process_unread_messages(member_name)
 
     async def on_poll_mailbox(self, event) -> None:
         """Periodic mailbox sweep: drain any unread messages."""
-        host = self._host
-        member_name = host.blueprint.member_name
+        member_name = self._blueprint.member_name
         team_logger.debug("poll mailbox: member_name={}", member_name)
-        if member_name and host.infra.message_manager:
+        if member_name and self._infra.message_manager:
             await self._process_unread_messages(member_name)
 
     async def on_member_shutdown_drain(self, event: EventMessage) -> None:
@@ -90,11 +85,10 @@ class MessageHandler(BaseCoordinationHandler):
         Steer mode ensures the messages land even if the agent is in
         the middle of a round.
         """
-        host = self._host
-        if host.blueprint.role == TeamRole.LEADER:
+        if self._blueprint.role == TeamRole.LEADER:
             return
-        member_name = host.blueprint.member_name
-        if not member_name or host.infra.message_manager is None:
+        member_name = self._blueprint.member_name
+        if not member_name or self._infra.message_manager is None:
             return
         target_id = event.get_payload().member_name
         if target_id is None or target_id != member_name:
@@ -112,7 +106,6 @@ class MessageHandler(BaseCoordinationHandler):
             member_name: Current member ID.
             use_steer: When True, use steer instead of follow_up for running agent.
         """
-        host = self._host
         seen_ids: set[str] = set()
 
         while True:
@@ -125,7 +118,7 @@ class MessageHandler(BaseCoordinationHandler):
             team_logger.info("[{}] processing {} unread messages (steer={})", member_name, len(new_messages), use_steer)
             for msg in new_messages:
                 seen_ids.add(msg.message_id)
-                if host.has_pending_interrupt():
+                if self._round.has_pending_interrupt():
                     team_logger.info(
                         "[{}] deferring mailbox message {} until pending interrupt is resolved",
                         member_name,
@@ -135,8 +128,8 @@ class MessageHandler(BaseCoordinationHandler):
                 text = self._format_message(msg)
                 team_logger.debug("[{}] message from={}, id={}", member_name, msg.from_member_name, msg.message_id)
 
-                await host.deliver_input(text, use_steer=use_steer)
-                await host.infra.message_manager.mark_message_read(msg.message_id, member_name)
+                await self._round.deliver_input(text, use_steer=use_steer)
+                await self._infra.message_manager.mark_message_read(msg.message_id, member_name)
 
     async def _notify_human_agent_inbound(self, event: CoordinationEvent) -> None:
         """Forward a team-side message to the SDK's human-agent callbacks.
@@ -154,9 +147,8 @@ class MessageHandler(BaseCoordinationHandler):
         swallowed so a notification glitch never breaks the dispatch
         loop.
         """
-        host = self._host
-        backend = host.infra.team_backend
-        mm = host.infra.message_manager
+        backend = self._infra.team_backend
+        mm = self._infra.message_manager
         if backend is None or mm is None:
             return
 
@@ -224,7 +216,7 @@ class MessageHandler(BaseCoordinationHandler):
         payload: MessageEvent = event.get_payload()
         if payload.to_member_name != "user":
             return
-        mm = self._host.infra.message_manager
+        mm = self._infra.message_manager
         if mm is None:
             return
         await mm.mark_message_read(payload.message_id, "user")
@@ -239,7 +231,7 @@ class MessageHandler(BaseCoordinationHandler):
 
         Returns merged list sorted by timestamp descending (newest first).
         """
-        mm = self._host.infra.message_manager
+        mm = self._infra.message_manager
         direct = await mm.get_messages(to_member_name=member_name, unread_only=True)
         broadcasts = await mm.get_broadcast_messages(member_name=member_name, unread_only=True)
         merged = list(direct) + list(broadcasts)

@@ -16,18 +16,20 @@ from __future__ import annotations
 import time
 from typing import TYPE_CHECKING, Any, ClassVar
 
+from openjiuwen.agent_teams.agent.blueprint import TeamAgentBlueprint
 from openjiuwen.agent_teams.agent.coordination.event_bus import (
     InnerEventMessage,
     InnerEventType,
 )
 from openjiuwen.agent_teams.agent.coordination.handlers.base import BaseCoordinationHandler
+from openjiuwen.agent_teams.agent.infra import TeamInfra
 from openjiuwen.agent_teams.i18n import t
 from openjiuwen.agent_teams.schema.status import TaskStatus
 from openjiuwen.agent_teams.schema.team import TeamRole
 from openjiuwen.core.common.logging import team_logger
 
 if TYPE_CHECKING:
-    from openjiuwen.agent_teams.agent.coordination.dispatcher import DispatcherHost
+    from openjiuwen.agent_teams.agent.coordination.dispatcher import DispatcherHost, PollController
 
 
 class StaleTaskHandler(BaseCoordinationHandler):
@@ -43,9 +45,12 @@ class StaleTaskHandler(BaseCoordinationHandler):
     def __init__(
         self,
         host: "DispatcherHost",
+        blueprint: TeamAgentBlueprint,
+        infra: TeamInfra,
+        poll_ctrl: "PollController",
         stale_claim_throttle: dict[str, float],
     ) -> None:
-        super().__init__(host)
+        super().__init__(host, blueprint, infra, poll_ctrl)
         # task_id -> wall-clock seconds when we last fired a stale-claim
         # nudge. Used only to throttle follow-up nudges; the "is this
         # task stale?" decision itself reads ``task.updated_at`` from
@@ -59,10 +64,9 @@ class StaleTaskHandler(BaseCoordinationHandler):
 
     async def on_poll_task(self, event: InnerEventMessage) -> None:
         """Periodic task-board sweep: flag stale CLAIMED + leader stale PENDING."""
-        host = self._host
-        member_name = host.blueprint.member_name
-        team_logger.debug("poll task: member_name={}, agent_running={}", member_name, host.is_agent_running())
-        if member_name and host.infra.task_manager:
+        member_name = self._blueprint.member_name
+        team_logger.debug("poll task: member_name={}, agent_running={}", member_name, self._round.is_agent_running())
+        if member_name and self._infra.task_manager:
             await self._check_stale_claimed_tasks()
             await self._check_stale_pending_tasks()
             # if not host.is_agent_running():
@@ -79,14 +83,13 @@ class StaleTaskHandler(BaseCoordinationHandler):
         message (leader → other member). A per-task throttle prevents
         follow-up polls from re-nudging inside the same stale window.
         """
-        host = self._host
-        task_manager = host.infra.task_manager
+        task_manager = self._infra.task_manager
         if task_manager is None:
             return
 
         claimed = await task_manager.list_tasks(status=TaskStatus.CLAIMED.value)
-        own_name = host.blueprint.member_name
-        is_leader = host.blueprint.role == TeamRole.LEADER
+        own_name = self._blueprint.member_name
+        is_leader = self._blueprint.role == TeamRole.LEADER
         relevant = [tk for tk in claimed if tk.assignee and (tk.assignee == own_name or is_leader)]
 
         current_ids = {tk.task_id for tk in relevant}
@@ -112,11 +115,10 @@ class StaleTaskHandler(BaseCoordinationHandler):
 
     async def _nudge_stale_claim(self, task: Any) -> None:
         """Dispatch a stale-claim nudge to self or to the assigned member."""
-        host = self._host
         assignee = task.assignee
-        if assignee and assignee == host.blueprint.member_name:
+        if assignee and assignee == self._blueprint.member_name:
             await self._self_nudge_stale_claim(task)
-        elif host.blueprint.role == TeamRole.LEADER and assignee:
+        elif self._blueprint.role == TeamRole.LEADER and assignee:
             await self._leader_nudge_stale_claim(task)
 
     @staticmethod
@@ -130,22 +132,20 @@ class StaleTaskHandler(BaseCoordinationHandler):
 
     async def _self_nudge_stale_claim(self, task: Any) -> None:
         """Feed a nudge input into the local agent loop."""
-        host = self._host
         content = self._format_stale_claim_nudge(task)
-        await host.deliver_input(content)
+        await self._round.deliver_input(content)
         team_logger.info(
             "[{}] self-nudged stale claimed task {}",
-            host.blueprint.member_name,
+            self._blueprint.member_name,
             task.task_id,
         )
 
     async def _leader_nudge_stale_claim(self, task: Any) -> None:
         """Send a direct reminder to the member holding a stale claim."""
-        host = self._host
-        if host.infra.message_manager is None:
+        if self._infra.message_manager is None:
             return
         content = self._format_stale_claim_nudge(task)
-        await host.infra.message_manager.send_message(content, task.assignee)
+        await self._infra.message_manager.send_message(content, task.assignee)
         team_logger.info(
             "[leader] nudged {} about stale claimed task {}",
             task.assignee,
@@ -165,10 +165,9 @@ class StaleTaskHandler(BaseCoordinationHandler):
         throttle prevents follow-up polls from re-prompting inside the
         same stale window.
         """
-        host = self._host
-        if host.blueprint.role != TeamRole.LEADER:
+        if self._blueprint.role != TeamRole.LEADER:
             return
-        task_manager = host.infra.task_manager
+        task_manager = self._infra.task_manager
         if task_manager is None:
             return
 
@@ -203,7 +202,7 @@ class StaleTaskHandler(BaseCoordinationHandler):
             lines.append(f"- [{task.task_id}] {task.title}: {task.content}")
         content = "\n".join(lines)
 
-        await host.deliver_input(content)
+        await self._round.deliver_input(content)
         team_logger.info(
             "[leader] self-prompted about {} stale pending task(s)",
             len(fresh),

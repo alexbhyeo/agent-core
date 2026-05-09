@@ -86,6 +86,9 @@ class EventBus:
         self._wake_callback = wake_callback
         self._mailbox_poll_interval = mailbox_poll_interval
         self._task_poll_interval = task_poll_interval
+        # Allow late wiring: callers (e.g. CoordinationKernel) construct
+        # the bus before the dispatcher exists, then bind the dispatch
+        # method via ``set_wake_callback``.
         self._running = False
         self._polls_paused = False
         self._event_queue: asyncio.Queue[CoordinationEvent] = asyncio.Queue()
@@ -111,6 +114,17 @@ class EventBus:
     def polls_paused(self) -> bool:
         """Whether periodic polling is paused."""
         return self._polls_paused
+
+    def set_wake_callback(self, callback: WakeCallback) -> None:
+        """Bind the wake callback after construction.
+
+        Used by the coordination kernel to wire the dispatcher's
+        ``dispatch`` once both objects exist (the dispatcher needs the
+        bus's poll controls in its constructor, so the bus must exist
+        first; the bus's wake callback is the dispatcher, so the
+        dispatcher must exist second).
+        """
+        self._wake_callback = callback
 
     # ------------------------------------------------------
     # Lifecycle

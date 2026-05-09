@@ -312,12 +312,6 @@ class TeamAgent(BaseAgent):
 
         return await self._configurator.team_backend.force_clean_team(shutdown_members=force)
 
-    async def pause_polls(self) -> None:
-        await self._coordination.pause_polls()
-
-    async def resume_polls(self) -> None:
-        await self._coordination.resume_polls()
-
     async def steer(self, content: str) -> None:
         await self._stream_controller.steer(content)
 

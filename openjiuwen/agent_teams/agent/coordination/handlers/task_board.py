@@ -48,22 +48,21 @@ class TaskBoardHandler(BaseCoordinationHandler):
         change until the next stale-pending poll, which can be up to
         ``_STALE_PENDING_SECONDS`` away.
         """
-        host = self._host
-        member_name = host.blueprint.member_name
-        if not member_name or host.infra.task_manager is None:
+        member_name = self._blueprint.member_name
+        if not member_name or self._infra.task_manager is None:
             return
         payload = event.get_payload()
         if payload.member_name != member_name:
             await self.on_task_board_event(event)
             return
-        await host.resume_polls()
+        await self._poll.resume_polls()
         content = t("dispatcher.task_assigned_to_self", task_id=payload.task_id)
         team_logger.info(
             "[{}] received TASK_CLAIMED for self, task_id={}",
             member_name,
             payload.task_id,
         )
-        await host.deliver_input(content)
+        await self._round.deliver_input(content)
 
     async def on_task_board_event(self, event: EventMessage) -> None:
         """Nudge idle agent on TASK_CREATED/UPDATED/COMPLETED/CANCELLED/UNBLOCKED.
@@ -73,13 +72,12 @@ class TaskBoardHandler(BaseCoordinationHandler):
         ``_start_agent`` and overwrite the still-live agent task.
         TASK_CLAIMED is routed separately to ``on_task_claimed``.
         """
-        host = self._host
-        member_name = host.blueprint.member_name
-        if not member_name or host.infra.task_manager is None:
+        member_name = self._blueprint.member_name
+        if not member_name or self._infra.task_manager is None:
             return
-        if host.has_in_flight_round():
+        if self._round.has_in_flight_round():
             return
-        await host.resume_polls()
+        await self._poll.resume_polls()
         team_logger.debug("task trigger detected, nudging idle agent: member_name={}", member_name)
         await self._nudge_idle_agent(member_name)
 
@@ -98,23 +96,22 @@ class TaskBoardHandler(BaseCoordinationHandler):
                 prompts arrive via the TASK_EVENTS path so polling
                 should not re-trigger them.
         """
-        host = self._host
-        all_tasks = await host.infra.task_manager.list_tasks()
+        all_tasks = await self._infra.task_manager.list_tasks()
         terminal = {"completed", "cancelled"}
         incomplete = [tk for tk in all_tasks if tk.status not in terminal]
 
-        if from_poll and host.blueprint.role == TeamRole.LEADER and not incomplete:
+        if from_poll and self._blueprint.role == TeamRole.LEADER and not incomplete:
             return
 
         team_logger.debug("[{}] nudge_idle_agent: {} incomplete tasks", member_name, len(incomplete))
-        if host.blueprint.role == TeamRole.LEADER:
+        if self._blueprint.role == TeamRole.LEADER:
             if not incomplete:
-                lifecycle = host.blueprint.lifecycle
+                lifecycle = self._blueprint.lifecycle
                 if lifecycle == "persistent":
                     prompt = t("dispatcher.all_done_persistent")
                 else:
                     prompt = t("dispatcher.all_done_temporary")
-                await host.deliver_input(prompt)
+                await self._round.deliver_input(prompt)
                 return
             lines = [t("dispatcher.leader_task_board")]
         else:
@@ -127,4 +124,4 @@ class TaskBoardHandler(BaseCoordinationHandler):
             assignee = f" → {task.assignee}" if task.assignee else t("dispatcher.task_unassigned_marker")
             lines.append(f"- [{task.task_id}] [{task.status}] {task.title}: {task.content}{assignee}")
 
-        await host.deliver_input("\n".join(lines))
+        await self._round.deliver_input("\n".join(lines))

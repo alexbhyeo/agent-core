@@ -10,7 +10,7 @@ all behavior.
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, ClassVar
+from typing import ClassVar
 
 from openjiuwen.agent_teams.agent.coordination.event_bus import (
     InnerEventMessage,
@@ -20,9 +20,6 @@ from openjiuwen.agent_teams.agent.coordination.handlers.base import BaseCoordina
 from openjiuwen.agent_teams.schema.events import EventMessage, TeamEvent
 from openjiuwen.agent_teams.schema.team import TeamRole
 from openjiuwen.core.common.logging import team_logger
-
-if TYPE_CHECKING:
-    pass
 
 
 class AgentLifecycleHandler(BaseCoordinationHandler):
@@ -54,13 +51,13 @@ class AgentLifecycleHandler(BaseCoordinationHandler):
         """
         content = event.payload.get("content", "")
         team_logger.info("user_input → deliver_input")
-        await self._host.deliver_input(content)
+        await self._round.deliver_input(content)
 
     async def on_standby(self, event: EventMessage) -> None:
         """Pause periodic polling on TEAM_STANDBY."""
-        member_name = self._host.blueprint.member_name
+        member_name = self._blueprint.member_name
         team_logger.info("[{}] received TEAM_STANDBY, pausing polls", member_name)
-        await self._host.pause_polls()
+        await self._poll.pause_polls()
 
     async def on_cleaned(self, event: EventMessage) -> None:
         """Tear down on TEAM_CLEANED for non-leader members.
@@ -74,18 +71,16 @@ class AgentLifecycleHandler(BaseCoordinationHandler):
         human-agent avatars must abandon their loop here so they don't
         spin forever waiting for events on a dead team.
         """
-        host = self._host
-        member_name = host.blueprint.member_name
-        if host.blueprint.role == TeamRole.LEADER:
+        member_name = self._blueprint.member_name
+        if self._blueprint.role == TeamRole.LEADER:
             team_logger.debug("[{}] ignoring TEAM_CLEANED on leader path", member_name)
             return
         team_logger.info("[{}] received TEAM_CLEANED, shutting down coordination", member_name)
-        await host.shutdown_self()
+        await self._lifecycle.shutdown_self()
 
     async def on_tool_approval_result(self, event: EventMessage) -> None:
         """Resume a teammate HITL interrupt from a structured approval event."""
-        host = self._host
-        member_name = host.blueprint.member_name
+        member_name = self._blueprint.member_name
         payload = event.get_payload()
         target_id = payload.member_name
 
@@ -109,4 +104,4 @@ class AgentLifecycleHandler(BaseCoordinationHandler):
             payload.tool_call_id,
             payload.approved,
         )
-        await host.resume_interrupt(interactive_input)
+        await self._round.resume_interrupt(interactive_input)

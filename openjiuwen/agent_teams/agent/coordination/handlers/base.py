@@ -13,10 +13,17 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Awaitable, Callable, ClassVar
 
+from openjiuwen.agent_teams.agent.blueprint import TeamAgentBlueprint
 from openjiuwen.agent_teams.agent.coordination.event_bus import CoordinationEvent
+from openjiuwen.agent_teams.agent.infra import TeamInfra
 
 if TYPE_CHECKING:
-    from openjiuwen.agent_teams.agent.coordination.dispatcher import DispatcherHost
+    from openjiuwen.agent_teams.agent.coordination.dispatcher import (
+        AgentRoundController,
+        DispatcherHost,
+        PollController,
+        TeamLifecycleController,
+    )
 
 EventCallback = Callable[[CoordinationEvent], Awaitable[None]]
 
@@ -27,7 +34,12 @@ class BaseCoordinationHandler:
     Subclasses:
         - declare ``EVENT_METHOD_MAP`` mapping ``event_key -> method_name``
         - implement the corresponding ``async`` methods
-        - share read-only access to the ``DispatcherHost`` via ``self._host``
+        - read static config / per-process infra directly via
+          ``self._blueprint`` / ``self._infra``
+        - drive the round through ``self._round``, trigger lifecycle
+          effects through ``self._lifecycle``, and toggle the
+          coordination poll timers through ``self._poll`` — the host
+          object is no longer involved in the poll path
 
     Multiple handlers may register the same ``event_key`` — the
     framework fans out callbacks in registration order, so handlers
@@ -36,8 +48,25 @@ class BaseCoordinationHandler:
 
     EVENT_METHOD_MAP: ClassVar[dict[str, str]] = {}
 
-    def __init__(self, host: "DispatcherHost") -> None:
+    def __init__(
+        self,
+        host: "DispatcherHost",
+        blueprint: TeamAgentBlueprint,
+        infra: TeamInfra,
+        poll_ctrl: "PollController",
+    ) -> None:
+        # ``host`` and ``poll_ctrl`` are physically distinct: the
+        # owning TeamAgent satisfies AgentRoundController +
+        # TeamLifecycleController, while the coordination event bus
+        # satisfies PollController. Aliasing them under narrower
+        # protocol-typed fields documents which surface each call site
+        # actually depends on.
         self._host = host
+        self._round: "AgentRoundController" = host
+        self._lifecycle: "TeamLifecycleController" = host
+        self._poll = poll_ctrl
+        self._blueprint = blueprint
+        self._infra = infra
 
     def get_callbacks(self) -> dict[str, EventCallback]:
         """Return ``event_key -> bound method`` for framework registration."""

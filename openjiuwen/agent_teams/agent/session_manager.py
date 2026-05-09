@@ -53,9 +53,20 @@ class SessionManager:
     def team_session(self, value: Optional[AgentTeamSession]) -> None:
         self._state.team_session = value
 
-    async def _switch_session(self, session) -> None:
-        """Apply the new session id, contextvar, and per-session DB tables."""
+    async def bind_session(self, session: Optional[AgentTeamSession]) -> None:
+        """Bind this team agent to ``session`` (None clears the binding).
+
+        Wires session_id into the state and the global contextvar,
+        creates per-session DB tables, and persists leader config when
+        the team is leader-side. Idempotent for ``session=None`` —
+        repeated unbinds simply leave the agent unbound.
+        """
         from openjiuwen.agent_teams.context import set_session_id
+
+        if session is None:
+            self._state.session_id = None
+            self._state.team_session = None
+            return
 
         self._state.session_id = session.get_session_id()
         set_session_id(self._state.session_id)
@@ -69,6 +80,14 @@ class SessionManager:
         if spec and self._configurator.role == TeamRole.LEADER:
             self._recovery_manager.persist_leader_config(session)
 
+    def release_team_session(self) -> None:
+        """Drop the live ``AgentTeamSession`` reference.
+
+        Used by coordination tear-down to make sure a paused/stopped
+        agent does not keep a stale session pinned.
+        """
+        self._state.team_session = None
+
     async def resume_for_new_session(self, session) -> None:
         """Switch to a new session and rebind live teammate runtimes.
 
@@ -77,7 +96,7 @@ class SessionManager:
         new session_id.
         """
         recoverable_members = await self._recovery_manager.collect_live_teammates_for_session_switch()
-        await self._switch_session(session)
+        await self.bind_session(session)
 
         team_backend = self._configurator.team_backend
         if self._configurator.role != TeamRole.LEADER or not team_backend:
@@ -95,7 +114,7 @@ class SessionManager:
         cleared the live handles) and validated the checkpoint.
         """
         recoverable_members = await self._recovery_manager.collect_live_teammates_for_session_switch()
-        await self._switch_session(session)
+        await self.bind_session(session)
 
         team_backend = self._configurator.team_backend
         if self._configurator.role != TeamRole.LEADER or not team_backend:

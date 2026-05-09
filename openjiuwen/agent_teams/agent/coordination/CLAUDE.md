@@ -1,19 +1,31 @@
 # Coordination — 唤醒循环
 
-`TeamAgent` 的事件驱动唤醒层。把传输层来的 `EventMessage` 与内部 poll 计时器产生的 `InnerEventMessage` 收成统一的 `CoordinationEvent`，按粗筛规则放行后由 `AsyncCallbackFramework` 分发到具体的场景 handler。**自身不做业务决策**——所有真正的行为都来自 handler 触发的 `DispatcherHost` 回调（`deliver_input` / `cancel_agent` / `shutdown_self` / `pause_polls` 等），最终落到 DeepAgent + team tools。
+`TeamAgent` 的事件驱动唤醒层。把传输层来的 `EventMessage` 与内部 poll 计时器产生的 `InnerEventMessage` 收成统一的 `CoordinationEvent`，按粗筛规则放行后由 `AsyncCallbackFramework` 分发到具体的场景 handler。**自身不做业务决策**——handler 通过三类 narrow protocol（`AgentRoundController` / `TeamLifecycleController` / `PollController`）触发行为：`deliver_input` / `cancel_agent` / `resume_interrupt` / `shutdown_self` 落到 TeamHarness，`pause_polls` / `resume_polls` 直达 EventBus，最终驱动 DeepAgent + team tools。
 
 ## 文件地图
 
 | 文件 | 类 | 职责 |
 |---|---|---|
-| `event_bus.py` | `EventBus` / `InnerEventType` / `InnerEventMessage` | 事件入队 + 周期 poll timer + lifecycle（start / stop） |
-| `dispatcher.py` | `EventDispatcher` / `DispatcherHost` | 触发规则（agent_ready / inner-vs-transport / 角色级粗筛）+ 持有私有 `AsyncCallbackFramework` 实例 + 把 5 个场景 handler 的 `get_callbacks()` 注册到 framework；handler 实例作为字段直接暴露（`dispatcher.lifecycle / .member / .message / .task_board / .stale_task`） |
+| `event_bus.py` | `EventBus` / `InnerEventType` / `InnerEventMessage` | 事件入队 + 周期 poll timer + lifecycle（start / stop）；`set_wake_callback()` 支持后置 wire dispatcher.dispatch；天然实现 `PollController`（`pause_polls` / `resume_polls`） |
+| `dispatcher.py` | `EventDispatcher` + `AgentRoundController` / `TeamLifecycleController` / `PollController` / `DispatcherHost` | 三类 narrow protocol 划分调用面；触发规则（agent_ready / inner-vs-transport / 角色级粗筛）+ 持有私有 `AsyncCallbackFramework` 实例 + 把 5 个场景 handler 的 `get_callbacks()` 注册到 framework；handler 实例作为字段直接暴露（`dispatcher.lifecycle / .member / .message / .task_board / .stale_task`） |
 | `handlers/` | `BaseCoordinationHandler` + 5 个场景 handler | 见下文"handler 拆分" |
-| `kernel.py` | `CoordinationKernel` | 整体协调 facade：把 event_bus + dispatcher 挂在 host 上，pause / resume / drain |
+| `kernel.py` | `CoordinationKernel` | 整体协调 facade：构造 event_bus → 注入到 dispatcher 作 `poll_ctrl` → `event_bus.set_wake_callback(dispatcher.dispatch)`；start 委托 `SessionManager.bind_session`；pause / resume / drain |
 
 ## handler 拆分
 
 `handlers/` 下一个 handler 一个业务域，每个类自己声明 `EVENT_METHOD_MAP: ClassVar[dict[str, str]]` 与对应 `async` 方法，从 `BaseCoordinationHandler.get_callbacks()` 输出 `event_key → bound method` 注册给 framework。沿用 `core/single_agent/rail/base.py:AgentRail` 的 rails 约定。
+
+`BaseCoordinationHandler.__init__` 一次性接收 5 类依赖，子类用 narrow 字段访问对应职责：
+
+| 字段 | 类型 | 用途 |
+|---|---|---|
+| `self._blueprint` | `TeamAgentBlueprint` | 静态身份（role / member_name / lifecycle / spec）|
+| `self._infra` | `TeamInfra` | per-process 容器（task_manager / message_manager / team_backend / messager / workspace_manager）|
+| `self._round` | `AgentRoundController` | 跟 TeamHarness 打交道（deliver_input / cancel_agent / resume_interrupt / has_in_flight_round / has_pending_interrupt / is_agent_running）|
+| `self._lifecycle` | `TeamLifecycleController` | TeamAgent 级副作用（shutdown_self）|
+| `self._poll` | `PollController` | EventBus 自身的 poll 控制（pause_polls / resume_polls）|
+
+`self._host` 仍保留为指向 TeamAgent 的复合引用，但 handler 代码**不应再用它做新的访问**——任何新的依赖都应该通过 narrow protocol 字段或显式构造参数注入，避免重新滑回上帝接口。
 
 | handler | 监听 event | 状态 | 关键方法 |
 |---|---|---|---|
@@ -37,7 +49,9 @@
 
 - **fan-out 顺序由注册顺序决定**：`EventDispatcher.__init__` 中 `(lifecycle, member, message, task_board, stale_task)` 元组顺序就是 framework 注册顺序。同 priority（默认 0）下 Python `list.sort` 稳定，故 `MEMBER_SHUTDOWN` 上 `MemberHandler.on_member_event` 先于 `MessageHandler.on_member_shutdown_drain`。改这个元组顺序前先评估 fan-out 影响。
 - **`kernel.pause` 会等 in-flight round drain**：相关 `contextlib.suppress(asyncio.CancelledError, Exception)` 在 `stream_controller.drain_agent_task` —— 改清理路径时检查 `import contextlib` 是否还在（之前漏过一次）。
-- **`DispatcherHost` 是公共契约**：`dispatcher.py` 顶部的 `Protocol` 定义了 dispatcher / handler 反向调 host 的所有方法；扩展前先确认改动不会让现有 handler 行为漂移。
+- **三个 narrow protocol 是 host ↔ handler 的公共契约**：`AgentRoundController` / `TeamLifecycleController` 由 TeamAgent 实现，`PollController` 由 EventBus 实现。新增 handler 依赖前先想清楚：是 round 行为、TeamAgent 级生命周期、还是 poll 控制？把方法加到对应 protocol，不要把所有东西重新塞回 `DispatcherHost`。`start_agent` / `follow_up` / `steer` 故意不在 `AgentRoundController` 上——handler 走 `deliver_input` 让 host 按 round 状态自己分流。
+- **构造顺序敏感**：`kernel.setup()` 必须先建 EventBus、再建 EventDispatcher（注入 `poll_ctrl=event_bus`）、最后 `event_bus.set_wake_callback(dispatcher.dispatch)`。EventBus 支持 `wake_callback=None` 构造 + `set_wake_callback()` 后置绑定就是为了打断这个循环依赖。
+- **session 绑定走 `SessionManager.bind_session`**：`kernel.start()` 不直接写 `session_manager.session_id` / `team_session` 字段，调 `await sess_mgr.bind_session(session)`（None 清空）；teardown 走 `release_team_session()`。在 kernel 里手工再写一遍 session_id + contextvar + DB 表初始化 + persist_leader_config 就是在重复 `_switch_session` 时代的烂代码。
 
 ## 跟其它子目录的边界
 

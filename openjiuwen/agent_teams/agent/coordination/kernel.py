@@ -47,14 +47,28 @@ class CoordinationKernel:
     def setup(self, *, role: TeamRole) -> None:
         """Construct the event bus and dispatcher for the given role.
 
-        Called during TeamAgent.configure() once the role is known. The
-        dispatcher receives ``self._host`` as its DispatcherHost; the
-        bus's wake callback is wired to the dispatcher.
+        Called during TeamAgent.configure() once the role is known.
+        The bus is built first so it can be passed into the dispatcher
+        as the poll controller; the dispatcher's ``dispatch`` is then
+        bound back to the bus as the wake callback.
         """
         from openjiuwen.agent_teams.agent.coordination.dispatcher import EventDispatcher
 
-        self._dispatcher = EventDispatcher(self._host)
-        self._event_bus = EventBus(role=role, wake_callback=self._dispatcher.dispatch)
+        host = self._host
+        blueprint = host.blueprint
+        infra = host.infra
+        if blueprint is None or infra is None:
+            raise RuntimeError("CoordinationKernel.setup() requires configured blueprint and infra")
+        event_bus = EventBus(role=role)
+        dispatcher = EventDispatcher(
+            host,
+            blueprint=blueprint,
+            infra=infra,
+            poll_ctrl=event_bus,
+        )
+        event_bus.set_wake_callback(dispatcher.dispatch)
+        self._event_bus = event_bus
+        self._dispatcher = dispatcher
 
     @property
     def event_bus(self) -> Optional[EventBus]:
@@ -76,16 +90,6 @@ class CoordinationKernel:
             return
         await self._event_bus.enqueue(event)
 
-    async def pause_polls(self) -> None:
-        """Pause periodic polling on the event bus."""
-        if self._event_bus is not None:
-            await self._event_bus.pause_polls()
-
-    async def resume_polls(self) -> None:
-        """Resume periodic polling on the event bus."""
-        if self._event_bus is not None:
-            await self._event_bus.resume_polls()
-
     @property
     def is_running(self) -> bool:
         """Whether the underlying event bus is running."""
@@ -99,35 +103,23 @@ class CoordinationKernel:
         team_logger.info("[{}] coordination starting", member_name)
 
         sess_mgr = host.session_manager
-        rm = host.recovery_manager
         infra = host.infra
         resources = host.resources
         blueprint = host.blueprint
 
-        sess_mgr.session_id = session.get_session_id() if session else None
-        if sess_mgr.session_id:
-            from openjiuwen.agent_teams.context import set_session_id
-
-            set_session_id(sess_mgr.session_id)
         from openjiuwen.core.common.logging.utils import set_member_id
 
         set_member_id(member_name)
-        if session is not None:
-            if isinstance(session, AgentTeamSession):
-                sess_mgr.team_session = session
-            else:
-                team_logger.warning(
-                    "[{}] TeamAgent expects AgentTeamSession; got {}. "
-                    "Please invoke via Runner.run_agent_team_streaming.",
-                    member_name,
-                    type(session).__name__,
-                )
-        has_leader_blueprint = blueprint is not None and blueprint.spec is not None
-        if session and has_leader_blueprint and host.role == TeamRole.LEADER:
-            rm.persist_leader_config(session)
+        if session is not None and not isinstance(session, AgentTeamSession):
+            team_logger.warning(
+                "[{}] TeamAgent expects AgentTeamSession; got {}. "
+                "Please invoke via Runner.run_agent_team_streaming.",
+                member_name,
+                type(session).__name__,
+            )
         if infra.team_backend:
             await infra.team_backend.db.initialize()
-            await infra.team_backend.db.create_cur_session_tables()
+        await sess_mgr.bind_session(session)
 
         if host.role == TeamRole.LEADER and infra.team_backend:
             existing = await infra.team_backend.db.team.get_team(infra.team_backend.team_name)
@@ -205,7 +197,7 @@ class CoordinationKernel:
         if self._event_bus:
             await self._event_bus.stop()
         self.close_stream()
-        host.session_manager.team_session = None
+        host.session_manager.release_team_session()
 
     async def _mark_live_teammates_paused(self) -> None:
         """Persist PAUSED status for every spawned teammate before tearing down handles.
@@ -282,7 +274,7 @@ class CoordinationKernel:
             return
         await self._event_bus.stop()
         self.close_stream()
-        host.session_manager.team_session = None
+        host.session_manager.release_team_session()
 
     async def subscribe_transport(self, team_name: str) -> None:
         host = self._host
