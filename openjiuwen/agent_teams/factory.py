@@ -92,6 +92,10 @@ async def recover_agent_team(
             existing prepared team session.
         team_name: Which team's persisted bucket to recover. A session
             may carry state for multiple teams; the caller must specify.
+        runtime_spec: Optional live spec from the current runtime. Forwarded
+            to ``TeamAgent.recover_from_session`` to reinject
+            non-serializable fields (e.g. ``agent_customizer``) that are
+            dropped from the persisted spec.
         db_config: Database config (used only if session state is unavailable).
     """
     if isinstance(session, str):

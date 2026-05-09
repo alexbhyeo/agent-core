@@ -682,6 +682,11 @@ class TeamAgent(BaseAgent):
                 restored via ``pre_run``.
             team_name: Identifies which team's bucket to load. A session can
                 hold state for multiple teams; the caller must specify which.
+            runtime_spec: Optional live spec from the current process. Used to
+                reinject non-serializable fields (currently ``agent_customizer``,
+                which is ``Field(exclude=True)`` and never survives the
+                checkpoint round-trip). When omitted the recovered spec is
+                used as-is.
 
         Raises:
             ValueError: When the session has no bucket for ``team_name`` or
@@ -697,6 +702,11 @@ class TeamAgent(BaseAgent):
         if spec_data is None:
             raise ValueError(f"No leader spec found for team '{team_name}'")
         spec = TeamAgentSpec.model_validate(spec_data)
+        # agent_customizer is a Callable marked Field(exclude=True); it is
+        # dropped on serialization and always None after model_validate. Cold
+        # recover must reinject it from the live runtime spec, otherwise
+        # platform adapters that hook rails/tools through this callback get
+        # silently disabled across process restarts.
         if runtime_spec is not None and runtime_spec.agent_customizer is not None:
             spec.agent_customizer = runtime_spec.agent_customizer
         context = TeamRuntimeContext.model_validate(bucket["context"])

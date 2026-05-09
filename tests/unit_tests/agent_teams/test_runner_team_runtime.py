@@ -695,6 +695,113 @@ def test_team_agent_recover_from_session_restores_session_id():
     assert agent._session_manager.session_id == session_id
 
 
+def test_team_agent_recover_from_session_reinjects_runtime_spec_customizer():
+    """``runtime_spec.agent_customizer`` must replace the persisted spec's
+    customizer slot.
+
+    ``agent_customizer`` is ``Field(exclude=True)``, so the persisted bucket
+    never carries it. Without the runtime override, every cold recover would
+    silently disable platform adapter callbacks.
+    """
+    from openjiuwen.agent_teams.runtime.metadata import write_team_namespace
+
+    session_id = f"recover_customizer_{uuid.uuid4().hex}"
+    session = create_agent_team_session(session_id=session_id, team_id="persistent_team")
+    write_team_namespace(
+        session,
+        "persistent_team",
+        {
+            "spec": {
+                "team_name": "persistent_team",
+                "agents": {
+                    "leader": {},
+                },
+            },
+            "context": {
+                "role": "leader",
+                "member_name": "leader",
+                "persona": "leader",
+                "team_spec": {
+                    "team_name": "persistent_team",
+                    "display_name": "persistent_team",
+                    "leader_member_name": "leader",
+                },
+                "messager_config": {},
+                "db_config": {},
+            },
+        },
+    )
+
+    customizer = lambda *_args, **_kwargs: None  # noqa: E731 — sentinel callable for identity check
+    runtime_spec = TeamAgentSpec.model_construct(team_name="persistent_team", agents={})
+    runtime_spec.agent_customizer = customizer
+
+    captured: dict[str, Any] = {}
+
+    def fake_configure(self, spec, context):
+        captured["spec"] = spec
+        captured["context"] = context
+        return self
+
+    with patch.object(TeamAgent, "configure", fake_configure):
+        agent = TeamAgent.recover_from_session(
+            session,
+            "persistent_team",
+            runtime_spec=runtime_spec,
+        )
+
+    assert captured["spec"].agent_customizer is customizer
+    assert agent._session_manager.session_id == session_id
+
+
+def test_team_agent_recover_from_session_without_runtime_spec_keeps_customizer_none():
+    """Without ``runtime_spec`` the recovered spec keeps the persisted (None)
+    customizer slot.
+
+    Guards against accidental shadowing — the override path must only fire
+    when the caller explicitly supplies a runtime spec.
+    """
+    from openjiuwen.agent_teams.runtime.metadata import write_team_namespace
+
+    session_id = f"recover_no_runtime_{uuid.uuid4().hex}"
+    session = create_agent_team_session(session_id=session_id, team_id="persistent_team")
+    write_team_namespace(
+        session,
+        "persistent_team",
+        {
+            "spec": {
+                "team_name": "persistent_team",
+                "agents": {
+                    "leader": {},
+                },
+            },
+            "context": {
+                "role": "leader",
+                "member_name": "leader",
+                "persona": "leader",
+                "team_spec": {
+                    "team_name": "persistent_team",
+                    "display_name": "persistent_team",
+                    "leader_member_name": "leader",
+                },
+                "messager_config": {},
+                "db_config": {},
+            },
+        },
+    )
+
+    captured: dict[str, Any] = {}
+
+    def fake_configure(self, spec, context):
+        captured["spec"] = spec
+        return self
+
+    with patch.object(TeamAgent, "configure", fake_configure):
+        TeamAgent.recover_from_session(session, "persistent_team")
+
+    assert captured["spec"].agent_customizer is None
+
+
 @pytest.mark.asyncio
 async def test_team_session_forwards_child_stream_output_with_source_tags(isolated_checkpointer):
     session_id = f"stream_{uuid.uuid4().hex}"
@@ -1222,6 +1329,89 @@ class TestTeamRuntimeManagerDeleteTeam:
         fake_checkpointer.release.assert_any_await(good_session_id)
         assert fake_checkpointer.release.await_count == 2
         fake_db.team.delete_team.assert_awaited_once_with(team_name)
+
+    @pytest.mark.asyncio
+    @pytest.mark.level0
+    async def test_delete_team_skips_sessions_with_no_team_bucket(self):
+        """delete_team should skip sessions that resolve to None and pick the next one.
+
+        Production-realistic case: the first session has no persisted team
+        bucket (resolver returns ``None``, not raise). Helper must continue
+        scanning rather than treat ``None`` as the final answer.
+        """
+        from openjiuwen.agent_teams.runtime.manager import (
+            TeamRuntimeManager,
+            TeamSessionReleaseInfo,
+        )
+        from openjiuwen.agent_teams.tools.database import DatabaseConfig, DatabaseType
+
+        manager = TeamRuntimeManager()
+        team_name = "delete_none_skip_team"
+        empty_session_id = f"empty_{uuid.uuid4().hex}"
+        good_session_id = f"good_{uuid.uuid4().hex}"
+
+        db_config = DatabaseConfig(db_type=DatabaseType.SQLITE, connection_string=":memory:")
+        release_info = TeamSessionReleaseInfo(team_names=[team_name], db_config=db_config)
+        fake_db = AsyncMock()
+        fake_db.initialize = AsyncMock()
+        fake_db.drop_session_tables_by_id = AsyncMock(return_value=[])
+        fake_db.team = AsyncMock()
+        fake_db.team.delete_team = AsyncMock(return_value=True)
+        fake_checkpointer = AsyncMock()
+        fake_checkpointer.release = AsyncMock()
+
+        async def _fake_resolve(session_id: str):
+            if session_id == empty_session_id:
+                return None
+            if session_id == good_session_id:
+                return release_info
+            return None
+
+        with (
+            patch(
+                "openjiuwen.agent_teams.runtime.manager.TeamRuntimeManager.resolve_team_session_release_info",
+                side_effect=_fake_resolve,
+            ),
+            patch(
+                "openjiuwen.agent_teams.spawn.shared_resources.get_shared_db",
+                return_value=fake_db,
+            ),
+            patch(
+                "openjiuwen.agent_teams.runtime.manager.CheckpointerFactory.get_checkpointer",
+                return_value=fake_checkpointer,
+            ),
+        ):
+            result = await manager.delete_team(team_name, [empty_session_id, good_session_id])
+
+        assert result is True
+        fake_db.team.delete_team.assert_awaited_once_with(team_name)
+
+    @pytest.mark.asyncio
+    @pytest.mark.level0
+    async def test_delete_team_raises_when_no_session_resolves(self):
+        """delete_team must raise when every supplied session is unusable.
+
+        Pins the helper-returns-Optional / caller-raises contract so the
+        two never drift back into the old dual-raise shape.
+        """
+        from openjiuwen.agent_teams.runtime.manager import TeamRuntimeManager
+
+        manager = TeamRuntimeManager()
+        team_name = "delete_all_unusable_team"
+        bad_session_id = f"bad_{uuid.uuid4().hex}"
+        empty_session_id = f"empty_{uuid.uuid4().hex}"
+
+        async def _fake_resolve(session_id: str):
+            if session_id == bad_session_id:
+                raise RuntimeError(f"Cannot resolve team session release info for {session_id}")
+            return None
+
+        with patch(
+            "openjiuwen.agent_teams.runtime.manager.TeamRuntimeManager.resolve_team_session_release_info",
+            side_effect=_fake_resolve,
+        ):
+            with pytest.raises(RuntimeError, match="any supplied sessions"):
+                await manager.delete_team(team_name, [bad_session_id, empty_session_id])
 
     @pytest.mark.asyncio
     @pytest.mark.level0

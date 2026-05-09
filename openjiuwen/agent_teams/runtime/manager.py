@@ -354,8 +354,8 @@ class TeamRuntimeManager:
             release_info = await self._resolve_any_team_session_release_info(session_ids)
             if release_info is None:
                 raise RuntimeError(
-                    f"Cannot resolve team session release info for any supplied sessions: {session_ids}, "
-                    f"aborting delete_team"
+                    "Cannot resolve team session release info for any supplied sessions: "
+                    f"{session_ids}, aborting delete_team"
                 )
             db_config = release_info.db_config
 
@@ -419,27 +419,29 @@ class TeamRuntimeManager:
     async def _resolve_any_team_session_release_info(
         session_ids: list[str],
     ) -> Optional[TeamSessionReleaseInfo]:
-        """Return the first parseable release info from the supplied sessions."""
+        """Return the first parseable release info from the supplied sessions.
+
+        Sessions that fail to parse or carry no team bucket are skipped and
+        logged at warning level. ``None`` is returned only when every session
+        was unusable; callers decide whether that should raise.
+        """
         if not session_ids:
             return None
 
-        parse_errors: list[str] = []
         for session_id in session_ids:
             try:
                 release_info = await TeamRuntimeManager.resolve_team_session_release_info(session_id)
-            except Exception as exc:
-                parse_errors.append(f"{session_id}: {exc}")
+            except RuntimeError as exc:
+                team_logger.warning(
+                    "Skipping session {} during release-info resolution: {}",
+                    session_id,
+                    exc,
+                )
                 continue
             if release_info is None:
                 continue
             return release_info
 
-        if parse_errors:
-            details = "; ".join(parse_errors)
-            raise RuntimeError(
-                "Cannot resolve team session release info from supplied sessions: "
-                f"{details}"
-            )
         return None
 
     @staticmethod
