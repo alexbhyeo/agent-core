@@ -11,6 +11,8 @@ parallel ``_active_*`` mirror.
 
 from __future__ import annotations
 
+import asyncio
+import shutil
 from dataclasses import dataclass
 from typing import (
     TYPE_CHECKING,
@@ -38,14 +40,15 @@ from openjiuwen.agent_teams.monitor import (
     TeamMonitor,
     create_monitor,
 )
+from openjiuwen.agent_teams.paths import team_home
 from openjiuwen.agent_teams.runtime.dispatch import (
     RunAction,
     RunActionKind,
     decide_run_action,
 )
 from openjiuwen.agent_teams.runtime.metadata import (
-    read_team_namespace,
     read_team_names_in_session,
+    read_team_namespace,
     read_teams_bucket,
 )
 from openjiuwen.agent_teams.runtime.pool import (
@@ -320,13 +323,24 @@ class TeamRuntimeManager:
         *,
         force: bool = False,
     ) -> bool:
-        """Delete team runtime state, checkpoints, and persisted team metadata.
+        """Delete team runtime state, checkpoints, persisted metadata, and filesystem directory.
 
         Default ``force=False`` refuses while the team has an active
         runtime in the pool — callers must stop_team / pause_team first.
         ``force=True`` stops the active runtime in-line before tearing
         down persisted state, equivalent to ``stop_team`` then
         ``delete_team`` but skips the busy precondition.
+
+        Cleanup steps (in order):
+        1. Drop session dynamic tables
+        2. Release checkpoints
+        3. Delete team_info row (cascade removes members/tasks/messages)
+        4. Remove ``team_home(team_name)`` filesystem directory
+
+        The filesystem cleanup uses ``team_home`` from ``paths.py``, which
+        covers the standard layout including shared workspace and member
+        workspaces. User-customized workspace paths outside ``team_home``
+        are not removed here.
         """
         if await self._pool.has_active(team_name):
             entry = await self._pool.get(team_name)
@@ -370,7 +384,21 @@ class TeamRuntimeManager:
         for session_id in session_ids:
             await checkpointer.release(session_id)
 
-        return await db.team.delete_team(team_name)
+        deleted = await db.team.delete_team(team_name)
+
+        # Remove team filesystem directory (team_home) after database cleanup.
+        # This covers the case where the caller has already stopped the runtime
+        # (removing the pool entry) before calling delete_team, so we cannot
+        # access TeamBackend._remove_cleanup_paths().
+        team_dir = team_home(team_name)
+        if team_dir.is_dir():
+            try:
+                await asyncio.to_thread(shutil.rmtree, str(team_dir))
+                team_logger.info("Removed team directory: {}", team_dir)
+            except Exception as exc:
+                team_logger.warning("Failed to remove team directory {}: {}", team_dir, exc)
+
+        return deleted
 
     async def release_session(
         self,
