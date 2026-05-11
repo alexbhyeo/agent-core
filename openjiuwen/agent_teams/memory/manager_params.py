@@ -1,6 +1,6 @@
 # coding: utf-8
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
-"""Construction parameters for :class:`~openjiuwen.core.memory.team.manager.TeamMemoryManager`."""
+"""Construction parameters for :class:`~openjiuwen.agent_teams.memory.manager.TeamMemoryManager`."""
 
 from __future__ import annotations
 

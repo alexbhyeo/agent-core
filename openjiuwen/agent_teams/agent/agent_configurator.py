@@ -48,8 +48,8 @@ if TYPE_CHECKING:
     from openjiuwen.agent_teams.models.allocator import Allocation, ModelAllocator
     from openjiuwen.agent_teams.rails import FirstIterationGate
     from openjiuwen.agent_teams.team_workspace.manager import TeamWorkspaceManager
-    from openjiuwen.core.memory.team.manager import TeamMemoryManager
     from openjiuwen.harness.tools.worktree import WorktreeManager
+    from openjiuwen.agent_teams.memory.manager import TeamMemoryManager
 
 
 def _resolve_team_mode(spec: TeamAgentSpec) -> str:
@@ -404,9 +404,9 @@ class AgentConfigurator:
         if not (spec.memory and spec.memory.enabled):
             return None
 
-        from openjiuwen.core.memory.team.config import resolve_embedding_config
-        from openjiuwen.core.memory.team.manager import TeamMemoryManager
-        from openjiuwen.core.memory.team.manager_params import TeamMemoryManagerParams
+        from openjiuwen.agent_teams.memory.config import resolve_embedding_config
+        from openjiuwen.agent_teams.memory.manager import TeamMemoryManager
+        from openjiuwen.agent_teams.memory.manager_params import TeamMemoryManagerParams
 
         resolved_team_name = (ctx.team_spec.team_name if ctx.team_spec else None) or spec.team_name
         resolved_embedding = resolve_embedding_config(spec.memory)

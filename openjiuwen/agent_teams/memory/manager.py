@@ -8,7 +8,7 @@ import os
 from typing import TYPE_CHECKING, Any, Optional, Set
 
 from openjiuwen.core.common.logging import memory_logger as logger
-from openjiuwen.core.memory.team.manager_params import (
+from openjiuwen.agent_teams.memory.manager_params import (
     PromptMode,
     TeamLanguage,
     TeamLifecycle,
@@ -22,8 +22,8 @@ from openjiuwen.harness.workspace.workspace import Workspace
 
 if TYPE_CHECKING:
     from openjiuwen.core.memory.lite.manager import MemoryIndexManager
-    from openjiuwen.core.memory.team.member_memory_toolkit import MemberMemoryToolkit
-    from openjiuwen.core.memory.team.shared_memory import SharedMemoryManager
+    from openjiuwen.agent_teams.memory.member_memory_toolkit import MemberMemoryToolkit
+    from openjiuwen.agent_teams.memory.shared_memory import SharedMemoryManager
     from openjiuwen.core.sys_operation.sys_operation import SysOperation
     from openjiuwen.harness.deep_agent import DeepAgent
 
@@ -95,7 +95,7 @@ class TeamMemoryManager:
             logger.warning("[TeamMemoryManager] No workspace available, skipping init")
             return False
 
-        from openjiuwen.core.memory.team.member_memory_toolkit import MemberMemoryToolkit
+        from openjiuwen.agent_teams.memory.member_memory_toolkit import MemberMemoryToolkit
 
         self._toolkit = MemberMemoryToolkit(
             member_name=self._member_name,
@@ -113,7 +113,7 @@ class TeamMemoryManager:
             return False
 
         if self._team_memory_dir:
-            from openjiuwen.core.memory.team.shared_memory import SharedMemoryManager
+            from openjiuwen.agent_teams.memory.shared_memory import SharedMemoryManager
 
             self._shared_manager = SharedMemoryManager(
                 team_memory_dir=self._team_memory_dir,
@@ -139,11 +139,10 @@ class TeamMemoryManager:
         return 0
 
     def register_tools(self, deep_agent: "DeepAgent") -> None:
-        """注册记忆工具到 DeepAgent，同时移除已有 MemoryRail/CodingMemoryRail。
-
-        幂等：已注册过则跳过。
-
-        副作用登记在 ``_owned_*`` 与 ``_deep_agent_for_cleanup``，由 ``close()`` 回收。
+        """Register memory tools to DeepAgent
+           Idempotent: Skip if already registered.
+           Side effects are recorded in ``_owned_*`` and ``_deep_agent_for_cleanup``, 
+           and will be reclaimed by ``close()``.
         """
         if self._owned_tool_names:
             return
@@ -319,7 +318,7 @@ class TeamMemoryManager:
         if not self._team_memory_dir or not self._db:
             return
 
-        from openjiuwen.core.memory.team.extractor import extract_team_memories
+        from openjiuwen.agent_teams.memory.extractor import extract_team_memories
 
         try:
             await extract_team_memories(
