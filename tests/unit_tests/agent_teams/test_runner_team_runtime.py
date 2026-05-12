@@ -243,10 +243,19 @@ async def test_team_runtime_manager_cold_recover_reinjects_runtime_spec():
 
 
 @pytest.mark.asyncio
-async def test_runner_team_runtime_manager_resumes_new_session_and_recovers_history(
+async def test_runner_session_switch_stops_and_rebuilds(
     isolated_checkpointer,
     stateful_team_db,
 ):
+    """Switching sessions for the same team tears down the pool entry
+    (stop_coordination + pool.remove) before redispatching cold.
+
+    Replaces the old warm-session-switch path (WARM_RECOVER /
+    NEW_TEAM_IN_SESSION_WARM) which reused the same TeamAgent instance
+    across sessions and was prone to state bleed. The new contract:
+    every cross-session activation starts from a freshly built or
+    cold-recovered agent against an empty pool slot.
+    """
     await Runner.start()
     session_one = f"resume_{uuid.uuid4().hex}"
     session_two = f"resume_{uuid.uuid4().hex}"
@@ -277,22 +286,16 @@ async def test_runner_team_runtime_manager_resumes_new_session_and_recovers_hist
                 session=session_two,
             )
         ]
-        third_chunks = [
-            chunk
-            async for chunk in Runner.run_agent_team_streaming(
-                agent_team=spec,
-                inputs={"query": "third"},
-                session=session_one,
-            )
-        ]
 
     assert first_chunks[0].payload["activation_kind"] == "create"
-    # session_two has no bucket yet for the team; pool already holds the
-    # team from round one, so this is the warm "new team in session" path.
-    assert second_chunks[0].payload["activation_kind"] == "new_team_in_session_warm"
-    assert active_agent.resume_calls == [session_two, session_one]
-    # round 3 reuses session_one which already carries the team bucket.
-    assert third_chunks[0].payload["activation_kind"] == "warm_recover"
+    # session_two has no bucket for the team yet (round 1 wrote into
+    # session_one). The stale session_one pool entry is torn down before
+    # dispatch, so the cold path picks NEW_TEAM_IN_SESSION (team_in_db
+    # True via the manual create_team above; team_in_session False).
+    assert second_chunks[0].payload["activation_kind"] == "new_team_in_session"
+    assert active_agent.resume_calls == [session_two]
+    # The pool teardown on session switch must have called stop_coordination
+    # at least once on the round-one agent (session_one -> session_two).
     assert active_agent.stop_calls >= 1
 
     await Runner.stop()

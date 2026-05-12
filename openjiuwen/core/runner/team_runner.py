@@ -190,6 +190,10 @@ class _TeamRunnerMixin:
                     return None
                 return await activation.agent.invoke(inputs, session=activation.session)
             finally:
+                await self._get_team_runtime_manager().finalize(
+                    team_name=spec.team_name,
+                    session_id=activation.session.get_session_id(),
+                )
                 await self._close_team_interact_gate(
                     team_name=spec.team_name,
                     session_id=activation.session.get_session_id(),
@@ -243,6 +247,10 @@ class _TeamRunnerMixin:
                 async for chunk in activation.agent.stream(inputs, session=activation.session):
                     yield chunk
             finally:
+                await self._get_team_runtime_manager().finalize(
+                    team_name=spec.team_name,
+                    session_id=activation.session.get_session_id(),
+                )
                 await self._close_team_interact_gate(
                     team_name=spec.team_name,
                     session_id=activation.session.get_session_id(),
@@ -334,6 +342,7 @@ class _TeamRunnerMixin:
             try:
                 return await agent.invoke(inputs, session=team_session)
             finally:
+                await self._get_team_runtime_manager().finalize_member(agent)
                 if team_runtime is not None:
                     team_runtime.unbind_team_session(team_session.get_session_id())
                 await team_session.post_run()
@@ -356,6 +365,7 @@ class _TeamRunnerMixin:
                 async for chunk in agent.stream(inputs, session=team_session):
                     yield chunk
             finally:
+                await self._get_team_runtime_manager().finalize_member(agent)
                 if team_runtime is not None:
                     team_runtime.unbind_team_session(team_session.get_session_id())
                 await team_session.post_run()

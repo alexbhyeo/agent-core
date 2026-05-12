@@ -213,6 +213,23 @@ class TeamAgent(BaseAgent):
         """Return the TeamMember handle for this agent, if set."""
         return self._state.team_member
 
+    async def is_shutdown_requested(self) -> bool:
+        """Whether this teammate has been asked to shut down or already has.
+
+        Leaders never carry a TeamMember handle (only teammates and human
+        agents do), so this always returns False for leader agents.
+        Includes ``SHUTDOWN`` itself because ``shutdown_self`` writes the
+        terminal status directly before tearing down the stream — the
+        finalize path must treat that as "already heading out" and not
+        flip the status back to READY through a pause decision.
+        Consumed by ``TeamRuntimeManager.finalize_member``.
+        """
+        member = self._state.team_member
+        if member is None:
+            return False
+        status = await member.status()
+        return status in (MemberStatus.SHUTDOWN_REQUESTED, MemberStatus.SHUTDOWN)
+
     @property
     def pending_user_query(self) -> str:
         """Return the pending user query string."""
@@ -309,10 +326,50 @@ class TeamAgent(BaseAgent):
         except Exception as e:
             team_logger.warning("[{}] stop coordination during destroy failed: {}", self._member_name() or "?", e)
 
+        # Drop any pool entry for this team so the next ``run_agent_team*``
+        # call sees a clean slate. ``destroy_team`` is the leader-level
+        # teardown sibling of ``TeamRuntimeManager.stop_team`` / ``delete_team``
+        # — invoked directly on the TeamAgent it must still honor the
+        # "stop_coordination implies pool.remove" invariant. Best-effort:
+        # any failure is logged but does not break the destroy contract.
+        await self._remove_self_from_pool()
+
         if not self._configurator.team_backend:
             return False
 
         return await self._configurator.team_backend.force_clean_team(shutdown_members=force)
+
+    async def _remove_self_from_pool(self) -> None:
+        """Best-effort detach from the process-global team runtime pool.
+
+        Reaches into ``GLOBAL_RUNNER`` to find the runtime manager rather
+        than holding a back reference, because pool ownership is a
+        runtime-layer concern that the TeamAgent must not couple to at
+        construction time. Idempotent — a missing pool entry, a manager
+        that was never lazily created, or any access failure all become
+        no-ops with a warning log.
+        """
+        team_name = self._configurator.team_name
+        session_id = self._session_manager.session_id
+        if not team_name or not session_id:
+            return
+        try:
+            from openjiuwen.core.runner.runner import GLOBAL_RUNNER
+
+            manager = getattr(GLOBAL_RUNNER, "_team_runtime_manager", None)
+            if manager is None:
+                return
+            pool = manager.pool
+            entry = await pool.get(team_name)
+            if entry is None or entry.current_session_id != session_id:
+                return
+            await pool.remove(team_name)
+        except Exception as exc:
+            team_logger.warning(
+                "[{}] destroy_team pool cleanup failed: {}",
+                self._member_name() or "?",
+                exc,
+            )
 
     async def steer(self, content: str) -> None:
         await self._stream_controller.steer(content)
