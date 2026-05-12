@@ -60,8 +60,11 @@ dependencies = [
     "loguru>=0.7.3",
 ]
 
+# A2A: required for `openjiuwen.remote_clients` / `openjiuwen.server_adapters` A2A entry
+# points (`pip install "openjiuwen[all-a2a]"` — entry points do not auto-install deps).
 [project.optional-dependencies]
-a2a = ["a2a-sdk[http-server]==1.0.0"]
+# Parallel to `all-mq` / `all-storage` / `all-vector` (integration bundle name).
+all-a2a = ["a2a-sdk[http-server]==1.0.0"]
 pulsar = ["pulsar-client>=3.5.0"]
 elasticsearch = ["elasticsearch[async]>=8.0.0"]
 redis = ["redis>=7.1.0"]
@@ -93,7 +96,8 @@ all-vector = ["openjiuwen[pgvector,chromadb,gaussvector]"]
 cli = ["click>=8.0", "rich>=13.0", "prompt-toolkit>=3.0"]
 
 default = []
-all = ["openjiuwen[all-mq,all-storage,all-vector]"]
+# Includes A2A SDK so the A2A remote/server plugins work when using `openjiuwen[all]`.
+all = ["openjiuwen[all-mq,all-storage,all-vector,all-a2a]"]
 
 [dependency-groups]
 # Testing
@@ -127,6 +131,9 @@ dev = [{ include-group = "test" }, { include-group = "lint" }, { include-group =
 
 [project.entry-points."openjiuwen.remote_clients"]
 A2A = "openjiuwen.extensions.a2a.a2a_remote_client:A2ARemoteClient"
+
+[project.entry-points."openjiuwen.server_adapters"]
+A2A = "openjiuwen.extensions.a2a.a2a_server_adapter:A2AServerAdapter"
 
 [project.scripts]
 openjiuwen = "openjiuwen.harness.cli.cli:cli"

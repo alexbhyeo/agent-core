@@ -70,6 +70,7 @@ class RunnerConfig(BaseModel):
     instance_id: str = Field(default_factory=lambda: str(uuid.uuid4()))
     checkpointer_config: Optional[CheckpointerConfig] = None
     enable_session_controller: bool = False
+    enable_a2a: bool = False
 
     def agent_topic_template(self) -> str:
         """Get single_agent topic template with environment prefix"""

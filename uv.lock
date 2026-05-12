@@ -3026,10 +3026,8 @@ dependencies = [
 ]
 
 [package.optional-dependencies]
-a2a = [
-    { name = "a2a-sdk", extra = ["http-server"] },
-]
 all = [
+    { name = "a2a-sdk", extra = ["http-server"] },
     { name = "aioboto3" },
     { name = "aiomysql" },
     { name = "aiosqlite" },
@@ -3044,6 +3042,9 @@ all = [
     { name = "psycopg2-binary" },
     { name = "pulsar-client" },
     { name = "redis" },
+]
+all-a2a = [
+    { name = "a2a-sdk", extra = ["http-server"] },
 ]
 all-mq = [
     { name = "pulsar-client" },
@@ -3170,7 +3171,7 @@ test = [
 
 [package.metadata]
 requires-dist = [
-    { name = "a2a-sdk", extras = ["http-server"], marker = "extra == 'a2a'", specifier = "==1.0.0" },
+    { name = "a2a-sdk", extras = ["http-server"], marker = "extra == 'all-a2a'", specifier = "==1.0.0" },
     { name = "agent-sandbox", marker = "extra == 'sandbox'", specifier = ">=0.0.26" },
     { name = "aioboto3", marker = "extra == 'obs'", specifier = ">=11.0.0" },
     { name = "aiofiles", specifier = ">=25.1.0" },
@@ -3204,7 +3205,7 @@ requires-dist = [
     { name = "oauthlib", specifier = ">=3.3.1" },
     { name = "omegaconf", marker = "extra == 'online-rl'", specifier = ">=2.3.0" },
     { name = "openai", specifier = ">=1.108.0" },
-    { name = "openjiuwen", extras = ["all-mq", "all-storage", "all-vector"], marker = "extra == 'all'" },
+    { name = "openjiuwen", extras = ["all-mq", "all-storage", "all-vector", "all-a2a"], marker = "extra == 'all'" },
     { name = "openjiuwen", extras = ["pgvector", "chromadb", "gaussvector"], marker = "extra == 'all-vector'" },
     { name = "openjiuwen", extras = ["pulsar"], marker = "extra == 'all-mq'" },
     { name = "openjiuwen", extras = ["sqlite", "postgres", "mysql", "gaussdb", "redis", "elasticsearch", "obs"], marker = "extra == 'all-storage'" },
@@ -3237,7 +3238,7 @@ requires-dist = [
     { name = "transformers", specifier = ">=4.52.4" },
     { name = "uvicorn", extras = ["standard"], marker = "extra == 'online-rl'" },
 ]
-provides-extras = ["a2a", "pulsar", "elasticsearch", "redis", "sqlite", "postgres", "mysql", "gaussdb", "pgvector", "gaussvector", "chromadb", "obs", "zmq", "sandbox", "mem0", "online-rl", "all-mq", "all-storage", "all-vector", "cli", "default", "all"]
+provides-extras = ["all-a2a", "pulsar", "elasticsearch", "redis", "sqlite", "postgres", "mysql", "gaussdb", "pgvector", "gaussvector", "chromadb", "obs", "zmq", "sandbox", "mem0", "online-rl", "all-mq", "all-storage", "all-vector", "cli", "default", "all"]
 
 [package.metadata.requires-dev]
 dev = [
