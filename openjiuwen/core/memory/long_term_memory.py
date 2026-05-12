@@ -11,6 +11,7 @@ from openjiuwen.core.memory.config.config import MemoryEngineConfig, MemoryScope
 from openjiuwen.core.memory.process.extract.generation import Generator
 from openjiuwen.core.memory.manage.mem_model.data_id_manager import DataIdManager
 from openjiuwen.core.memory.manage.mem_model.message_manager import MessageManager, MessageAddRequest
+from openjiuwen.core.foundation.store.base_message_store import BaseMessageStore
 from openjiuwen.core.memory.manage.index.fragment_memory_manager import FragmentMemoryManager
 from openjiuwen.core.memory.manage.index.variable_manager import VariableManager
 from openjiuwen.core.memory.manage.index.write_manager import WriteManager
@@ -24,6 +25,7 @@ from openjiuwen.core.foundation.store.base_kv_store import BaseKVStore
 from openjiuwen.core.memory.manage.mem_model.semantic_store import SemanticStore
 from openjiuwen.core.memory.manage.mem_model.db_model import create_tables
 from openjiuwen.core.memory.manage.mem_model.sql_db_store import SqlDbStore
+from openjiuwen.core.memory.manage.mem_model.sql_message_store import SqlMessageStore
 from openjiuwen.core.memory.manage.mem_model.user_mem_store import UserMemStore
 from openjiuwen.core.foundation.llm import UserMessage, BaseMessage, Model
 from openjiuwen.core.common.utils.singleton import Singleton
@@ -35,7 +37,8 @@ from openjiuwen.core.common.exception.codes import StatusCode
 from openjiuwen.core.common.exception.errors import build_error
 from openjiuwen.core.common.logging import memory_logger
 from openjiuwen.core.common.logging.events import LogEventType
-from openjiuwen.core.memory.migration.run_migrations import run_kv_migrations, run_vector_migrations, run_sql_migrations
+from openjiuwen.core.memory.migration.run_migrations import run_kv_migrations, run_vector_migrations,\
+            run_sql_migrations, run_message_migrations
 from openjiuwen.core.runner.callback import trigger, lazy_callback_framework as _fw
 from openjiuwen.core.runner.callback.events import MemoryEvents
 
@@ -84,6 +87,7 @@ class LongTermMemory(metaclass=Singleton):
         self.kv_store: BaseKVStore | None = None
         self.vector_store: BaseVectorStore | None = None
         self.db_store: BaseDbStore | None = None
+        self.message_store: BaseMessageStore | None = None
         # managers
         self.scope_user_mapping_manager = None
         self.message_manager: MessageManager | None = None
@@ -104,7 +108,8 @@ class LongTermMemory(metaclass=Singleton):
     async def register_store(self, kv_store: BaseKVStore,
                              vector_store: BaseVectorStore | None = None,
                              db_store: BaseDbStore | None = None,
-                             embedding_model: Embedding | None = None):
+                             embedding_model: Embedding | None = None,
+                             message_store: BaseMessageStore | None = None):
         """
         Register store instance.
 
@@ -135,13 +140,26 @@ class LongTermMemory(metaclass=Singleton):
                 error_msg="db store must be instance of BaseDbStore",
             )
 
+        if message_store is not None and not isinstance(message_store, BaseMessageStore):
+            raise build_error(
+                StatusCode.MEMORY_REGISTER_STORE_EXECUTION_ERROR,
+                store_type="message store",
+                error_msg="message store must be instance of BaseMessageStore",
+            )
+
         self.kv_store = kv_store
         self.vector_store = vector_store
         self.db_store = db_store
         self._base_embed = embedding_model
+        self.message_store = message_store
 
         if self.db_store:
             await create_tables(self.db_store)
+
+        # Create internal SqlMessageStore if not provided externally, so it can be migrated
+        if not self.message_store and self.db_store:
+            sql_db_store = SqlDbStore(self.db_store)
+            self.message_store = SqlMessageStore(sql_db_store=sql_db_store)
 
         self.set_config(MemoryEngineConfig())
 
@@ -166,6 +184,13 @@ class LongTermMemory(metaclass=Singleton):
                 store_type="db store"
             )
 
+        if self.message_store:
+            await self._run_migration(
+                migrate_func=run_message_migrations,
+                store=self.message_store,
+                store_type="message store"
+            )
+
     def set_config(self, config: MemoryEngineConfig):
         """
         Set configuration.
@@ -183,14 +208,14 @@ class LongTermMemory(metaclass=Singleton):
         data_id_generator = DataIdManager()
         user_mem_store = UserMemStore(self.kv_store)
 
-        if self.db_store:
-            sql_db_store = SqlDbStore(self.db_store)
+        sql_db_store = SqlDbStore(self.db_store) if self.db_store else None
+        if sql_db_store:
             self.scope_user_mapping_manager = ScopeUserMappingManager(sql_db_store)
-            self.message_manager = MessageManager(
-                sql_db_store,
-                data_id_generator,
-                config.crypto_key
-            )
+
+        if self.message_store:
+            if isinstance(self.message_store, SqlMessageStore) and self.message_store.crypto_key is None:
+                self.message_store.crypto_key = config.crypto_key
+            self.message_manager = MessageManager(store=self.message_store)
         self.fragment_memory_manager = FragmentMemoryManager(
             user_mem_store=user_mem_store,
             data_id_generator=data_id_generator,

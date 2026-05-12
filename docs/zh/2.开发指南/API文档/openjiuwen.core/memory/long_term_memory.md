@@ -19,8 +19,9 @@ class openjiuwen.core.memory.long_term_memory.LongTermMemory(metaclass=Singleton
 
 > **说明**：与旧版 `MemoryEngine(config: SysMemConfig, ...)` 不同，`LongTermMemory` 采用**无参构造 + 分步初始化**的方式：
 > 1. 先调用 `await register_store(...)` 注册底层存储；
-> 2. 再调用 `set_config(MemoryEngineConfig(...))` 设置全局配置；
-> 3. 可选地通过 `set_scope_config(scope_id, MemoryScopeConfig(...))` 为不同业务场景配置独立的模型/向量参数。
+> 2. 可选地调用 `register_message_store(...)` 注册自定义消息存储（如未调用，将根据已注册的 `db_store` 创建默认的 `SqlMessageStore`）；
+> 3. 再调用 `set_config(MemoryEngineConfig(...))` 设置全局配置；
+> 4. 可选地通过 `set_scope_config(scope_id, MemoryScopeConfig(...))` 为不同业务场景配置独立的模型/向量参数。
 
 ```
 LongTermMemory()
@@ -31,9 +32,9 @@ LongTermMemory()
 **内部状态初始化**：
 
 - 配置相关：`_sys_mem_config: MemoryEngineConfig | None = None`、`_scope_config: dict[str, MemoryScopeConfig] = {}`；
-- 存储相关：`kv_store / semantic_store / db_store` 均为 `None`，需通过 `register_store` 注册；
-- 管理器相关：`scope_user_mapping_manager / message_manager / user_profile_manager / variable_manager / write_manager / search_manager / generator` 均为 `None`，在 `set_config` 时初始化；
-- LLM 相关：`_base_llm: Tuple[str, Model] | None = None`（在 `set_config` 时设置）；
+- 存储相关：`kv_store / vector_store / db_store / message_store` 均为 `None`，需通过 `register_store`（以及可选的 `register_message_store`）注册；
+- 管理器相关：`scope_user_mapping_manager / message_manager / fragment_memory_manager / variable_manager / write_manager / search_manager / generator` 均为 `None`，在 `set_config` 时初始化；
+- LLM 相关：`_base_llm: Model | None = None`（在 `set_config` 时设置）；
 - 嵌入模型缓存：`_scope_embedding: dict[str, Embedding] = {}`。
 
 
@@ -117,6 +118,46 @@ async def register_store(
 ```
 
 
+### register_message_store
+
+```
+def register_message_store(self, message_store: BaseMessageStore) -> None
+```
+
+注册自定义 `BaseMessageStore` 实现。允许外部代码提供自定义消息存储（例如使用不同的数据库后端），而不是默认的 `SqlMessageStore`。
+
+必须在 `set_config()` 之前调用。如未调用，`LongTermMemory` 将根据已注册的 `db_store` 创建默认的 `SqlMessageStore`。
+
+**参数**：
+
+* **message_store**(BaseMessageStore)：`BaseMessageStore` 实现实例。
+
+**异常**：
+
+* **build_error**：当 `message_store` 不是 `BaseMessageStore` 实例时抛出（`MEMORY_REGISTER_STORE_EXECUTION_ERROR`）。
+
+**样例**：
+
+```python
+>>> from openjiuwen.core.memory.long_term_memory import LongTermMemory
+>>> from openjiuwen.core.foundation.store.base_message_store import BaseMessageStore
+>>> from openjiuwen.core.memory.manage.mem_model.sql_message_store import SqlMessageStore
+>>> from openjiuwen.core.memory.manage.mem_model.sql_db_store import SqlDbStore
+>>>
+>>> # 创建自定义消息存储
+>>> sql_db_store = SqlDbStore(db_store)
+>>> custom_message_store = SqlMessageStore(
+>>>     crypto_key=b"your-32-byte-aes-key-here!!",
+>>>     sql_db_store=sql_db_store,
+>>>     table_name="custom_messages"
+>>> )
+>>>
+>>> # 注册自定义消息存储
+>>> memory = LongTermMemory()
+>>> memory.register_message_store(custom_message_store)
+```
+
+
 ### set_config
 
 ```
@@ -136,11 +177,27 @@ def set_config(self, config: MemoryEngineConfig) -> None
 
 **前置条件**：
 
-- 必须已调用 `register_store` 注册 `kv_store`、`semantic_store`、`db_store`，否则会抛出 `build_error`（`MEMORY_SET_CONFIG_EXECUTION_ERROR`）。
+- 必须已调用 `register_store` 注册 `kv_store`、`vector_store`、`db_store`，否则会抛出 `build_error`（`MEMORY_SET_CONFIG_EXECUTION_ERROR`）。
 
 **异常**：
 
 * **build_error**：当未调用 `register_store` 或配置无效时抛出。
+
+**初始化的内部管理器**：
+
+此方法初始化以下内部管理器：
+
+* `scope_user_mapping_manager`：管理作用域与用户的映射关系；
+* `message_manager`：处理消息的存储和检索操作。有两种初始化方式：
+  - 如果在调用 `set_config()` 之前通过 `register_message_store()` 注册了自定义的 `message_store`，则使用已注册的存储；
+  - 否则，使用注册的 `db_store` 创建默认的 `SqlMessageStore`，使用配置中的 `crypto_key` 和表名 `"user_message"`；
+* `fragment_memory_manager`：管理用户画像、情景记忆和语义记忆；
+* `variable_manager`：管理用户变量的存储和检索；
+* `summary_manager`：管理用户摘要记忆；
+* `write_manager`：协调所有记忆类型的写入操作；
+* `search_manager`：处理所有记忆类型的搜索查询；
+* `generator`：使用 LLM 从消息生成记忆内容；
+* `_base_llm`：基础大语言模型实例（仅当提供了 `default_model_cfg` 和 `default_model_client_cfg` 时初始化）。
 
 **样例**：
 

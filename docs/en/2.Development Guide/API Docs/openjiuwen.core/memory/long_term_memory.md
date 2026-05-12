@@ -19,8 +19,9 @@ class openjiuwen.core.memory.long_term_memory.LongTermMemory(metaclass=Singleton
 
 > **Note**: Unlike the legacy `MemoryEngine(config: SysMemConfig, ...)`, `LongTermMemory` uses a **parameterless constructor + step-by-step initialization** approach:
 > 1. First call `await register_store(...)` to register underlying storage;
-> 2. Then call `set_config(MemoryEngineConfig(...))` to set global configuration;
-> 3. Optionally configure independent model/vector parameters for different business scenarios through `set_scope_config(scope_id, MemoryScopeConfig(...))`.
+> 2. Optionally call `register_message_store(...)` to register a custom message store (if not called, a default `SqlMessageStore` will be created from the registered `db_store`);
+> 3. Then call `set_config(MemoryEngineConfig(...))` to set global configuration;
+> 4. Optionally configure independent model/vector parameters for different business scenarios through `set_scope_config(scope_id, MemoryScopeConfig(...))`.
 
 ```
 LongTermMemory()
@@ -31,9 +32,9 @@ Initialize `LongTermMemory` instance (singleton pattern, multiple calls return t
 **Internal State Initialization**:
 
 - Configuration related: `_sys_mem_config: MemoryEngineConfig | None = None`, `_scope_config: dict[str, MemoryScopeConfig] = {}`;
-- Storage related: `kv_store / semantic_store / db_store` are all `None`, need to register through `register_store`;
-- Manager related: `scope_user_mapping_manager / message_manager / user_profile_manager / variable_manager / write_manager / search_manager / generator` are all `None`, initialized during `set_config`;
-- LLM related: `_base_llm: Tuple[str, Model] | None = None` (set during `set_config`);
+- Storage related: `kv_store / vector_store / db_store / message_store` are all `None`, need to register through `register_store` (and optionally `register_message_store`);
+- Manager related: `scope_user_mapping_manager / message_manager / fragment_memory_manager / variable_manager / write_manager / search_manager / generator` are all `None`, initialized during `set_config`;
+- LLM related: `_base_llm: Model | None = None` (set during `set_config`);
 - Embedding model cache: `_scope_embedding: dict[str, Embedding] = {}`.
 
 
@@ -117,6 +118,46 @@ Register underlying storage instances, must be completed before calling `set_con
 ```
 
 
+### register_message_store
+
+```
+def register_message_store(self, message_store: BaseMessageStore) -> None
+```
+
+Register a custom `BaseMessageStore` implementation. This allows external code to provide a custom message store (e.g., using a different database backend) instead of the default `SqlMessageStore`.
+
+Must be called before `set_config()`. If not called, `LongTermMemory` will create a default `SqlMessageStore` from the registered `db_store`.
+
+**Parameters**:
+
+* **message_store** (BaseMessageStore): A `BaseMessageStore` implementation instance.
+
+**Exceptions**:
+
+* **build_error**: Raised when `message_store` is not a `BaseMessageStore` instance (`MEMORY_REGISTER_STORE_EXECUTION_ERROR`).
+
+**Example**:
+
+```python
+>>> from openjiuwen.core.memory.long_term_memory import LongTermMemory
+>>> from openjiuwen.core.foundation.store.base_message_store import BaseMessageStore
+>>> from openjiuwen.core.memory.manage.mem_model.sql_message_store import SqlMessageStore
+>>> from openjiuwen.core.memory.manage.mem_model.sql_db_store import SqlDbStore
+>>>
+>>> # Create a custom message store
+>>> sql_db_store = SqlDbStore(db_store)
+>>> custom_message_store = SqlMessageStore(
+>>>     crypto_key=b"your-32-byte-aes-key-here!!",
+>>>     sql_db_store=sql_db_store,
+>>>     table_name="custom_messages"
+>>> )
+>>>
+>>> # Register the custom message store
+>>> memory = LongTermMemory()
+>>> memory.register_message_store(custom_message_store)
+```
+
+
 ### set_config
 
 ```
@@ -136,11 +177,27 @@ Set global memory engine configuration and initialize internal managers.
 
 **Prerequisites**:
 
-- Must have called `register_store` to register `kv_store`, `semantic_store`, `db_store`, otherwise will raise `build_error` (`MEMORY_SET_CONFIG_EXECUTION_ERROR`).
+- Must have called `register_store` to register `kv_store`, `vector_store`, `db_store`, otherwise will raise `build_error` (`MEMORY_SET_CONFIG_EXECUTION_ERROR`).
 
 **Exceptions**:
 
 * **build_error**: Raised when `register_store` has not been called or configuration is invalid.
+
+**Internal Managers Initialized**:
+
+This method initializes the following internal managers:
+
+* `scope_user_mapping_manager`: Manages the mapping between scopes and users;
+* `message_manager`: Handles message storage and retrieval operations. Initialized in two ways:
+  - If a custom `message_store` was registered via `register_message_store()` before calling `set_config()`, it uses the registered `message_store`;
+  - Otherwise, creates a default `SqlMessageStore` using the registered `db_store`, with `crypto_key` from config and table name `"user_message"`;
+* `fragment_memory_manager`: Manages user profile, episodic memory, and semantic memory;
+* `variable_manager`: Manages user variable storage and retrieval;
+* `summary_manager`: Manages user summary memory;
+* `write_manager`: Coordinates write operations across all memory types;
+* `search_manager`: Handles search queries across all memory types;
+* `generator`: Generates memory content from messages using LLM;
+* `_base_llm`: Base large language model instance (initialized if `default_model_cfg` and `default_model_client_cfg` are provided).
 
 **Example**:
 
