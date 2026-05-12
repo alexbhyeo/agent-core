@@ -17,6 +17,8 @@ from openjiuwen.core.foundation.store import create_vector_store
 from openjiuwen.core.foundation.store.base_embedding import Embedding
 from openjiuwen.core.foundation.store.db.default_db_store import DefaultDbStore
 from openjiuwen.core.foundation.store.kv.in_memory_kv_store import InMemoryKVStore
+from openjiuwen.core.common.exception.codes import StatusCode
+from openjiuwen.core.common.exception.errors import BaseError
 from openjiuwen.core.memory.config.config import AgentMemoryConfig, MemoryEngineConfig
 from openjiuwen.core.memory.long_term_memory import AddMemResult, LongTermMemory
 from openjiuwen.core.memory.manage.mem_model.memory_unit import (
@@ -312,64 +314,68 @@ class TestAddMessagesReturnValue:
         mock_llm.invoke.assert_not_called()
 
     @pytest.mark.asyncio
-    async def test_empty_scope_id_returns_empty(
+    async def test_empty_scope_id_raises_error(
             self, engine, mock_llm, default_config, user_assistant_messages
     ):
-        """Empty scope_id fails validation, returns empty AddMemResult."""
-        result = await engine.add_messages(
-            messages=user_assistant_messages,
-            agent_config=default_config,
-            user_id="u1",
-            scope_id="",
-        )
-
-        _assert_empty_result(result)
-        mock_llm.invoke.assert_not_called()
-
-    @pytest.mark.asyncio
-    async def test_scope_id_with_slash_returns_empty(
-            self, engine, mock_llm, default_config, user_assistant_messages
-    ):
-        """scope_id containing '/' fails validation."""
-        result = await engine.add_messages(
-            messages=user_assistant_messages,
-            agent_config=default_config,
-            user_id="u1",
-            scope_id="invalid/scope",
-        )
-
-        _assert_empty_result(result)
-        mock_llm.invoke.assert_not_called()
-
-    @pytest.mark.asyncio
-    async def test_scope_id_too_long_returns_empty(
-            self, engine, mock_llm, default_config, user_assistant_messages
-    ):
-        """scope_id exceeding 128 chars fails validation."""
-        result = await engine.add_messages(
-            messages=user_assistant_messages,
-            agent_config=default_config,
-            user_id="u1",
-            scope_id="a" * 129,
-        )
-
-        _assert_empty_result(result)
-        mock_llm.invoke.assert_not_called()
-
-    @pytest.mark.asyncio
-    async def test_llm_not_initialized_returns_empty(
-            self, engine, mock_llm, default_config, user_assistant_messages
-    ):
-        """When _get_scope_llm returns None, returns empty AddMemResult."""
-        with patch.object(engine, "_get_scope_llm", new_callable=AsyncMock, return_value=None):
-            result = await engine.add_messages(
+        """Empty scope_id fails validation, raises BaseError."""
+        with pytest.raises(BaseError) as exc_info:
+            await engine.add_messages(
                 messages=user_assistant_messages,
                 agent_config=default_config,
                 user_id="u1",
-                scope_id="s1",
+                scope_id="",
             )
 
-        _assert_empty_result(result)
+        assert exc_info.value.code == StatusCode.MEMORY_ADD_MEMORY_EXECUTION_ERROR.code
+        mock_llm.invoke.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_scope_id_with_slash_raises_error(
+            self, engine, mock_llm, default_config, user_assistant_messages
+    ):
+        """scope_id containing '/' fails validation, raises BaseError."""
+        with pytest.raises(BaseError) as exc_info:
+            await engine.add_messages(
+                messages=user_assistant_messages,
+                agent_config=default_config,
+                user_id="u1",
+                scope_id="invalid/scope",
+            )
+
+        assert exc_info.value.code == StatusCode.MEMORY_ADD_MEMORY_EXECUTION_ERROR.code
+        mock_llm.invoke.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_scope_id_too_long_raises_error(
+            self, engine, mock_llm, default_config, user_assistant_messages
+    ):
+        """scope_id exceeding 128 chars fails validation, raises BaseError."""
+        with pytest.raises(BaseError) as exc_info:
+            await engine.add_messages(
+                messages=user_assistant_messages,
+                agent_config=default_config,
+                user_id="u1",
+                scope_id="a" * 129,
+            )
+
+        assert exc_info.value.code == StatusCode.MEMORY_ADD_MEMORY_EXECUTION_ERROR.code
+        mock_llm.invoke.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_llm_not_initialized_raises_error(
+            self, engine, mock_llm, default_config, user_assistant_messages
+    ):
+        """When _get_scope_llm returns None, raises BaseError."""
+        with patch.object(engine, "_get_scope_llm", new_callable=AsyncMock, return_value=None):
+            with pytest.raises(BaseError) as exc_info:
+                await engine.add_messages(
+                    messages=user_assistant_messages,
+                    agent_config=default_config,
+                    user_id="u1",
+                    scope_id="s1",
+                )
+
+        assert exc_info.value.code == StatusCode.MEMORY_ADD_MEMORY_EXECUTION_ERROR.code
         mock_llm.invoke.assert_not_called()
 
     # -- AgentMemoryConfig effects --

@@ -477,7 +477,7 @@ class TestLongTermMemory(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(updated_mem.content, new_content, "Memory content should be updated")
 
         # Test Incorrect ID leads to failure to add memory
-        scope_id = "test_memory_scope@"
+        scope_id = "test_memory_scope/"
         try:
             await self.engine.add_messages(
                 user_id=user_id,
@@ -486,9 +486,10 @@ class TestLongTermMemory(unittest.IsolatedAsyncioTestCase):
                 messages=messages,
                 agent_config=agent_cfg
             )
+            self.fail("Should have raised BaseError for invalid scope_id")
         except BaseError as e:
             self.assertEqual(e.code, StatusCode.MEMORY_ADD_MEMORY_EXECUTION_ERROR.code)
-            self.assertIn("failed to add", e.message, "Error message should contain 'failed to add'")
+            self.assertIn("invalid scope_id format", e.message)
 
     async def test_change_memory_instruction(self):
         """
