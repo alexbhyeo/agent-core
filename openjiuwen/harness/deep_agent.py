@@ -2133,10 +2133,23 @@ class DeepAgent(BaseAgent):
 
         task = asyncio.create_task(_stream_process())
 
-        async for chunk in session.stream_iterator():
-            yield chunk
+        _stream_task = task
+        try:
+            async for chunk in session.stream_iterator():
+                yield chunk
 
-        await task
+            # Normal completion: wait for background task
+            await _stream_task
+        except asyncio.CancelledError:
+            # Cancel background task explicitly to speed up cleanup.
+            # Without this, await _stream_task could wait for a long-running
+            # operation (e.g., wait_round_completion with 600s timeout).
+            _stream_task.cancel()
+            try:
+                await _stream_task
+            except asyncio.CancelledError:
+                pass  # Expected when we cancelled it
+            raise
 
     async def _write_round_result_to_stream(
         self,
