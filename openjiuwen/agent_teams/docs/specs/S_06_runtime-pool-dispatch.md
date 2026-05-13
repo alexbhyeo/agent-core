@@ -5,9 +5,9 @@
 | 项 | 值 |
 |---|---|
 | 类型 | spec |
-| 关联模块 | `openjiuwen/agent_teams/runtime/` |
-| 最近一次修订日期 | 2026-05-12 |
-| 关联 feature | `F_05_lifecycle-finalize-relocation.md` |
+| 关联模块 | `openjiuwen/agent_teams/runtime/`、`openjiuwen/core/runner/team_runner.py`（`_resolve_team_agent_spec` 入参归一化） |
+| 最近一次修订日期 | 2026-05-13 |
+| 关联 feature | `F_05_lifecycle-finalize-relocation.md`、`F_06_name-old-session-recover.md` |
 
 ## 范围 / 边界
 
@@ -126,6 +126,43 @@ class RunAction:
 `require_spec=True` 仅 `CREATE`：调用方此时必须能拿到 `TeamAgentSpec`，否则上层应直接拒绝（首次必须传 spec 而非 team_name shorthand）。
 
 F_05 之前还存在两个 kind：`WARM_RECOVER`（cross-session 复用同一个 `TeamAgent` 实例 + `recover_for_existing_session`）与 `NEW_TEAM_IN_SESSION_WARM`（cross-session 复用 + `resume_for_new_session`）。这两条路径让 leader 的 contextvars / in-memory 状态在 session 之间漂移，已废止；现在切 session 一律走 `activate` 的 stop+`pool.remove`，再由 dispatch 在空 pool slot 上重出 `CREATE` / `NEW_TEAM_IN_SESSION` / `COLD_RECOVER`。
+
+### Runner 入参归一化与 spec 两源 lookup
+
+`Runner.run_agent_team` / `run_agent_team_streaming` 在调 `manager.activate` 之前，
+经过 `_TeamRunnerMixin._resolve_team_agent_spec(agent_team, *, session)` 把入参
+归一化成一份具体的 `TeamAgentSpec`。归一化规则（F_06 落定）：
+
+| 入参 `agent_team` | 入参 `session` | pool 命中 | session bucket 命中 | 结果 |
+|---|---|---|---|---|
+| `TeamAgentSpec` | * | * | * | 直接返回 spec（spec 入参以 caller 为准，不读 bucket） |
+| `str` (`team_name`) | * | ✓ | * | 返回 `pool_entry.agent.spec` |
+| `str` | non-None | ✗ | ✓ | `_resolve_spec_from_session_bucket(team_name, session)` 反序列化 bucket 中的 `spec` 字段返回 |
+| `str` | None / non-None | ✗ | ✗ | `raise_error(AGENT_TEAM_CONFIG_INVALID, "team … has no live pool entry and no persisted spec in the supplied session; first-time runs must pass a TeamAgentSpec on a new session")` |
+| 非 `str` / `TeamAgentSpec` | * | * | * | `raise_error(AGENT_TEAM_CONFIG_INVALID, "run_agent_team accepts str \| TeamAgentSpec …")` |
+
+`_resolve_spec_from_session_bucket` 是只读 helper：构建 `AgentTeamSession`、调
+`pre_run()` 还原 checkpoint、走 `read_team_namespace` 拿 bucket、`TeamAgentSpec.model_validate(spec_data)` 反序列化。**任何还原 / 解析失败都吞为
+`None` + warning**，让上层根据"两源都空"给出统一错误，而不是把 checkpoint 内部异常透出去。
+
+由此 `run_agent_team*` 的两条合法调用形态被显式化：
+
+- **`spec + new_session`** — 首次启动（`CREATE`）或在新对话上把 stopped 团队复活
+  （`NEW_TEAM_IN_SESSION` + `recover_team`）。spec 来自 caller，不读 bucket。
+- **`name + old_session`** — pool 命中走 `RESUME_FROM_PAUSE`；pool 缺失走 session
+  bucket 反推 spec 后冷恢复（`COLD_RECOVER`）。覆盖"进程重启 / pause 阶段异常退出 /
+  外部 `stop_team` 之后" 这些 pool 已被清空但 session 仍可用的恢复场景。
+
+不允许的形态（运行时会报错或退化）：
+
+- `name + None session` —— pool 缺失时无源可读，直接拒绝。
+- `spec + old_session` 不被禁止但**不推荐**：caller 已经持 spec 时直接用，bucket
+  里的 spec 不再生效；如想从 bucket 拿 spec，请用 `name` 形态。
+
+`agent_customizer` 在 `name` 路径上不可恢复——它是 `Field(exclude=True)` 的
+Callable，序列化时丢失，且 `_resolve_spec_from_session_bucket` 不接受
+`runtime_spec` 注入。依赖 customizer 的 caller（jiuwenclaw / 平台适配器）必须显式
+走 `spec` 形态。
 
 ### `decide_run_action(...)`（dispatch.py）
 

@@ -1663,11 +1663,18 @@ class TestRunnerReleaseAutoDispatch:
 @pytest.mark.asyncio
 @pytest.mark.level0
 async def test_run_agent_team_rejects_unactivated_team_name():
-    """``str`` input must fail when no pool entry seeded the team yet."""
+    """``str`` input must fail when no pool entry and no session bucket exist.
+
+    The recover path through ``name + old_session`` reads the spec from
+    the session bucket when the pool is empty (e.g. after a stop or a
+    process restart). With ``session=None`` neither source is available,
+    so the request must be rejected with a clear "first-time runs need
+    a TeamAgentSpec" message.
+    """
     from openjiuwen.core.common.exception.errors import ValidationError
 
     await Runner.start()
-    with pytest.raises(ValidationError, match="is not active"):
+    with pytest.raises(ValidationError, match="has no live pool entry"):
         await Runner.run_agent_team(agent_team="never-seeded-team", inputs={"query": "x"})
 
 
