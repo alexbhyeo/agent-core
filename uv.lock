@@ -2491,6 +2491,10 @@ wheels = [
     { url = "https://mirrors.aliyun.com/pypi/packages/b3/38/89ba8ad64ae25be8de66a6d463314cf1eb366222074cfda9ee839c56a4b4/mdurl-0.1.2-py3-none-any.whl", hash = "sha256:84008a41e51615a49fc9966191ff91509e3c40b939176e643fd50a5c2196b8f8" },
 ]
 
+intelli-router = [
+    { name = "intelli-router" },
+]
+
 [[package]]
 name = "mem0ai"
 version = "2.0.1"
@@ -3197,6 +3201,7 @@ requires-dist = [
     { name = "greenlet", marker = "extra == 'sqlite'", specifier = ">=3.1.1" },
     { name = "httpx", marker = "extra == 'online-rl'", specifier = ">=0.24" },
     { name = "json-repair", specifier = ">=0.55.0" },
+    { name = "intelli-router", marker = "extra == 'intelli-router'" },
     { name = "loguru", specifier = ">=0.7.3" },
     { name = "mcp", specifier = ">=1.26.0" },
     { name = "mem0ai", marker = "extra == 'mem0'", specifier = ">=1.0.0" },
@@ -3238,7 +3243,7 @@ requires-dist = [
     { name = "transformers", specifier = ">=4.52.4" },
     { name = "uvicorn", extras = ["standard"], marker = "extra == 'online-rl'" },
 ]
-provides-extras = ["all-a2a", "pulsar", "elasticsearch", "redis", "sqlite", "postgres", "mysql", "gaussdb", "pgvector", "gaussvector", "chromadb", "obs", "zmq", "sandbox", "mem0", "online-rl", "all-mq", "all-storage", "all-vector", "cli", "default", "all"]
+provides-extras = ["all-a2a", "pulsar", "elasticsearch", "redis", "sqlite", "postgres", "mysql", "gaussdb", "pgvector", "gaussvector", "chromadb", "obs", "zmq", "sandbox", "mem0", "intelli-router", "online-rl", "all-mq", "all-storage", "all-vector", "cli", "default", "all"]
 
 [package.metadata.requires-dev]
 dev = [
