@@ -140,7 +140,7 @@ class TeamToolRail(DeepAgentRail):
             )
 
         try:
-            Runner.resource_mgr.add_tool(tools)
+            Runner.resource_mgr.add_tool(tools, refresh=True)
         except Exception:
             team_logger.debug("Runner.resource_mgr not available, skipping tool registration")
 
