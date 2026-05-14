@@ -26,7 +26,7 @@ from openjiuwen.agent_teams.schema.status import (
 from openjiuwen.agent_teams.schema.stream import TeamOutputSchema
 from openjiuwen.core.common.exception.codes import StatusCode
 from openjiuwen.core.common.exception.errors import build_error
-from openjiuwen.core.common.logging import team_logger
+from openjiuwen.core.common.logging import set_member_id, team_logger
 from openjiuwen.core.session.stream.base import OutputSchema
 
 if TYPE_CHECKING:
@@ -279,6 +279,16 @@ class StreamController:
         )
 
     async def _run_one_round(self, message: Any) -> None:
+        # Re-assert the member identity on this round task. A round may
+        # be driven from a task context that never ran the coordination
+        # kernel's ``set_member_id`` -- a human agent's round, for
+        # instance, is started by ``HumanAgentInbox`` from the leader's
+        # interact path rather than from the agent's own coordination
+        # loop. Without this, status updates, event publishing and logs
+        # inside the round carry an empty ``member_id`` contextvar.
+        member_name = self._member_name()
+        if member_name:
+            set_member_id(member_name)
         # Reset cancel state for the new round. cooperative_cancel sets
         # this flag for the *current* round only; otherwise a stale True
         # from a prior aborted round would suppress restarts here.

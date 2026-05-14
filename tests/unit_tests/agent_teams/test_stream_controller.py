@@ -369,6 +369,36 @@ async def test_execute_round_emits_completed_on_normal_finish() -> None:
     assert ExecutionStatus.CANCELLED not in transitions
 
 
+@pytest.mark.asyncio
+async def test_run_one_round_sets_member_id_contextvar() -> None:
+    """A round started from a foreign task context must run under its own
+    member identity.
+
+    Human-agent rounds are driven by ``HumanAgentInbox`` from the leader's
+    interact path, which never ran the coordination kernel's
+    ``set_member_id``. ``_run_one_round`` must re-assert the ``member_id``
+    contextvar so status updates, event publishing and logs inside the
+    round are attributed to the right member instead of an empty id.
+    """
+    from openjiuwen.core.common.logging import get_member_id, set_member_id
+
+    harness = _make_harness_with_abort([])
+    sc = _make_controller_with(member_name="human-member-beta", harness=harness)
+
+    seen_member_id: list[str] = []
+
+    async def _capture_round(_message: Any) -> None:
+        seen_member_id.append(get_member_id())
+
+    sc._execute_round = _capture_round  # type: ignore[assignment]
+
+    # Simulate the foreign-context entry point: no member_id set.
+    set_member_id("")
+    await sc._run_one_round("hi")
+
+    assert seen_member_id == ["human-member-beta"]
+
+
 # ----------------------------------------------------------------------
 # Chunk observer + source_member tagging
 # ----------------------------------------------------------------------
