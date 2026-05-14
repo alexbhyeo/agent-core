@@ -7,8 +7,8 @@
 | 类型 | spec |
 | 编号 / slug | S_02 / team-agent-architecture |
 | 关联模块 | `openjiuwen/agent_teams/agent/` |
-| 最近一次修订 commit | 18823271 |
-| 关联 feature | — |
+| 最近一次修订 commit | 781f2db3 |
+| 关联 feature | F_08_leader-member-status-tracking.md |
 
 ## 范围 / 边界
 
@@ -246,10 +246,9 @@ def create_member_handle(
     """Returns None when infra.team_backend is None."""
 ```
 
-`TeamMember` 是单成员的 DB / 消息总线投影：负责 status / execution_status 的写入 + 状态变更事件发布。**LEADER 与 TEAMMATE 调用同一份 `create_member_handle`**，但触发时机不同：
+`TeamMember` 是单成员的 DB / 消息总线投影：负责 status / execution_status 的写入 + 状态变更事件发布。`create_member_handle` 是**纯构造函数**——只需已绑定的 `team_backend`，不碰 DB——所以 **LEADER / TEAMMATE / HUMAN_AGENT 一律在 `configure()` → `_setup_agent` 内同步创建**，单一构造点、无角色分支。
 
-- TEAMMATE / HUMAN_AGENT：`configure()` 内同步创建（team row 在 spawn 时已落库）。
-- LEADER：`_on_teammate_created(self.member_name)` 回调里懒创建（leader 自己的 team row 由 `BuildTeamTool` 物化）。
+leader 自己的 team row 由 `BuildTeamTool` 物化，比 handle 晚——freshly built 的 leader 持有一个"行尚未存在"的 handle。这没问题：`TeamMember` 容忍行缺失（status 读返回 `None`，写静默返回 `False`），所以无需等行落库再构造 handle。
 
 ### `SpawnPayloadBuilder`
 
@@ -297,7 +296,7 @@ class SpawnPayloadBuilder:
 | Blueprint | `language` | `str` | `setup_infra` 调用 `_resolve_language(agent_spec.language)` | 一次性 |
 | State | `session_id` | `str | None` | `SessionManager` start / resume | SessionManager |
 | State | `team_session` | `AgentTeamSession | None` | `SessionManager` start / resume | SessionManager |
-| State | `team_member` | `TeamMember | None` | `setup_agent`（teammate / human）/ `_on_teammate_created`（leader） | TeamAgent |
+| State | `team_member` | `TeamMember | None` | `setup_agent`（所有角色同步创建） | TeamAgent |
 | State | `pending_user_query` | `str` | `invoke` / `stream` 入口 | TeamAgent |
 | State | `event_listeners` | `list` | `add_event_listener` / `remove_event_listener` | 调用方 |
 | Resources | `harness` | `TeamHarness | None` | `setup_agent` 调用 `TeamHarness.build(...)` | 一次性 |

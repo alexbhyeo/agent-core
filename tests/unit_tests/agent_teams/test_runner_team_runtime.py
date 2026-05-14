@@ -683,6 +683,50 @@ def test_team_agent_recover_from_session_restores_session_id():
     assert agent.session_id == session_id
 
 
+def test_team_agent_recover_from_session_builds_leader_member_handle():
+    """A cold-recovered leader gets its TeamMember handle via configure().
+
+    Recovery rebuilds the leader through ``configure()`` -> ``_setup_agent``;
+    the team row already exists in the DB, so the handle must be populated
+    and able to track status -- not left ``None`` as it was while the
+    leader handle depended on a never-firing lazy-init callback.
+    """
+    from openjiuwen.agent_teams.runtime.metadata import write_team_namespace
+
+    session_id = f"recover_handle_{uuid.uuid4().hex}"
+    session = create_agent_team_session(session_id=session_id, team_id="persistent_team")
+    write_team_namespace(
+        session,
+        "persistent_team",
+        {
+            "spec": {
+                "team_name": "persistent_team",
+                "agents": {
+                    "leader": {},
+                },
+            },
+            "context": {
+                "role": "leader",
+                "member_name": "leader",
+                "persona": "leader",
+                "team_spec": {
+                    "team_name": "persistent_team",
+                    "display_name": "persistent_team",
+                    "leader_member_name": "leader",
+                },
+                "messager_config": {},
+                "db_config": {},
+            },
+        },
+    )
+
+    agent = TeamAgent.recover_from_session(session, "persistent_team")
+
+    handle = agent._state.team_member
+    assert handle is not None
+    assert handle.member_name == "leader"
+
+
 def test_team_agent_recover_from_session_reinjects_runtime_spec_customizer():
     """``runtime_spec.agent_customizer`` must replace the persisted spec's
     customizer slot.
