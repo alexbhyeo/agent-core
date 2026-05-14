@@ -168,8 +168,13 @@ async def run_agent_team_streaming(
     context: Optional[ModelContext] = None,
     stream_modes: Optional[list[BaseStreamMode]] = None,
     envs: Optional[dict[str, Any]] = None,
+    stream_logger: Optional[TeamStreamLogger] = None,
 ) -> AsyncIterator[Any]
 ```
+
+`stream_logger` 是可选的诊断日志处理对象（`openjiuwen.agent_teams.monitor.TeamStreamLogger`，
+见 S_14）：调用方自行构造并传入，runner 把 leader 路径的每个 chunk 喂给它做聚合落日志，
+不传即关闭。仅 `base=False`（TeamAgent 路径）生效；`base=True` / `member=True` 不接。
 
 输入路由：
 

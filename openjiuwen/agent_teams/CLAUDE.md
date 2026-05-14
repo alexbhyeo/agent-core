@@ -45,7 +45,7 @@ agent_teams/
 ├── tools/               # 团队工具（Leader / Teammate / Human Agent 可调用的原子操作）
 ├── messager/            # 消息传输层（inprocess / pyzmq）
 ├── spawn/               # 成员启动（process / inprocess）
-├── monitor/             # 团队运行态监控
+├── monitor/             # 团队运行态监控（TeamMonitor 只读视图 + TeamStreamLogger 流式诊断日志）
 ├── team_workspace/      # 团队共享工作空间（跨成员的文件/锁/版本）
 ├── cli/                 # 交互式 TUI / 斜杠命令子模块（prompt_toolkit + rich）
 └── worktree_remote.py   # 跨机器 worktree 后端（团队专属，generic 实现见 harness/tools/worktree）
