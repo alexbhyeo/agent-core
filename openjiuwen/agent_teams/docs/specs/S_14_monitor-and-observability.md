@@ -75,14 +75,14 @@ def create_monitor(team_agent: TeamAgent) -> TeamMonitor:
     """
 ```
 
-直接构造 `TeamMonitor(...)` 不是公共路径——`team_id` / `session_id` / `db` 全靠 `create_monitor` 从 `TeamAgent` 上拉，绕过工厂自己拼参数容易拼错（特别是 `session_id` 必须取 contextvar 当前值）。
+直接构造 `TeamMonitor(...)` 不是公共路径——`team_name` / `session_id` / `db` 全靠 `create_monitor` 从 `TeamAgent` 上拉，绕过工厂自己拼参数容易拼错（特别是 `session_id` 必须取 contextvar 当前值）。
 
 #### `TeamMonitor` lifecycle
 
 ```python
 class TeamMonitor:
     @property
-    def team_id(self) -> str: ...
+    def team_name(self) -> str: ...
     @property
     def session_id(self) -> str: ...
 
@@ -101,7 +101,7 @@ class TeamMonitor:
 | `get_members(status=None)` | 可选 `MemberStatus` 字符串 | `list[MemberInfo]` | 全成员 / 按状态过滤 |
 | `get_member(member_name)` | `str` | `MemberInfo \| None` | 单成员；不存在返回 None |
 | `get_tasks(status=None)` | 可选 `TaskStatus` 字符串 | `list[TaskInfo]` | 全任务 / 按状态过滤 |
-| `get_messages(*, to_member=None, from_member=None)` | keyword-only | `list[MessageInfo]` | 邮箱消息；`to_member` 走单成员收件箱视图，否则全 team |
+| `get_messages(*, to_member_name=None, from_member_name=None)` | keyword-only | `list[MessageInfo]` | 邮箱消息；`to_member_name` 走单成员收件箱视图，否则全 team |
 
 所有查询 API 都在 `_bound_session()` 上下文管理器中执行——调用方协程不需要预先 `set_session_id`。
 
