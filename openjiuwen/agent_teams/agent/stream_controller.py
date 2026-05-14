@@ -316,9 +316,25 @@ class StreamController:
             await self._update_status(MemberStatus.ERROR)
         finally:
             self.agent_task = None
+            # Highest-priority terminal condition: this round just cleaned
+            # the team (the clean_team success callback latched
+            # state.team_cleaned). Close the stream so the leader's
+            # invoke/stream loop breaks on the None sentinel — the leader
+            # deliberately ignores its own TeamCleanedEvent, so this is the
+            # only path that ends a TEMPORARY-team leader's stream. Do NOT
+            # restart for pending interrupt resumes / pending inputs: the
+            # team is gone. A double None enqueue (e.g. the cancel path
+            # also enqueued one) is harmless — the outer loop breaks on the
+            # first None and finalize_round nulls the queue.
+            if self._state.team_cleaned:
+                team_logger.info(
+                    "[{}] team_cleaned set; closing stream after round",
+                    self._member_name() or "?",
+                )
+                self.close_stream()
             # Cooperative abort exits without CancelledError, so check
             # _cancel_requested as well to suppress the restart paths.
-            if not cancelled and not self._cancel_requested:
+            elif not cancelled and not self._cancel_requested:
                 next_resume = self._dequeue_valid_interrupt_resume()
                 if next_resume is not None and self.stream_queue is not None:
                     await self.start_round(next_resume)

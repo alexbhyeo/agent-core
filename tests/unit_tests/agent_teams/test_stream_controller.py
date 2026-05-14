@@ -654,3 +654,99 @@ async def test_forward_observer_drops_when_leader_queue_unset() -> None:
 
     assert forwarded == []
     assert teammate_sc.stream_queue.qsize() == 1  # teammate's own queue unaffected
+
+
+# ----------------------------------------------------------------------
+# Round-end teardown: state.team_cleaned latch
+# ----------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_round_end_closes_stream_when_team_cleaned() -> None:
+    """A round that latched state.team_cleaned must close the stream so the
+    leader's invoke/stream loop breaks on the None sentinel.
+    """
+    harness = _make_harness_with_abort([])
+    sc = _make_controller(harness)
+    sc.stream_queue = asyncio.Queue()
+    sc._state.team_cleaned = True
+
+    async def _noop_round(_message: Any) -> None:
+        return None
+
+    sc._execute_round = _noop_round  # type: ignore[assignment]
+
+    await sc._run_one_round("hi")
+
+    assert sc.stream_queue.get_nowait() is None
+    assert sc.stream_queue.empty()
+    assert sc.agent_task is None
+
+
+@pytest.mark.asyncio
+async def test_round_end_no_close_when_not_cleaned() -> None:
+    """A normal round end with team_cleaned False must NOT enqueue None."""
+    harness = _make_harness_with_abort([])
+    sc = _make_controller(harness)
+    sc.stream_queue = asyncio.Queue()
+    # team_cleaned defaults to False; no pending inputs / resumes; team_member None.
+
+    async def _noop_round(_message: Any) -> None:
+        return None
+
+    sc._execute_round = _noop_round  # type: ignore[assignment]
+
+    await sc._run_one_round("hi")
+
+    assert sc.stream_queue.empty()
+
+
+@pytest.mark.asyncio
+async def test_team_cleaned_takes_priority_over_pending_inputs() -> None:
+    """team_cleaned is the highest-priority terminal condition: the round
+    must close the stream and NOT restart to drain pending inputs.
+    """
+    harness = _make_harness_with_abort([])
+    sc = _make_controller(harness)
+    sc.stream_queue = asyncio.Queue()
+    sc._state.team_cleaned = True
+    sc.pending_inputs = ["queued-after-clean"]
+
+    restart_calls: list[Any] = []
+
+    async def _track_start_round(content: Any) -> None:
+        restart_calls.append(content)
+
+    sc.start_round = _track_start_round  # type: ignore[assignment]
+
+    async def _noop_round(_message: Any) -> None:
+        return None
+
+    sc._execute_round = _noop_round  # type: ignore[assignment]
+
+    await sc._run_one_round("hi")
+
+    assert sc.stream_queue.get_nowait() is None
+    assert restart_calls == []
+    assert sc.pending_inputs == ["queued-after-clean"]
+
+
+@pytest.mark.asyncio
+async def test_team_cleaned_closes_even_when_cancel_requested() -> None:
+    """team_cleaned is checked before the cancel guard, so a cancelled round
+    on a cleaned team still closes the stream.
+    """
+    harness = _make_harness_with_abort([])
+    sc = _make_controller(harness)
+    sc.stream_queue = asyncio.Queue()
+    sc._state.team_cleaned = True
+
+    async def _cancel_mid_round(_message: Any) -> None:
+        # Simulate a cooperative cancel landing during the round.
+        sc._cancel_requested = True
+
+    sc._execute_round = _cancel_mid_round  # type: ignore[assignment]
+
+    await sc._run_one_round("hi")
+
+    assert sc.stream_queue.get_nowait() is None

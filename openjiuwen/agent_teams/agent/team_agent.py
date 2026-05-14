@@ -412,7 +412,12 @@ class TeamAgent(BaseAgent):
     # ------------------------------------------------------------------
 
     def _setup_infra(self, spec: TeamAgentSpec, ctx: TeamRuntimeContext) -> None:
-        self._configurator.setup_infra(spec, ctx, on_teammate_created=self._on_teammate_created)
+        self._configurator.setup_infra(
+            spec,
+            ctx,
+            on_teammate_created=self._on_teammate_created,
+            on_team_cleaned=self._mark_team_cleaned,
+        )
 
     def _setup_agent(self, spec: TeamAgentSpec, ctx: TeamRuntimeContext) -> None:
         self._configurator.setup_agent(spec, ctx)
@@ -700,6 +705,21 @@ class TeamAgent(BaseAgent):
             session=self.session_id,
             spawn_config=SpawnConfig(health_check_timeout=30, health_check_interval=50),
         )
+
+    async def _mark_team_cleaned(self) -> None:
+        """Latch ``state.team_cleaned`` from the ``clean_team`` success path.
+
+        Wired into ``TeamBackend`` via
+        ``setup_team_backend(on_team_cleaned=...)``. ``clean_team`` runs
+        synchronously inside the leader's DeepAgent round, so setting the
+        flag here guarantees it is visible before
+        ``StreamController._run_one_round``'s finally block evaluates
+        terminal conditions — no reliance on the racy ``TeamCleanedEvent``
+        bus handler, which the leader deliberately ignores (see
+        ``coordination/handlers/agent_lifecycle.py::on_cleaned``).
+        """
+        team_logger.info("[{}] clean_team completed; latching team_cleaned", self._member_name() or "?")
+        self._state.team_cleaned = True
 
     async def spawn_teammate(
         self,

@@ -1069,3 +1069,115 @@ async def test_is_team_completed_unread_message_returns_none(agent_team, db):
     await agent_team.message_manager.send_message(content="ping", to_member_name="member1")
 
     assert await agent_team.is_team_completed() is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.level0
+async def test_clean_team_fires_callback_on_success(db, message_bus):
+    """clean_team runs on_team_cleaned exactly once on the success path."""
+    await db.team.create_team(
+        team_name="cb_team",
+        display_name="Callback Team",
+        leader_member_name="leader1",
+    )
+    calls: list[int] = []
+
+    async def _on_cleaned() -> None:
+        calls.append(1)
+
+    backend = TeamBackend(
+        team_name="cb_team",
+        member_name="leader1",
+        db=db,
+        messager=message_bus,
+        is_leader=True,
+        on_team_cleaned=_on_cleaned,
+    )
+
+    result = await backend.clean_team()
+
+    assert result is True
+    assert calls == [1]
+
+
+@pytest.mark.asyncio
+@pytest.mark.level1
+async def test_clean_team_skips_callback_on_failure(db, message_bus, sample_agent_card):
+    """clean_team must NOT fire on_team_cleaned when members are still active."""
+    await db.team.create_team(
+        team_name="cb_fail_team",
+        display_name="Callback Fail Team",
+        leader_member_name="leader1",
+    )
+    calls: list[int] = []
+
+    async def _on_cleaned() -> None:
+        calls.append(1)
+
+    backend = TeamBackend(
+        team_name="cb_fail_team",
+        member_name="leader1",
+        db=db,
+        messager=message_bus,
+        is_leader=True,
+        on_team_cleaned=_on_cleaned,
+    )
+    # Spawn a member left in a non-SHUTDOWN status so clean_team bails out.
+    await backend.spawn_member(
+        member_name="member1",
+        display_name="Member One",
+        agent_card=sample_agent_card,
+    )
+
+    result = await backend.clean_team()
+
+    assert result is False
+    assert calls == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.level1
+async def test_clean_team_callback_failure_does_not_break_clean(db, message_bus):
+    """A raising on_team_cleaned is swallowed; clean_team still succeeds."""
+    await db.team.create_team(
+        team_name="cb_raise_team",
+        display_name="Callback Raise Team",
+        leader_member_name="leader1",
+    )
+
+    async def _on_cleaned() -> None:
+        raise RuntimeError("boom")
+
+    backend = TeamBackend(
+        team_name="cb_raise_team",
+        member_name="leader1",
+        db=db,
+        messager=message_bus,
+        is_leader=True,
+        on_team_cleaned=_on_cleaned,
+    )
+
+    result = await backend.clean_team()
+
+    assert result is True
+    assert await backend.get_team_info() is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.level1
+async def test_clean_team_no_callback_is_noop(db, message_bus):
+    """clean_team success path works when on_team_cleaned is not wired."""
+    await db.team.create_team(
+        team_name="no_cb_team",
+        display_name="No Callback Team",
+        leader_member_name="leader1",
+    )
+    backend = TeamBackend(
+        team_name="no_cb_team",
+        member_name="leader1",
+        db=db,
+        messager=message_bus,
+        is_leader=True,
+    )
+
+    assert await backend.clean_team() is True
