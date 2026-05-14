@@ -1204,6 +1204,7 @@ class TestTeamRuntimeManagerStopTeam:
         fake_db.team = AsyncMock()
         fake_db.team.delete_team = AsyncMock(return_value=True)
         fake_checkpointer = AsyncMock()
+        fake_checkpointer.session_exists = AsyncMock(return_value=True)
         fake_checkpointer.release = AsyncMock()
 
         with (
@@ -1295,6 +1296,7 @@ class TestTeamRuntimeManagerDeleteTeam:
         fake_db.team = AsyncMock()
         fake_db.team.delete_team = AsyncMock(return_value=True)
         fake_checkpointer = AsyncMock()
+        fake_checkpointer.session_exists = AsyncMock(return_value=True)
         fake_checkpointer.release = AsyncMock()
 
         async def _fake_resolve(session_id: str):
@@ -1357,6 +1359,7 @@ class TestTeamRuntimeManagerDeleteTeam:
         fake_db.team = AsyncMock()
         fake_db.team.delete_team = AsyncMock(return_value=True)
         fake_checkpointer = AsyncMock()
+        fake_checkpointer.session_exists = AsyncMock(return_value=True)
         fake_checkpointer.release = AsyncMock()
 
         async def _fake_resolve(session_id: str):
@@ -1387,8 +1390,8 @@ class TestTeamRuntimeManagerDeleteTeam:
 
     @pytest.mark.asyncio
     @pytest.mark.level0
-    async def test_delete_team_raises_when_no_session_resolves(self):
-        """delete_team must raise when every supplied session is unusable.
+    async def test_delete_team_raises_when_existing_sessions_do_not_resolve(self):
+        """delete_team must raise when every existing session is unusable.
 
         Pins the helper-returns-Optional / caller-raises contract so the
         two never drift back into the old dual-raise shape.
@@ -1405,12 +1408,53 @@ class TestTeamRuntimeManagerDeleteTeam:
                 raise RuntimeError(f"Cannot resolve team session release info for {session_id}")
             return None
 
-        with patch(
-            "openjiuwen.agent_teams.runtime.manager.TeamRuntimeManager.resolve_team_session_release_info",
-            side_effect=_fake_resolve,
+        fake_checkpointer = AsyncMock()
+        fake_checkpointer.session_exists = AsyncMock(return_value=True)
+
+        with (
+            patch(
+                "openjiuwen.agent_teams.runtime.manager.TeamRuntimeManager.resolve_team_session_release_info",
+                side_effect=_fake_resolve,
+            ),
+            patch(
+                "openjiuwen.agent_teams.runtime.manager.CheckpointerFactory.get_checkpointer",
+                return_value=fake_checkpointer,
+            ),
         ):
             with pytest.raises(RuntimeError, match="any supplied sessions"):
                 await manager.delete_team(team_name, [bad_session_id, empty_session_id])
+
+    @pytest.mark.asyncio
+    @pytest.mark.level0
+    async def test_delete_team_succeeds_when_supplied_sessions_are_already_released(self):
+        """delete_team should be idempotent after supplied sessions are gone."""
+        from openjiuwen.agent_teams.runtime.manager import TeamRuntimeManager
+
+        manager = TeamRuntimeManager()
+        team_name = "delete_already_released_team"
+        session_id = f"released_{uuid.uuid4().hex}"
+        fake_checkpointer = AsyncMock()
+        fake_checkpointer.session_exists = AsyncMock(return_value=False)
+        fake_checkpointer.release = AsyncMock()
+
+        with (
+            patch(
+                "openjiuwen.agent_teams.runtime.manager.CheckpointerFactory.get_checkpointer",
+                return_value=fake_checkpointer,
+            ),
+            patch(
+                "openjiuwen.agent_teams.runtime.manager.TeamRuntimeManager.resolve_team_session_release_info",
+                new_callable=AsyncMock,
+            ) as resolve_mock,
+            patch("openjiuwen.agent_teams.spawn.shared_resources.get_shared_db") as get_shared_db_mock,
+        ):
+            result = await manager.delete_team(team_name, [session_id])
+
+        assert result is True
+        fake_checkpointer.session_exists.assert_awaited_once_with(session_id)
+        fake_checkpointer.release.assert_not_awaited()
+        resolve_mock.assert_not_awaited()
+        get_shared_db_mock.assert_not_called()
 
     @pytest.mark.asyncio
     @pytest.mark.level0
@@ -1462,6 +1506,7 @@ class TestTeamRuntimeManagerDeleteTeam:
         fake_db.team = AsyncMock()
         fake_db.team.delete_team = AsyncMock(return_value=True)
         fake_checkpointer = AsyncMock()
+        fake_checkpointer.session_exists = AsyncMock(return_value=True)
         fake_checkpointer.release = AsyncMock()
 
         with (

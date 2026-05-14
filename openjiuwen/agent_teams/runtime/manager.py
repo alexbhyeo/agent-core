@@ -488,9 +488,26 @@ class TeamRuntimeManager:
                     session_id=entry.current_session_id,
                 )
 
+        checkpointer = CheckpointerFactory.get_checkpointer()
+        if session_ids:
+            existing_session_ids: list[str] = []
+            for session_id in session_ids:
+                if await checkpointer.session_exists(session_id):
+                    existing_session_ids.append(session_id)
+            if not existing_session_ids:
+                team_logger.info(
+                    "delete_team: supplied sessions already released team={} sessions={} checkpointer={}",
+                    team_name,
+                    session_ids,
+                    type(checkpointer).__name__,
+                )
+                return True
+        else:
+            existing_session_ids = []
+
         db_config: Optional[DatabaseConfig] = None
         if session_ids:
-            release_info = await self._resolve_any_team_session_release_info(session_ids)
+            release_info = await self._resolve_any_team_session_release_info(existing_session_ids)
             if release_info is None:
                 raise RuntimeError(
                     "Cannot resolve team session release info for any supplied sessions: "
@@ -505,7 +522,6 @@ class TeamRuntimeManager:
         for session_id in session_ids:
             await db.drop_session_tables_by_id(session_id)
 
-        checkpointer = CheckpointerFactory.get_checkpointer()
         for session_id in session_ids:
             await checkpointer.release(session_id)
 
