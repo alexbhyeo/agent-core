@@ -58,10 +58,12 @@ def _resolve_team_mode(spec: TeamAgentSpec) -> str:
     if spec.team_mode is not None:
         return spec.team_mode
     # HUMAN_AGENT predefined members are HITT roster declarations, not a
-    # signal to lock the team into "predefined" mode. Only non-human
-    # predefined teammates should drop the leader's spawn_member tool.
+    # signal to flip the team away from "default". A non-human predefined
+    # roster derives "hybrid": the leader keeps its spawn_member tool so
+    # the roster can still grow at runtime. Lock it down by setting an
+    # explicit "predefined" team_mode.
     non_human_predefined = [m for m in spec.predefined_members if m.role_type != TeamRole.HUMAN_AGENT]
-    return "predefined" if non_human_predefined else "default"
+    return "hybrid" if non_human_predefined else "default"
 
 
 class AgentConfigurator:

@@ -333,7 +333,7 @@ RESERVED_MEMBER_NAMES: frozenset[str] = frozenset({
 3. 一旦 `task.assignee` 指向某个 human-agent 且状态 CLAIMED，`UpdateTaskTool` 拒绝 reassign 和 cancel；批量 cancel 链路也跳过。
 4. 发送给 human-agent 的点对点消息 `is_read=True`；广播后 human-agent 的 `read_at` 立即跟进。
 5. `TeamPolicyRail` 注入 `team_hitt` section（priority=12），按 role 给 leader / teammate / human_agent 下达角色特定的行为约束。section 注入条件来自 `backend.hitt_enabled()`——反映运行时 effective flag，不依赖 roster 是否已 spawn。
-6. `_resolve_team_mode` 只把**非 HUMAN_AGENT** 的 predefined member 计入 predefined 派生——所以纯 HITT 团队（仅声明人类成员）仍然是 `default` 模式，leader 保留 `spawn_member` 工具。
+6. `_resolve_team_mode` 只把**非 HUMAN_AGENT** 的 predefined member 计入 `hybrid` 派生——所以纯 HITT 团队（仅声明人类成员）仍然是 `default` 模式，leader 保留 `spawn_member` 工具。
 
 ## 与其它 spec 的关系
 
