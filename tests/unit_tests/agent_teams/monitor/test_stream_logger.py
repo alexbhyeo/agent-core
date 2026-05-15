@@ -315,6 +315,34 @@ def test_tool_call_empty_fields_falls_back_to_payload(tmp_path):
 
 
 @pytest.mark.level1
+def test_tool_update_extracts_nested_fields(tmp_path):
+    """``tool_update`` chunks wrap tool fields under an inner key (emitted
+    by third-party rails such as jiuwenclaw's stream_event_rail).
+    Extract them directly so the record is informative, not a payload dump."""
+    log_path = tmp_path / "stream.log"
+    agg = TeamStreamLogger(log_path)
+    payload = {
+        "tool_update": {
+            "tool_name": "send_message",
+            "tool_call_id": "tool-abc",
+            "arguments": '{"content": "hello"}',
+            "status": "in_progress",
+        }
+    }
+    agg.feed(_team_chunk("tool_update", payload))
+    agg.flush()
+
+    recs = _headers(log_path)
+    assert len(recs) == 1
+    assert recs[0][0] == "DEBUG"
+    assert "category=tool_update" in recs[0][1]
+    text = _text(log_path)
+    assert "tool_name=send_message" in text
+    assert "status=in_progress" in text
+    assert "tool_call_id=tool-abc" in text
+
+
+@pytest.mark.level1
 def test_tool_result_empty_fields_falls_back_to_payload(tmp_path):
     log_path = tmp_path / "stream.log"
     agg = TeamStreamLogger(log_path)

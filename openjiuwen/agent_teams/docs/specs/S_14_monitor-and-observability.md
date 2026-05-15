@@ -173,14 +173,16 @@ flush / close**，**不走 `team_logger`**。
 - **累积型**（`llm_output` / `llm_reasoning`）：token 流缓冲到 `self._runs[(member, role)]`
   对应的 `_Run` 里。**每个 source 一个独立累积段**。同一 source 切换 category、该 source 出现
   离散 chunk、或 `flush()` 时，flush 该 source 的段为一条记录。
-- **离散型**（`tool_call` / `tool_result` / `__interaction__` / `controller_output` /
-  `message` / `todo.updated` / 未知类型）：先 flush **该 source** 的待定累积段，再立即写一条。
+- **离散型**（`tool_call` / `tool_result` / `tool_update` / `__interaction__` /
+  `controller_output` / `message` / `todo.updated` / 未知类型）：先 flush **该 source** 的
+  待定累积段，再立即写一条。
 
 按 source 分桶是不变量 14——单一游标会被不同成员的 chunk 交错打断成 token 级记录。
 
 **级别标签**（写入 record 的明文 level，不再走 `team_logger` 的级别过滤）：文本输出
 （`llm_output` / `answer`）→ `[INFO]`；思考（`llm_reasoning`）与工具调用（`tool_call` /
-`tool_result`）→ `[DEBUG]`；中断（`__interaction__`）与任务失败（`controller_output`）→
+`tool_result` / `tool_update`）→ `[DEBUG]`；中断（`__interaction__`）与任务失败
+（`controller_output`）→
 `[WARN]`；其余（`message` / `todo.updated` / 未知）→ `[INFO]`。映射由 `_CATEGORY_LEVEL` 表
 声明式给出。
 
@@ -211,6 +213,10 @@ flush / close**，**不走 `team_logger`**。
 - `tool_call` / `tool_result` 的 payload 在缺少标准 `tool_name` / `tool_args` /
   `tool_result` 字段时（非 `tool_tracker` 路径的不同 schema），fallback 为整个 payload 的
   capped 字符串——保证记录有实际内容而不是 `tool_name= tool_args=` 两个空字段。
+- `tool_update` 是第三方 rail（如 `jiuwenclaw/stream_event_rail`）对一次 tool call 进度
+  状态的通知，payload shape `{"tool_update": {"tool_name", "tool_call_id", "arguments",
+  "status"}}`；logger 抽出内嵌字段写一行 `tool_name=… status=… tool_call_id=… arguments=…`，
+  不再落到 `category=other` 里 dump 整个 payload。
 - `tool_result` / `tool_args` 内容超阈值截断；模型文本输出（`llm_output` /
   `llm_reasoning` / `answer`）永不截断。
 - `feed` / `flush` 内部出错时，best-effort 写一行 `[WARN] ... error: ...` 标记到同一文件；

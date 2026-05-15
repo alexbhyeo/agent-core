@@ -47,6 +47,7 @@ _CHUNK_INTERACTION = "__interaction__"
 _CHUNK_MESSAGE = "message"
 _CHUNK_TOOL_CALL = "tool_call"
 _CHUNK_TOOL_RESULT = "tool_result"
+_CHUNK_TOOL_UPDATE = "tool_update"
 _CHUNK_TODO_UPDATED = "todo.updated"
 _CHUNK_CONTROLLER_OUTPUT = "controller_output"
 
@@ -72,6 +73,7 @@ _CATEGORY_LEVEL = {
     "reasoning": "DEBUG",
     "tool_call": "DEBUG",
     "tool_result": "DEBUG",
+    "tool_update": "DEBUG",
     "interaction": "WARN",
     "controller_output": "WARN",
     "runtime_ready": "INFO",
@@ -123,6 +125,8 @@ def _classify(ctype: str, payload: Any) -> str:
         return "tool_call"
     if ctype == _CHUNK_TOOL_RESULT:
         return "tool_result"
+    if ctype == _CHUNK_TOOL_UPDATE:
+        return "tool_update"
     if ctype == _CHUNK_INTERACTION:
         return "interaction"
     if ctype == _CHUNK_CONTROLLER_OUTPUT:
@@ -169,6 +173,26 @@ def _tool_result_summary(payload: Any) -> str:
     args = _cap(str(args_raw), _TOOL_ARGS_CAP)
     result = _cap(str(result_raw), _TOOL_RESULT_CAP)
     return f"tool_name={name} tool_args={args}\nresult: {result}"
+
+
+def _tool_update_summary(payload: Any) -> str:
+    """Summary of a ``tool_update`` chunk (tool-call status notification).
+
+    The canonical shape (emitted by ``stream_event_rail`` in third-party
+    rail packages such as ``jiuwenclaw``) wraps the tool fields in an
+    inner ``tool_update`` key with ``status`` carrying ``in_progress`` /
+    ``finish``. Fall back to the raw payload if the wrapper is missing.
+    """
+    if not isinstance(payload, dict):
+        return _cap(str(payload), _GENERIC_CAP)
+    update = payload.get("tool_update")
+    if not isinstance(update, dict):
+        return _cap(str(payload), _GENERIC_CAP)
+    name = update.get("tool_name", "")
+    status = update.get("status", "")
+    call_id = update.get("tool_call_id", "")
+    args = _cap(str(update.get("arguments", "")), _TOOL_ARGS_CAP)
+    return f"tool_name={name} status={status} tool_call_id={call_id} arguments={args}"
 
 
 def _controller_output_summary(payload: Any) -> str:
@@ -353,6 +377,8 @@ class TeamStreamLogger:
             return _tool_call_summary(payload)
         if category == "tool_result":
             return _tool_result_summary(payload)
+        if category == "tool_update":
+            return _tool_update_summary(payload)
         if category == "controller_output":
             return _controller_output_summary(payload)
         if category == "runtime_ready":
