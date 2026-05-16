@@ -29,9 +29,11 @@ controller-output extraction.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, TextIO
+
+import logging
 
 from openjiuwen.agent_teams.schema.stream import TeamOutputSchema
 from openjiuwen.agent_teams.schema.team import TeamRole
@@ -65,6 +67,8 @@ _TOOL_ARGS_CAP = 500
 _GENERIC_CAP = 2000
 
 _UNKNOWN = "<unknown>"
+
+_logger = logging.getLogger(__name__)
 
 # Log category -> level label written into each record. Declarative so
 # every category's level is visible in one place.
@@ -318,8 +322,8 @@ class TeamStreamLogger:
             if self._file is not None:
                 try:
                     self._file.close()
-                except Exception:
-                    pass
+                except Exception as exc:
+                    _logger.debug("Failed to close stream log file: %s", exc)
                 self._file = None
 
     # ------------------------------------------------------------------
@@ -414,12 +418,12 @@ class TeamStreamLogger:
         """Write one timestamped record to the file; swallow any I/O error."""
         if self._file is None:
             return
-        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]
+        timestamp = datetime.now(tz=UTC).strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]
         try:
             self._file.write(f"{timestamp} {body}\n")
             self._file.flush()
-        except Exception:
-            pass
+        except Exception as exc:
+            _logger.debug("Stream log write failed: %s", exc)
 
 
 __all__ = ["TeamStreamLogger"]

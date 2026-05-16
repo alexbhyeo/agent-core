@@ -695,7 +695,7 @@ class TeamAgent(BaseAgent):
         # an empty HITT roster cache; pull the current roster from DB so
         # sync ``is_human_agent`` checks in coordination handlers /
         # rails reflect dynamically-spawned humans created on the leader.
-        backend = agent._configurator.team_backend
+        backend = agent.team_backend
         if backend is not None:
             await backend.refresh_human_agent_roster()
         return agent
