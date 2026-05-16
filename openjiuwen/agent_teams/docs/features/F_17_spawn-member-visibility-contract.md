@@ -29,9 +29,9 @@
 
 1. **在 `spawn_member._desc`（`descs/<lang>/spawn_member.md`）的参数表里新增 "可见性 / Visibility" 列**。
    每个参数标 `公开` / `私有` / `内部`：
-   - `member_name` / `display_name` / `desc` / `role_type` → `公开`
+   - `member_name` / `display_name` / `desc` → `公开`
    - `prompt` → `私有`
-   - `model_name` → `内部`
+   - `role_type` / `model_name` → `内部`（`role_type` 决定 framework 装配方式，不进入任何成员的 prompt 文本；F_18 默认对 teammate 也隐藏）
 2. **在 `_desc` 增加独立的「信息可见性边界」小节**，明确：
    - 公开字段会注入到 peer 的 system prompt 与 `list_members`；
    - 私有字段只注入该成员自己；

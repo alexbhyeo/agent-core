@@ -5,7 +5,7 @@ Create a new team member with domain expertise. Members are long-lived entities 
 | **member_name** | public | Unique semantic slug (e.g. `backend-dev-1`, DNS-label-style kebab-case); **must start with a lowercase letter; the rest may be lowercase letters, digits, or hyphen**; must not collide with any existing member |
 | **display_name** | public | Human-readable role label (e.g. "Backend Developer Expert") |
 | **desc** | public | Long-term role definition: professional background, core expertise, the domains this member owns, and the boundaries it does not own. **Do not put current-batch tasks here.** This field is injected into every other member's system prompt — never put private or sensitive content here |
-| **role_type** | public | Optional. `teammate` (default) = regular LLM teammate; `human_agent` = human collaborator driven via HumanAgentInbox |
+| **role_type** | internal | Optional; drives framework wiring, never rendered into any member's prompt text. `teammate` (default) = regular LLM teammate; `human_agent` = human collaborator driven via HumanAgentInbox |
 | **prompt** | **private** | Long-term working conventions, injected only into this member's own system prompt: stable working style, technical preferences, collaboration constraints. Hidden goals, internal constraints, or sensitive directives meant only for this member belong here. **Do not put current-batch tasks here.** Forbidden when `role_type='human_agent'` |
 | **model_name** | internal | Optional model suggestion (never enters any LLM context). Forbidden when `role_type='human_agent'` |
 

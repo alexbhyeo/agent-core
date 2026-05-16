@@ -46,7 +46,8 @@ STRINGS: dict[str, str] = {
         "禁止写入对成员的内部考量、敏感目标或机密策略"
     ),
     "spawn_member.role_type": (
-        "[公开] 可选。成员角色类型：'teammate'（默认）= 普通 LLM 队友，需提供 model_name/prompt；"
+        "[内部] 可选。成员角色类型，决定 framework 装配方式，不进入任何成员的 prompt 文本："
+        "'teammate'（默认）= 普通 LLM 队友，需提供 model_name/prompt；"
         "'human_agent' = 人类成员，由真人通过 HumanAgentInbox 驱动，"
         "**不接受** model_name 与 prompt（由框架内置模板托管），传入这两个字段会报错。"
         "选用 'human_agent' 需要 spec.enable_hitt=True 且当前 build_team 实例未禁用 HITT"

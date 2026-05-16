@@ -5,7 +5,7 @@
 | **member_name** | 公开 | 唯一标识成员的语义化名（如 `backend-dev-1`，DNS label 风格 kebab-case），**首字符必须是小写字母，其余仅允许小写字母、数字和连字符**，必须确保不与现有成员重复 |
 | **display_name** | 公开 | 成员显示名称，体现角色定位（如「后端开发专家」） |
 | **desc** | 公开 | 长期角色定义：写清专业背景、核心专长、负责的领域范围以及不负责的边界。**不要写当前批次的具体任务**。该字段会被注入到所有其他成员的 system prompt 中，禁止写入私密或敏感信息 |
-| **role_type** | 公开 | 可选；`teammate`（默认）= 普通 LLM 队友；`human_agent` = 人类成员，由真人通过 HumanAgentInbox 驱动 |
+| **role_type** | 内部 | 可选；决定 framework 装配方式（不进入任何成员的 prompt 文本）。`teammate`（默认）= 普通 LLM 队友；`human_agent` = 人类成员，由真人通过 HumanAgentInbox 驱动 |
 | **prompt** | **私有** | 长期工作约定，仅注入该成员自己的 system prompt：写清该成员稳定遵循的工作风格、技术偏好或协作约束。任何只该让本成员知道的隐藏目标 / 内部约束 / 敏感细节都放这里。**不要写当前批次的任务安排**。`role_type=human_agent` 时禁止传入 |
 | **model_name** | 内部 | 可选；建议使用的模型名称（不进入任何 LLM 上下文）。`role_type=human_agent` 时禁止传入 |
 

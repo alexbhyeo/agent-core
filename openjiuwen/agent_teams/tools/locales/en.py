@@ -60,7 +60,9 @@ STRINGS: dict[str, str] = {
         "or confidential strategy here"
     ),
     "spawn_member.role_type": (
-        "[PUBLIC] Optional. Member role type. 'teammate' (default) = regular LLM teammate, "
+        "[INTERNAL] Optional. Member role type — drives framework wiring, "
+        "never rendered into any member's prompt text. "
+        "'teammate' (default) = regular LLM teammate, "
         "requires model_name/prompt to drive its avatar. 'human_agent' = human "
         "member driven by the real user via HumanAgentInbox; **rejects** model_name "
         "and prompt (the framework template manages them) — passing those fields "
