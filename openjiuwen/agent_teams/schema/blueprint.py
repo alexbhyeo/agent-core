@@ -29,6 +29,7 @@ from openjiuwen.agent_teams.constants import (
     RESERVED_MEMBER_NAMES,
 )
 from openjiuwen.agent_teams.i18n import t
+from openjiuwen.agent_teams.memory import TeamMemoryConfig
 from openjiuwen.agent_teams.models.pool import ModelPoolEntry, ModelRouterConfig
 from openjiuwen.agent_teams.schema.deep_agent_spec import DeepAgentSpec
 from openjiuwen.agent_teams.schema.team import (
@@ -39,7 +40,6 @@ from openjiuwen.agent_teams.schema.team import (
     TeamSpec,
 )
 from openjiuwen.agent_teams.team_workspace.models import TeamWorkspaceConfig
-from openjiuwen.agent_teams.memory import TeamMemoryConfig
 from openjiuwen.core.single_agent.schema.agent_card import AgentCard
 from openjiuwen.harness.tools.worktree import WorktreeConfig
 
