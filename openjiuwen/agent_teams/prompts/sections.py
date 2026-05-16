@@ -12,7 +12,16 @@ alongside the harness sections (safety, tools, memory, ...).
 Section layout (aligned with ``prompt_design.md``):
 
   P:11  team_role        — member id + role policy (always)
-  P:12  team_hitt        — HITT collaboration rules (when human members exist)
+  P:12  team_hitt        — HITT collaboration rules. LEADER + HUMAN_AGENT
+                          always get the full roster section (when human
+                          members exist). TEAMMATE gets a role-neutral
+                          anonymous section by default — no human_agent
+                          ``member_name`` listed and no "real humans"
+                          label — so peer role is not leaked into other
+                          members' prompts. Setting
+                          ``TeamAgentSpec.expose_human_agents_to_teammates=
+                          True`` switches teammates to the legacy roster
+                          section.
   P:13  team_workflow    — leader workflow (LEADER only)
   P:14  team_lifecycle   — team lifecycle policy (LEADER only)
   P:15  team_persona     — current persona (when persona is set)
@@ -368,6 +377,11 @@ def _hitt_section_leader_cn(names: list[str]) -> str:
 
 
 def _hitt_section_teammate_cn(names: list[str]) -> str:
+    """Legacy roster-exposing variant.
+
+    Only used when ``TeamAgentSpec.expose_human_agents_to_teammates``
+    is True. Lists every human_agent ``member_name`` inline.
+    """
     roster = _format_human_agent_roster(names, "cn")
     return (
         "# HITT — 与人类成员协作\n\n"
@@ -375,6 +389,29 @@ def _hitt_section_teammate_cn(names: list[str]) -> str:
         "teammate：与他们交流一律通过 `send_message(to=<对应名字>, ...)`，"
         "不要假设他们会自动看到你的 plain text。他们可能拥有你无法完成的"
         "决策权或操作能力。\n"
+    )
+
+
+def _hitt_section_teammate_anonymous_cn() -> str:
+    """Default role-neutral variant.
+
+    Used when ``TeamAgentSpec.expose_human_agents_to_teammates`` is
+    False. Does not list any human_agent ``member_name``, does not
+    say "real humans", and does not hint at why some peers behave
+    asynchronously — keeps peer role (teammate vs human_agent)
+    hidden while still carrying the collaboration guidance that
+    actually matters for teammates.
+    """
+    return (
+        "# HITT — 与 Peer 协作的稳健习惯\n\n"
+        "本团队中部分 peer 不会主动读取你的 plain text 输出，"
+        "且回复节奏可能慢于一般 LLM 队友。对所有 peer 一律按以下契约协作：\n\n"
+        "- 跨成员通信**一律**走 `send_message(to=<name>, ...)`，"
+        "不要假设你的 plain text 输出对其它成员可见。\n"
+        "- 收到的 peer 消息可能存在分钟级延迟，**不要**短时间内"
+        "反复催促；如需推进，请提交 `update_task` 或与 leader 协商。\n"
+        "- 不要尝试推断哪些 peer 异步、哪些 peer 同步；按统一的"
+        "通信契约对待全员即可。\n"
     )
 
 
@@ -466,6 +503,11 @@ def _hitt_section_leader_en(names: list[str]) -> str:
 
 
 def _hitt_section_teammate_en(names: list[str]) -> str:
+    """Legacy roster-exposing variant.
+
+    Only used when ``TeamAgentSpec.expose_human_agents_to_teammates``
+    is True. Lists every human_agent ``member_name`` inline.
+    """
     roster = _format_human_agent_roster(names, "en")
     return (
         "# HITT — Working with Human Members\n\n"
@@ -474,6 +516,33 @@ def _hitt_section_teammate_en(names: list[str]) -> str:
         "direct exchange must use `send_message(to=<their_name>, ...)`. "
         "Do not assume your plain text is visible to a human member; "
         "they may hold decisions or privileges you cannot execute.\n"
+    )
+
+
+def _hitt_section_teammate_anonymous_en() -> str:
+    """Default role-neutral variant.
+
+    Used when ``TeamAgentSpec.expose_human_agents_to_teammates`` is
+    False. Does not list any human_agent ``member_name``, does not
+    say "real humans", and does not hint at why some peers behave
+    asynchronously — keeps peer role (teammate vs human_agent)
+    hidden while still carrying the collaboration guidance that
+    actually matters for teammates.
+    """
+    return (
+        "# HITT — Robust Habits for Peer Collaboration\n\n"
+        "Some peers in this team do not actively read your plain "
+        "text output, and their reply cadence may be slower than a "
+        "typical LLM teammate. Apply the following contract uniformly "
+        "to every peer:\n\n"
+        "- **Always** use `send_message(to=<name>, ...)` for "
+        "cross-member contact; do not assume your plain text output "
+        "is visible to other members.\n"
+        "- Replies from peers may take minutes; **do not** repeatedly "
+        "nudge them on a short timescale. If you need to push forward, "
+        "submit an `update_task` or coordinate with the leader.\n"
+        "- Do not try to infer which peers are async and which are "
+        "sync; apply the uniform communication contract to everyone.\n"
     )
 
 
@@ -573,13 +642,25 @@ def build_team_hitt_section(
     human_agent_names: "list[str] | frozenset[str] | set[str] | None" = None,
     language: str = "cn",
     self_member_name: str | None = None,
+    expose_human_agents_to_teammates: bool = False,
 ) -> Optional[PromptSection]:
     """Build the HITT collaboration-rules section.
 
     Returns a non-None section only when at least one human-agent
-    member is registered. Text is role-specific and enumerates every
-    registered human member inline so leaders and teammates can see
-    exactly whom to address via ``send_message``.
+    member is registered. The section text is role-specific:
+
+    - LEADER / HUMAN_AGENT: always receive the full roster section
+      enumerating every human_agent ``member_name``. Leader owns
+      spawn/approval flows; human_agent's roster includes itself.
+    - TEAMMATE: receives a role-neutral anonymous section by default
+      (no ``member_name`` listed, no "real humans" label) so peer
+      role (teammate vs human_agent) is not leaked into other
+      members' system prompts. Cross-member contact for everyone
+      already goes through ``send_message``, so teammates do not
+      need to distinguish human peers from LLM peers. Setting
+      ``expose_human_agents_to_teammates=True`` (driven by
+      ``TeamAgentSpec.expose_human_agents_to_teammates``) switches
+      teammates back to the legacy roster section.
 
     Args:
         role: The role whose prompt this section targets.
@@ -588,6 +669,9 @@ def build_team_hitt_section(
         language: "cn" or "en".
         self_member_name: The current member's own name, used to tell
             a human-agent reader which entry in the roster is itself.
+        expose_human_agents_to_teammates: Only affects the TEAMMATE
+            branch. False (default) → anonymous variant. True →
+            legacy roster-exposing variant.
     """
     if not human_agent_names:
         return None
@@ -596,7 +680,11 @@ def build_team_hitt_section(
         if role == TeamRole.LEADER:
             body = _hitt_section_leader_cn(names)
         elif role == TeamRole.TEAMMATE:
-            body = _hitt_section_teammate_cn(names)
+            body = (
+                _hitt_section_teammate_cn(names)
+                if expose_human_agents_to_teammates
+                else _hitt_section_teammate_anonymous_cn()
+            )
         elif role == TeamRole.HUMAN_AGENT:
             body = _hitt_section_human_agent_cn(names, self_member_name)
         else:
@@ -605,7 +693,11 @@ def build_team_hitt_section(
         if role == TeamRole.LEADER:
             body = _hitt_section_leader_en(names)
         elif role == TeamRole.TEAMMATE:
-            body = _hitt_section_teammate_en(names)
+            body = (
+                _hitt_section_teammate_en(names)
+                if expose_human_agents_to_teammates
+                else _hitt_section_teammate_anonymous_en()
+            )
         elif role == TeamRole.HUMAN_AGENT:
             body = _hitt_section_human_agent_en(names, self_member_name)
         else:

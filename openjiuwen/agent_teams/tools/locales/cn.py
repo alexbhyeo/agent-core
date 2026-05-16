@@ -30,22 +30,32 @@ STRINGS: dict[str, str] = {
     # ===== spawn_member ========================================================
     # spawn_member._desc lives in descs/cn/spawn_member.md
     "spawn_member.member_name": (
-        "成员唯一名（语义化 slug，如 backend-dev-1，DNS label 风格 kebab-case）。"
+        "[公开] 成员唯一名（语义化 slug，如 backend-dev-1，DNS label 风格 kebab-case）。"
         "**首字符必须是小写英文字母（a-z），其后仅允许小写字母、数字（0-9）和连字符（-）**；"
         "禁止大写字母、下划线、空白、中文及其他非 ASCII 字符。"
         "同时作为主键和消息/审批/任务路由键，在同一团队内必须唯一"
     ),
-    "spawn_member.display_name": "成员的显示名（如「后端开发专家」），仅用于展示，不用于路由",
-    "spawn_member.desc": "成员的长期角色画像，包括专业背景、核心专长、优先认领的任务类型、协作风格以及不负责的边界，用于任务匹配和角色定位",
+    "spawn_member.display_name": (
+        "[公开] 成员的显示名（如「后端开发专家」），仅用于展示，不用于路由。"
+        "会注入所有其他成员的 system prompt 并由 list_members 返回，禁止写入私密信息"
+    ),
+    "spawn_member.desc": (
+        "[公开] 成员的长期角色画像，包括专业背景、核心专长、"
+        "优先认领的任务类型、协作风格以及不负责的边界，用于任务匹配和角色定位。"
+        "会注入所有其他成员的 system prompt 并由 list_members 返回，"
+        "禁止写入对成员的内部考量、敏感目标或机密策略"
+    ),
     "spawn_member.role_type": (
-        "可选。成员角色类型：'teammate'（默认）= 普通 LLM 队友，需提供 model_name/prompt；"
+        "[公开] 可选。成员角色类型：'teammate'（默认）= 普通 LLM 队友，需提供 model_name/prompt；"
         "'human_agent' = 人类成员，由真人通过 HumanAgentInbox 驱动，"
         "**不接受** model_name 与 prompt（由框架内置模板托管），传入这两个字段会报错。"
         "选用 'human_agent' 需要 spec.enable_hitt=True 且当前 build_team 实例未禁用 HITT"
     ),
     "spawn_member.prompt": (
-        "成员启动时收到的首条指令。用于说明首次启动后的优先关注点、任务选择原则、约束或协作要求；"
-        "应提供明确方向，不要只写空泛的启动语句，也不要重复通用工作流程。"
+        "[私有，仅该成员自己可见] 成员的长期工作约定，注入该成员自己的 system prompt："
+        "稳定遵循的工作风格、技术偏好、协作约束，"
+        "以及只该让本成员知道的隐藏目标或敏感细节。"
+        "不要写当前批次任务，也不要写'开始工作''查看任务列表'这类空泛启动语句。"
         "当 role_type='human_agent' 时禁止传入"
     ),
     "spawn_member.model_name": (

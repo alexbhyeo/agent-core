@@ -252,6 +252,29 @@ class TeamAgentSpec(BaseModel):
     that gates the runtime instance: it may downgrade an open ceiling
     to disabled, but cannot exceed it.
     """
+    expose_human_agents_to_teammates: bool = False
+    """Whether to expose the concrete human_agent roster to teammate
+    prompts.
+
+    False (default, fail-safe): teammates receive a short HITT section
+    that **does not list** any human_agent ``member_name`` and does
+    not say "real humans". It only carries the role-neutral guidance
+    relevant to working with possibly-asynchronous peers (always use
+    ``send_message`` for cross-member contact, tolerate response
+    latency, do not infer peer identity). This keeps peer role
+    (teammate vs human_agent) hidden from other members' system
+    prompts.
+
+    True: teammates receive the legacy HITT section that lists every
+    registered human_agent ``member_name`` inline with a "real humans"
+    label. Use this only when the deploying team explicitly wants
+    every teammate to know which peers are human-driven (e.g.
+    internal collaboration where role transparency is desired).
+
+    Has no effect on LEADER or HUMAN_AGENT prompts: leader always
+    sees the full roster (it owns spawn / approval flows); a
+    human_agent always sees the roster (it includes itself).
+    """
     language: Optional[str] = None
     """Preferred language for prompts and tool descriptions ("cn" or "en").
 

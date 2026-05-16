@@ -939,6 +939,122 @@ def test_hitt_section_human_agent_strictly_forbids_autonomous_behavior_en():
     assert "member_complete_task" in body
 
 
+@pytest.mark.level0
+def test_hitt_section_teammate_default_is_anonymous_cn():
+    """Default (expose_human_agents_to_teammates=False): teammate
+    must receive a HITT section that carries the collaboration
+    guidance but does NOT list any human_agent member_name and does
+    NOT use the "真实人类" label. Otherwise peer role (teammate vs
+    human_agent) would leak into the teammate's system prompt.
+    """
+    section = build_team_hitt_section(
+        role=TeamRole.TEAMMATE,
+        human_agent_names=["human_pm", "human_designer"],
+        language="cn",
+    )
+    assert section is not None
+    body = section.content["cn"]
+    # Anonymous variant carries the guidance.
+    assert "send_message" in body
+    # Roster must not leak: no concrete member_name, no "real humans" tag.
+    assert "human_pm" not in body
+    assert "human_designer" not in body
+    assert "真实人类" not in body
+    assert "下列人类成员" not in body
+
+
+@pytest.mark.level0
+def test_hitt_section_teammate_default_is_anonymous_en():
+    """English mirror of the teammate-default-anonymous guard."""
+    section = build_team_hitt_section(
+        role=TeamRole.TEAMMATE,
+        human_agent_names=["human_pm", "human_designer"],
+        language="en",
+    )
+    assert section is not None
+    body = section.content["en"]
+    assert "send_message" in body
+    assert "human_pm" not in body
+    assert "human_designer" not in body
+    assert "real humans" not in body.lower()
+    assert "the team includes the following human" not in body.lower()
+
+
+@pytest.mark.level0
+def test_hitt_section_teammate_with_expose_flag_lists_roster_cn():
+    """expose_human_agents_to_teammates=True restores the legacy
+    roster-exposing variant: every human_agent member_name is listed
+    inline and the "真实人类" label is back.
+    """
+    section = build_team_hitt_section(
+        role=TeamRole.TEAMMATE,
+        human_agent_names=["human_pm", "human_designer"],
+        language="cn",
+        expose_human_agents_to_teammates=True,
+    )
+    assert section is not None
+    body = section.content["cn"]
+    assert "human_pm" in body
+    assert "human_designer" in body
+    assert "真实人类" in body
+    assert "send_message" in body
+
+
+@pytest.mark.level0
+def test_hitt_section_teammate_with_expose_flag_lists_roster_en():
+    """English mirror of the teammate-expose-flag-lists-roster guard."""
+    section = build_team_hitt_section(
+        role=TeamRole.TEAMMATE,
+        human_agent_names=["human_pm", "human_designer"],
+        language="en",
+        expose_human_agents_to_teammates=True,
+    )
+    assert section is not None
+    body = section.content["en"]
+    assert "human_pm" in body
+    assert "human_designer" in body
+    assert "real humans" in body.lower()
+    assert "send_message" in body
+
+
+@pytest.mark.level0
+def test_hitt_section_expose_flag_does_not_affect_leader_or_human_agent():
+    """The expose flag is teammate-only: leader and human_agent
+    branches must produce the same content with or without it.
+    """
+    leader_off = build_team_hitt_section(
+        role=TeamRole.LEADER,
+        human_agent_names=["human_pm"],
+        language="cn",
+        expose_human_agents_to_teammates=False,
+    )
+    leader_on = build_team_hitt_section(
+        role=TeamRole.LEADER,
+        human_agent_names=["human_pm"],
+        language="cn",
+        expose_human_agents_to_teammates=True,
+    )
+    assert leader_off is not None and leader_on is not None
+    assert leader_off.content["cn"] == leader_on.content["cn"]
+
+    human_off = build_team_hitt_section(
+        role=TeamRole.HUMAN_AGENT,
+        human_agent_names=["human_pm"],
+        language="cn",
+        self_member_name="human_pm",
+        expose_human_agents_to_teammates=False,
+    )
+    human_on = build_team_hitt_section(
+        role=TeamRole.HUMAN_AGENT,
+        human_agent_names=["human_pm"],
+        language="cn",
+        self_member_name="human_pm",
+        expose_human_agents_to_teammates=True,
+    )
+    assert human_off is not None and human_on is not None
+    assert human_off.content["cn"] == human_on.content["cn"]
+
+
 # ---------------------------------------------------------------------------
 # Reserved-name exports sanity
 # ---------------------------------------------------------------------------

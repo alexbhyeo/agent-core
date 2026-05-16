@@ -371,6 +371,7 @@ class AgentConfigurator:
             team_workspace_mount=team_workspace_mount,
             team_workspace_path=team_workspace_path,
             team_backend=self.team_backend,
+            expose_human_agents_to_teammates=spec.expose_human_agents_to_teammates,
         )
 
         # Human agents have no autonomous task loop and no mailbox poll
