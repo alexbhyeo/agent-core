@@ -569,6 +569,14 @@ async def test_task_claimed_for_self_uses_human_template_when_human_agent():
     assert "Write design doc" in content
     # Must not show the teammate guidance to autonomously call view_task.
     assert "view_task" not in content
+    # Strict prohibition: the avatar LLM must see that autonomous behavior
+    # is forbidden and that it should stay silent until the controller
+    # explicitly instructs via Inbox. Without these keywords the model
+    # tends to drift into autonomous tool calls or acknowledgements.
+    assert "严格禁止" in content
+    assert "保持静默" in content
+    assert "send_message" in content
+    assert "member_complete_task" in content
 
 
 @pytest.mark.asyncio
@@ -646,8 +654,13 @@ def test_format_message_uses_human_template_when_human_agent():
     assert "[转发给控制者的单播消息]" in direct_text
     assert "msg-direct" in direct_text
     assert "are you around?" in direct_text
-    # Suppress autonomous send_message.
-    assert "不要主动调 send_message" in direct_text
+    # Strict prohibition keywords — the body must explicitly forbid
+    # autonomous replies (send_message), require the avatar to stay
+    # silent, and frame the input as a controller-facing notification
+    # rather than something to act on.
+    assert "严格禁止" in direct_text
+    assert "保持静默" in direct_text
+    assert "send_message" in direct_text
 
     bcast = MagicMock()
     bcast.message_id = "msg-bcast"
@@ -657,6 +670,8 @@ def test_format_message_uses_human_template_when_human_agent():
 
     bcast_text = handler._format_message(bcast, is_human_agent=True)
     assert "[转发给控制者的广播消息]" in bcast_text
+    assert "严格禁止" in bcast_text
+    assert "保持静默" in bcast_text
 
 
 def _make_claimed_task(

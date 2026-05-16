@@ -893,6 +893,52 @@ def test_hitt_section_human_agent_tells_self_apart():
     assert "human_pm" in body
 
 
+@pytest.mark.level0
+def test_hitt_section_human_agent_strictly_forbids_autonomous_behavior_cn():
+    """Avatar prompt must spell out the strict prohibition on autonomous
+    replies and autonomous behavior when team event notifications land.
+
+    Regression guard: without the explicit "严格禁止" framing the avatar
+    LLM drifts into autonomous send_message / member_complete_task when
+    it sees something that looks reply-shaped or task-shaped in its input.
+    """
+    section = build_team_hitt_section(
+        role=TeamRole.HUMAN_AGENT,
+        human_agent_names=[HUMAN_AGENT_MEMBER_NAME],
+        language="cn",
+        self_member_name=HUMAN_AGENT_MEMBER_NAME,
+    )
+    assert section is not None
+    body = section.content["cn"]
+    # The notification prefixes must be named so the avatar recognises them.
+    assert "[转发给控制者的" in body
+    assert "[任务指派给控制者]" in body
+    # Strict-prohibition keywords must appear: both autonomous replies
+    # and autonomous tool calls are forbidden until the controller
+    # explicitly instructs.
+    assert "严格禁止" in body
+    assert "send_message" in body
+    assert "member_complete_task" in body
+
+
+@pytest.mark.level0
+def test_hitt_section_human_agent_strictly_forbids_autonomous_behavior_en():
+    """English mirror of the strict-prohibition guard."""
+    section = build_team_hitt_section(
+        role=TeamRole.HUMAN_AGENT,
+        human_agent_names=[HUMAN_AGENT_MEMBER_NAME],
+        language="en",
+        self_member_name=HUMAN_AGENT_MEMBER_NAME,
+    )
+    assert section is not None
+    body = section.content["en"]
+    assert "[For-Controller" in body
+    assert "[Task Assigned For Controller]" in body
+    assert "strictly forbidden" in body
+    assert "send_message" in body
+    assert "member_complete_task" in body
+
+
 # ---------------------------------------------------------------------------
 # Reserved-name exports sanity
 # ---------------------------------------------------------------------------
