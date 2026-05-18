@@ -199,7 +199,7 @@ class SummaryManager(BaseMemoryManager):
         return result
 
     async def list_user_summary(self, user_id: str, scope_id: str,
-                                offset: int, batch_size: int) -> list[dict[str, Any]]:
+                                offset: int = 0, batch_size: int = 100) -> list[dict[str, Any]]:
         if not self.memory_index:
             memory_logger.warning(
                 "memory_index is not initialized, cannot list user summary",

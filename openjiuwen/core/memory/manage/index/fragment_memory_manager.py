@@ -290,8 +290,8 @@ class FragmentMemoryManager(BaseMemoryManager):
         await self.memory_index.delete_by_user_and_scope(user_id, scope_id)
         return True
 
-    async def list_fragment_memories(self, user_id: str, scope_id: str, offset, 
-                            batch_size, mem_type: Optional[MemoryType] = None) -> list[dict[str, Any]]:
+    async def list_fragment_memories(self, user_id: str, scope_id: str, offset: int = 0,
+                            batch_size: int = 100, mem_type: Optional[MemoryType] = None) -> list[dict[str, Any]]:
         if not self.memory_index:
             memory_logger.warning(
                 "memory_index is not initialized, cannot list memories",
