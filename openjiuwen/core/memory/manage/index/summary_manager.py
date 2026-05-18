@@ -45,9 +45,9 @@ class SummaryManager(BaseMemoryManager):
             for mem_unit in memory_list:
                 if not isinstance(mem_unit, SummaryUnit):
                     continue
-                plaintext_content = BaseMemoryManager.encrypt_memory_if_needed(
+                plaintext_content = BaseMemoryManager.decrypt_memory_if_needed(
                     key=self.crypto_key,
-                    plaintext=mem_unit.summary
+                    ciphertext=mem_unit.summary
                 ) if self.crypto_key else mem_unit.summary
 
                 memory_doc = MemoryDoc(
@@ -186,14 +186,14 @@ class SummaryManager(BaseMemoryManager):
 
             result = []
             for memory_doc, score in search_results:
-                decrypted_content = BaseMemoryManager.decrypt_memory_if_needed(
+                encrypted_content = BaseMemoryManager.encrypt_memory_if_needed(
                     key=self.crypto_key,
-                    ciphertext=memory_doc.text
+                    plaintext=memory_doc.text
                 ) if self.crypto_key else memory_doc.text
 
                 result.append({
                     "id": memory_doc.id,
-                    "mem": decrypted_content,
+                    "mem": encrypted_content,
                     "mem_type": memory_doc.type,
                     "timestamp": memory_doc.timestamp,
                     "score": score,
@@ -220,14 +220,14 @@ class SummaryManager(BaseMemoryManager):
                 return []
             result = []
             for memory_doc in summary_memories:
-                decrypted_content = BaseMemoryManager.decrypt_memory_if_needed(
+                encrypted_content = BaseMemoryManager.encrypt_memory_if_needed(
                     key=self.crypto_key,
-                    ciphertext=memory_doc.text
+                    plaintext=memory_doc.text
                 ) if self.crypto_key else memory_doc.text
 
                 result.append({
                     "id": memory_doc.id,
-                    "mem": decrypted_content,
+                    "mem": encrypted_content,
                     "mem_type": memory_doc.type,
                     "timestamp": memory_doc.timestamp,
                     "source_id": memory_doc.fields.get("source_id"),

@@ -103,10 +103,7 @@ class FragmentMemoryManager(BaseMemoryManager):
     def _convert_to_memory_doc(self, mem_unit: FragmentMemoryUnit) -> MemoryDoc:
         return MemoryDoc(
             id=mem_unit.mem_id,
-            text=BaseMemoryManager.encrypt_memory_if_needed(
-                key=self.crypto_key,
-                plaintext=mem_unit.content
-            ),
+            text=mem_unit.content,
             type=mem_unit.mem_type.value,
             timestamp=self._parse_timestamp(mem_unit.timestamp) if
             mem_unit.timestamp else datetime.now(timezone.utc).astimezone(),
@@ -116,13 +113,13 @@ class FragmentMemoryManager(BaseMemoryManager):
         )
 
     def _doc_to_dict(self, doc: MemoryDoc, score: float = 0.0) -> dict[str, Any]:
-        decrypted_content = BaseMemoryManager.decrypt_memory_if_needed(
+        encrypted_content = BaseMemoryManager.encrypt_memory_if_needed(
             key=self.crypto_key,
-            ciphertext=doc.text
+            plaintext=doc.text
         ) if self.crypto_key else doc.text
         return {
             "id": doc.id,
-            "mem": decrypted_content,
+            "mem": encrypted_content,
             "mem_type": doc.type,
             "timestamp": doc.timestamp,
             "score": score,
@@ -213,10 +210,7 @@ class FragmentMemoryManager(BaseMemoryManager):
                 return False
             updated_doc = MemoryDoc(
                 id=mem_id,
-                text=BaseMemoryManager.encrypt_memory_if_needed(
-                    key=self.crypto_key,
-                    plaintext=new_memory
-                ),
+                text=new_memory,
                 type=old_doc.type,
                 timestamp=datetime.now(timezone.utc).astimezone(),
                 fields=old_doc.fields
