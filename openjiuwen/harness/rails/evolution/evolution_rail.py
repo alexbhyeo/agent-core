@@ -74,6 +74,19 @@ def _split_response_token_fields(
     return response_dict, prompt_token_ids, completion_token_ids, logprobs
 
 
+def _resolve_agent_member_role(agent: Any) -> Optional[str]:
+    """Return the team member role value from an agent when available."""
+    if agent is None:
+        return None
+    role = getattr(agent, "role", None)
+    if callable(role):
+        role = role()
+    role_value = getattr(role, "value", role)
+    if role_value is None:
+        return None
+    return str(role_value)
+
+
 class EvolutionTriggerPoint(Enum):
     """Configurable trigger points for evolution in EvolutionRail."""
 
@@ -178,16 +191,20 @@ class EvolutionRail(DeepAgentRail):
         # Capture member_id for team trajectory aggregation
         agent_id = getattr(ctx.agent, "card", None)
         member_id = agent_id.id if agent_id else None
+        member_role = _resolve_agent_member_role(ctx.agent)
+        meta = {"member_role": member_role} if member_role else None
         self._builder = TrajectoryBuilder(
             session_id=session_id,
             source="online",
             member_id=member_id,
+            meta=meta,
             max_steps=self._max_trajectory_steps,
         )
         logger.debug(
-            "[EvolutionRail] created trajectory builder session_id=%s, member_id=%s",
+            "[EvolutionRail] created trajectory builder session_id=%s, member_id=%s, member_role=%s",
             session_id,
             member_id,
+            member_role,
         )
 
         # Trigger extension point for subclasses

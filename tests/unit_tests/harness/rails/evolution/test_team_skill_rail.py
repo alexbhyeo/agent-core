@@ -180,6 +180,14 @@ class _DummyToolMsg:
         self.content = content
 
 
+def _progress_events(events):
+    return [
+        event
+        for event in events
+        if event.payload.get("_evolution_meta", {}).get("event_kind") == "progress"
+    ]
+
+
 def _make_record(skill_name: str, *, content: str = "experience content") -> EvolutionRecord:
     return EvolutionRecord.make(
         source=f"signal:{skill_name}",
@@ -1099,9 +1107,9 @@ async def test_team_run_evolution_evaluates_presented_entries_when_no_skill_dete
     with patch.object(TeamSkillRail, "__init__", lambda self, *args, **kwargs: None):
         rail = TeamSkillRail.__new__(TeamSkillRail)
         rail._auto_scan = True
+        rail._pending_host_events = []
         rail._team_trajectory_store = None
         rail._detect_used_team_skill = Mock(return_value=None)
-        rail._emit_progress = Mock()
         rail._experience_tracker = Mock()
         rail._experience_tracker.evaluate_presented = AsyncMock()
         record = _make_record("team-skill-a")
@@ -1117,6 +1125,13 @@ async def test_team_run_evolution_evaluates_presented_entries_when_no_skill_dete
         )
 
         rail._experience_tracker.evaluate_presented.assert_awaited_once_with(presented_entries)
+        events = _progress_events(await rail.drain_pending_host_events())
+        stages = [event.payload["_evolution_meta"]["stage"] for event in events]
+        contents = [event.payload["content"] for event in events]
+        assert stages == ["started", "cancelled"]
+        assert "team/swarm skill" in contents[-1]
+        assert "no skill usage" in contents[-1]
+        assert "cancelling" in contents[-1]
 
 
 @pytest.mark.asyncio
@@ -1446,6 +1461,12 @@ def test_detect_used_team_skill_prefers_skill_tool_and_filters_non_team_skill():
             "---\nname: deep-research-to-ppt\nkind: team-skill\n---\n# Team Skill",
             encoding="utf-8",
         )
+        swarm_dir = tmp / "swarm-research"
+        swarm_dir.mkdir(parents=True)
+        (swarm_dir / "SKILL.md").write_text(
+            "---\nname: swarm-research\nkind: swarm-skill\nroles:\n  - name: planner\n    kind: ai_agent\n---\n# Swarm Skill",
+            encoding="utf-8",
+        )
 
         rail = TeamSkillRail(
             skills_dir=str(tmp),
@@ -1479,6 +1500,23 @@ def test_detect_used_team_skill_prefers_skill_tool_and_filters_non_team_skill():
         result = rail._detect_used_team_skill(trajectory)
 
         assert result == "deep-research-to-ppt"
+
+        swarm_trajectory = Trajectory(
+            execution_id="detect-001-swarm",
+            session_id="session-1",
+            source="online",
+            steps=[
+                TrajectoryStep(
+                    kind="tool",
+                    detail=ToolCallDetail(
+                        tool_name="read_file",
+                        call_args="/workspace/swarm-research/SKILL.md",
+                    ),
+                ),
+            ],
+        )
+
+        assert rail._detect_used_team_skill(swarm_trajectory) == "swarm-research"
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
 
@@ -1587,6 +1625,12 @@ def test_is_team_skill_checks_frontmatter_kind_only():
             "---\nname: fake-team\nkind: skill\n---\n# Body\nkind: team-skill",
             encoding="utf-8",
         )
+        swarm_dir = tmp / "real-swarm"
+        swarm_dir.mkdir(parents=True)
+        (swarm_dir / "SKILL.md").write_text(
+            "---\nname: real-swarm\nkind: swarm-skill\nroles:\n  - name: planner\n    kind: ai_agent\n---\n# Body",
+            encoding="utf-8",
+        )
 
         rail = TeamSkillRail(
             skills_dir=str(tmp),
@@ -1596,6 +1640,7 @@ def test_is_team_skill_checks_frontmatter_kind_only():
         )
 
         assert rail._is_team_skill("fake-team") is False
+        assert rail._is_team_skill("real-swarm") is True
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
 
@@ -2741,7 +2786,7 @@ async def test_run_evolution_and_request_user_evolution_share_signal_consumer():
         assert passive_call["signals"][0].signal_type == TeamSignalType.TRAJECTORY_ISSUE.value
         assert passive_call["signals"][0].context["source"] == "passive_trajectory"
         progress_stages = [call.args[0] for call in rail._emit_progress.call_args_list]
-        assert "started" not in progress_stages
+        assert "started" in progress_stages
         assert "detecting_signals" in progress_stages
         assert progress_stages.count("completed") >= 1
 

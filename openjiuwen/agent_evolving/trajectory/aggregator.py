@@ -89,10 +89,10 @@ class TeamTrajectoryAggregator:
         for traj in trajectories:
             mid = traj.meta.get("member_id", traj.execution_id[:8])
             processed = traj
-            if filter_collaborative and mid != "leader":
+            if filter_collaborative and not _is_leader_trajectory(traj, mid):
                 processed = filter_member_trajectory(traj)
             if processed.steps:
-                members[mid] = processed
+                members[mid] = _merge_member_trajectory(members.get(mid), processed)
 
         if not members:
             return self._empty_combined(session_id)
@@ -177,6 +177,8 @@ _CROSS_MEMBER_META_KEYS: frozenset[str] = frozenset({
     "parent_invoke_id",
     "child_invokes",
 })
+_LEADER_ROLE = "leader"
+_MEMBER_ROLE_META_KEYS: tuple[str, ...] = ("member_role", "role")
 
 
 def filter_member_trajectory(trajectory: Trajectory) -> Trajectory:
@@ -201,6 +203,56 @@ def filter_member_trajectory(trajectory: Trajectory) -> Trajectory:
         cost=trajectory.cost,
         meta=trajectory.meta,
     )
+
+
+def _is_leader_trajectory(trajectory: Trajectory, member_id: str) -> bool:
+    """Return True when trajectory metadata identifies a leader member."""
+    for key in _MEMBER_ROLE_META_KEYS:
+        role = trajectory.meta.get(key)
+        if role is None:
+            continue
+        role_value = getattr(role, "value", role)
+        return str(role_value).lower() == _LEADER_ROLE
+    return member_id == _LEADER_ROLE
+
+
+def _merge_member_trajectory(existing: Optional[Trajectory], new: Trajectory) -> Trajectory:
+    """Merge multiple trajectory snapshots for the same member."""
+    if existing is None:
+        return new
+
+    if len(new.steps) > len(existing.steps) and _steps_are_prefix(existing.steps, new.steps):
+        return new
+    if len(existing.steps) > len(new.steps) and _steps_are_prefix(new.steps, existing.steps):
+        return existing
+
+    return Trajectory(
+        execution_id=existing.execution_id,
+        session_id=existing.session_id or new.session_id,
+        source=existing.source,
+        case_id=existing.case_id or new.case_id,
+        steps=[*existing.steps, *new.steps],
+        cost=_merge_cost(existing.cost, new.cost),
+        meta={**existing.meta, **new.meta},
+    )
+
+
+def _steps_are_prefix(prefix: list[TrajectoryStep], steps: list[TrajectoryStep]) -> bool:
+    """Return True when ``prefix`` is the leading slice of ``steps``."""
+    return steps[:len(prefix)] == prefix
+
+
+def _merge_cost(first: Optional[dict], second: Optional[dict]) -> Optional[dict]:
+    """Merge token cost dictionaries from independent member snapshots."""
+    if not first and not second:
+        return None
+    merged: dict = {}
+    for cost in (first, second):
+        if not cost:
+            continue
+        for key, value in cost.items():
+            merged[key] = merged.get(key, 0) + value
+    return merged
 
 
 def _is_collaborative_step(step: TrajectoryStep) -> bool:

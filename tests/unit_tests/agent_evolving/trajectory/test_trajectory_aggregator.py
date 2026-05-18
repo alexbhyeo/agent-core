@@ -373,9 +373,10 @@ class TestTeamTrajectoryAggregatorWithStore:
 
         assert len(result.combined.steps) == 2
 
-    def test_aggregate_keeps_full_leader_and_filters_members(self):
+    def test_aggregate_keeps_full_leader_by_role_and_filters_members(self):
         """Leader keeps full trajectory while teammates keep only collaborative steps."""
         store = InMemoryTrajectoryStore()
+        leader_id = "jiuwen_team_sess_123_team_leader"
 
         leader_steps = [
             TrajectoryStep(
@@ -408,22 +409,98 @@ class TestTeamTrajectoryAggregatorWithStore:
 
         store.save(Trajectory(
             execution_id="leader-exec", session_id="s1", steps=leader_steps,
-            meta={"member_id": "leader"},
+            meta={"member_id": leader_id, "member_role": "leader"},
         ))
         store.save(Trajectory(
             execution_id="member-exec", session_id="s1", steps=member_steps,
-            meta={"member_id": "researcher"},
+            meta={"member_id": "researcher", "member_role": "teammate"},
         ))
 
         agg = TeamTrajectoryAggregator(store=store, team_id="t1")
         result = agg.aggregate("s1")
 
-        assert len(result.members["leader"].steps) == 2
-        assert result.members["leader"].steps[0].kind == "llm"
+        assert len(result.members[leader_id].steps) == 2
+        assert result.members[leader_id].steps[0].kind == "llm"
         assert len(result.members["researcher"].steps) == 1
         assert result.members["researcher"].steps[0].detail.tool_name == "read_file"
         assert len(result.combined.steps) == 3
         assert [step.kind for step in result.combined.steps] == ["llm", "tool", "tool"]
+
+    def test_aggregate_accumulates_multiple_trajectories_for_same_member(self):
+        """Multiple trajectories from one member should be merged, not overwritten."""
+        store = InMemoryTrajectoryStore()
+        leader_id = "jiuwen_team_sess_123_team_leader"
+
+        store.save(Trajectory(
+            execution_id="leader-round-1",
+            session_id="s1",
+            steps=[
+                TrajectoryStep(
+                    kind="tool",
+                    detail=ToolCallDetail(
+                        tool_name="skill_tool",
+                        call_args={"skill_name": "short-video-production-swarm"},
+                    ),
+                    start_time_ms=100,
+                ),
+            ],
+            meta={"member_id": leader_id, "member_role": "leader"},
+        ))
+        store.save(Trajectory(
+            execution_id="leader-round-2",
+            session_id="s1",
+            steps=[
+                TrajectoryStep(
+                    kind="tool",
+                    detail=ToolCallDetail(tool_name="view_task"),
+                    start_time_ms=200,
+                ),
+            ],
+            meta={"member_id": leader_id, "member_role": "leader"},
+        ))
+
+        agg = TeamTrajectoryAggregator(store=store, team_id="t1")
+        result = agg.aggregate("s1")
+
+        tool_names = [step.detail.tool_name for step in result.members[leader_id].steps]
+        assert tool_names == ["skill_tool", "view_task"]
+
+    def test_aggregate_deduplicates_cumulative_snapshots_for_same_member(self):
+        """Cumulative snapshots from one builder should not duplicate prefix steps."""
+        store = InMemoryTrajectoryStore()
+        leader_id = "jiuwen_team_sess_123_team_leader"
+        skill_step = TrajectoryStep(
+            kind="tool",
+            detail=ToolCallDetail(
+                tool_name="skill_tool",
+                call_args={"skill_name": "short-video-production-swarm"},
+            ),
+            start_time_ms=100,
+        )
+        view_task_step = TrajectoryStep(
+            kind="tool",
+            detail=ToolCallDetail(tool_name="view_task"),
+            start_time_ms=200,
+        )
+
+        store.save(Trajectory(
+            execution_id="leader-snapshot-1",
+            session_id="s1",
+            steps=[skill_step],
+            meta={"member_id": leader_id, "member_role": "leader"},
+        ))
+        store.save(Trajectory(
+            execution_id="leader-snapshot-2",
+            session_id="s1",
+            steps=[skill_step, view_task_step],
+            meta={"member_id": leader_id, "member_role": "leader"},
+        ))
+
+        agg = TeamTrajectoryAggregator(store=store, team_id="t1")
+        result = agg.aggregate("s1")
+
+        tool_names = [step.detail.tool_name for step in result.members[leader_id].steps]
+        assert tool_names == ["skill_tool", "view_task"]
 
     def test_aggregate_from_empty_store(self):
         """Aggregator from empty store returns empty combined."""

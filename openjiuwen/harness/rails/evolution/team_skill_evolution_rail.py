@@ -52,10 +52,9 @@ from openjiuwen.agent_evolving.trajectory import (
     TrajectoryStore,
 )
 from openjiuwen.agent_evolving.updater import SingleDimUpdater
-from openjiuwen.agent_evolving.utils import infer_skill_from_texts
+from openjiuwen.agent_evolving.utils import infer_skill_from_texts, parse_top_level_frontmatter
 from openjiuwen.core.common.logging import logger
 from openjiuwen.core.foundation.llm.model import Model
-from openjiuwen.core.memory.lite.frontmatter import parse_frontmatter
 from openjiuwen.core.operator.skill_call import SkillExperienceOperator
 from openjiuwen.core.session.stream import OutputSchema
 from openjiuwen.core.single_agent.rail.base import AgentCallbackContext, ToolCallInputs
@@ -90,6 +89,7 @@ _TEAM_RECORD_LLM_POLICY = LLMInvokePolicy(
 )
 _DEFAULT_TEAM_EVOLUTION_TOTAL_TIMEOUT_SECS = 720.0
 _TEAM_TASK_NON_TERMINAL_STATES = ("pending", "claimed", "in_progress", "blocked")
+_TEAM_SKILL_KINDS = {"team-skill", "swarm-skill"}
 
 
 def is_completed_team_task_view(result: Any) -> bool:
@@ -467,11 +467,6 @@ class TeamSkillEvolutionRail(EvolutionRail):
             or self._host_completion_pending_session_id == self._current_builder_session_id()
         )
 
-    async def _on_after_invoke(self, ctx: AgentCallbackContext) -> None:
-        """Emit progress only when this invoke has been marked for passive evolution."""
-        pending_same_session = self._host_completion_pending_session_id == self._current_builder_session_id()
-        if self._passive_evolution_pending or pending_same_session:
-            self._emit_progress("started", "all tasks completed, starting evolution analysis...")
 
     async def _on_after_evolution_triggered(
         self,
@@ -556,6 +551,10 @@ class TeamSkillEvolutionRail(EvolutionRail):
             return
         t0 = time.time()
         try:
+            self._emit_progress(
+                "started",
+                "team tasks completed; starting team skill evolution analysis",
+            )
             messages: list[dict] = []
             presented_entries = []
             if snapshot is not None:
@@ -574,7 +573,11 @@ class TeamSkillEvolutionRail(EvolutionRail):
             used_skill = self._detect_used_team_skill(trajectory)
             if not used_skill:
                 logger.info("[TeamSkillEvolutionRail] no existing skill detected, skipping")
-                self._emit_progress("completed", "no existing skill found, skipping")
+                self._emit_progress(
+                    "cancelled",
+                    "no skill usage of a team/swarm skill detected in trajectory; "
+                    "cancelling team skill evolution analysis",
+                )
                 await self._evaluate_presented_entries(presented_entries)
                 return
 
@@ -603,7 +606,12 @@ class TeamSkillEvolutionRail(EvolutionRail):
 
             if not signals:
                 logger.info("[TeamSkillEvolutionRail] no signals detected for '%s'", used_skill)
-                self._emit_progress("completed", "no evolution signals detected")
+                self._emit_progress(
+                    "cancelled",
+                    f"no actionable evolution signals detected for '{used_skill}'; "
+                    "cancelling team skill evolution analysis",
+                    skill_name=used_skill,
+                )
                 await self._evaluate_presented_entries(presented_entries)
                 return
 
@@ -876,16 +884,16 @@ class TeamSkillEvolutionRail(EvolutionRail):
     def _detect_used_team_skill(self, trajectory: Trajectory) -> Optional[str]:
         """Scan trajectory for SKILL.md read traces to identify which team skill was used.
 
-        Only considers skills whose SKILL.md frontmatter contains
-        ``kind: team-skill`` so that regular skills in the shared
-        directory are not mistakenly matched.
+        Only considers skills whose SKILL.md frontmatter declares a
+        team/swarm skill kind so regular skills in the shared directory
+        are not mistakenly matched.
         """
         all_skill_names = set(self._store.list_skill_names())
         if not all_skill_names:
             logger.info("[TeamSkillEvolutionRail] no existing team skills on disk")
             return None
 
-        # Filter to only team-skill kind
+        # Filter to only team/swarm skill kinds.
         known_skills = {name for name in all_skill_names if self._is_team_skill(name)}
         if not known_skills:
             logger.info(
@@ -1134,7 +1142,7 @@ class TeamSkillEvolutionRail(EvolutionRail):
         return request
 
     def _is_team_skill(self, name: str) -> bool:
-        """Check whether a skill's SKILL.md contains ``kind: team-skill``."""
+        """Check whether a skill's SKILL.md declares a team/swarm skill kind."""
         skill_dir = self._store.resolve_skill_dir(name)
         if skill_dir is None:
             return False
@@ -1143,8 +1151,8 @@ class TeamSkillEvolutionRail(EvolutionRail):
             return False
         try:
             text = skill_md.read_text(encoding="utf-8")
-            frontmatter = parse_frontmatter(text) or {}
-            return frontmatter.get("kind") == "team-skill"
+            frontmatter = parse_top_level_frontmatter(text)
+            return frontmatter.get("kind") in _TEAM_SKILL_KINDS
         except OSError:
             return False
 

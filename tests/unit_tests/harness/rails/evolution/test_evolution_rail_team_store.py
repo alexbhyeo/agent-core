@@ -9,6 +9,7 @@ from typing import Any
 
 import pytest
 
+from openjiuwen.agent_teams.schema.team import TeamRole
 from openjiuwen.agent_evolving.trajectory import InMemoryTrajectoryStore
 from openjiuwen.agent_evolving.trajectory.types import (
     ToolCallDetail,
@@ -26,6 +27,7 @@ class _MockCard:
 @dataclass
 class _MockAgent:
     card: _MockCard = field(default_factory=_MockCard)
+    role: TeamRole = TeamRole.LEADER
 
 
 @dataclass
@@ -111,3 +113,14 @@ class TestEvolutionRailTeamTrajectory:
 
         traj = team.query()[0]
         assert traj.meta.get("member_id") == "test-agent"
+
+    @pytest.mark.asyncio
+    async def test_trajectory_has_member_role(self, rail_with_team_store):
+        """Trajectory saved to team store contains member_role in meta."""
+        rail, personal, team = rail_with_team_store
+        ctx = _MockCtx()
+        await rail.before_invoke(ctx)
+        await rail.after_invoke(ctx)
+
+        traj = team.query()[0]
+        assert traj.meta.get("member_role") == "leader"
