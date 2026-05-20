@@ -271,6 +271,9 @@ class SpawnManager:
         # get a backfilled ``teammate`` default via
         # ``database.engine._ensure_team_member_role_column``.
         role = TeamRole(teammate.role)
+        # External-CLI members carry no DeepAgent: the backend registry says
+        # which CLI adapter drives them, routing spawn to external_cli_spawn.
+        cli_agent = team_backend.get_external_cli_agent(teammate.member_name)
         return TeamRuntimeContext(
             role=role,
             member_name=teammate.member_name,
@@ -279,6 +282,7 @@ class SpawnManager:
             messager_config=self._configurator.build_member_messager_config(teammate.member_name),
             db_config=ctx.db_config if ctx else None,
             member_model=member_model,
+            cli_agent=cli_agent,
         )
 
     async def publish_restart_event(self, member_name: str, restart_count: int) -> None:

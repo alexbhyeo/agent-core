@@ -118,17 +118,32 @@ mid-turn steer（用户选定 stdin 传输，Unix 优先、接口预留 PTY/Wind
 - 回归：全 `agent_teams` 套件 1143 passed（gated 改动不碰既有路径）；新增集成测试用真实
   echo 子进程驱动一轮 + descriptor-from-ctx。
 
-**剩余（operator 触发层 + 验证）：**
+**operator 触发入口（已实现并回归）：**
 
-- **operator 触发入口**：动态 spawn 现走 `_on_teammate_created` → `build_context_from_db`
-  重建 ctx，所以要让 `ctx.cli_agent` 可按成员发现。**无需 DB 加列**——镜像 bridge 的
-  `_bridge_member_specs` 做法：`TeamBackend` 加 `_external_cli_specs`（member→cli_agent）
-  内存注册表 + `spawn_external_cli_agent(...)` 方法 + `build_context_from_db` 读注册表置
-  `ctx.cli_agent`。局限同 bridge Phase-1：跨进程冷恢复需 predefined 声明（注册表是
-  per-process）。再加一个 leader 工具是可选糖。
+- `TeamBackend._external_cli_specs`（member→cli_agent 内存注册表，镜像 bridge 的
+  `_bridge_member_specs`，**无需 DB 加列**）+ `spawn_external_cli_agent(...)` /
+  `is_external_cli_agent` / `get_external_cli_agent` / `external_cli_agent_names`。
+  `spawn_external_cli_agent` 先登记注册表、再 `spawn_member`（role=TEAMMATE,
+  UNSTARTED），因 `spawn_member` 只落库、由后续 `startup` 触发拉起，注册表早于拉起就位。
+- `SpawnManager.build_context_from_db` 读 `backend.get_external_cli_agent(member)` 置
+  `ctx.cli_agent`，于是 `startup → _on_teammate_created` 重建的 ctx 自动路由到
+  `external_cli_spawn`。
+- 局限同 bridge Phase-1：注册表 per-process，跨进程冷恢复需 predefined 声明（本期未做
+  predefined `ExternalCliMemberSpec`——role_type=TEAMMATE 与基类判别冲突，留待后续）。
+- 回归：全 `agent_teams` 套件 1149 passed；新增 backend 注册单测。
+
+**剩余：**
+
 - **真实 CLI 端到端验证**：adapter 的 stdin 输入格式与轮次完成检测依赖各 CLI（及版本）
-  的真实 stdout 协议，需在能跑 claude/codex 的环境实测调参。本次仅用 fake/echo 子进程
-  验证了 runtime + spawn 的契约行为。
+  的真实 stdout 协议，需在能跑 claude/codex 的环境实测调参。本仓库用 fake/echo 子进程
+  验证了 runtime + spawn + backend 注册的契约行为，未连真实 CLI。
+- **predefined 外部 CLI 成员**：需解决 role_type=TEAMMATE 的判别union冲突（成员级字段
+  而非 role 判别），用于跨进程冷恢复。
+- **leader 工具**：把 `spawn_external_cli_agent` 暴露为 LLM 可调工具是可选糖（当前为
+  SDK/operator 方法）。
+- **MCP 配置注入**：`launch_external_cli` 已注入 `OPENJIUWEN_TEAM_JOIN` env（CLI 衍生的
+  MCP server 进程继承之）；写各 CLI 专属的 `.mcp.json` 指向 `openjiuwen-team-mcp` 是
+  per-CLI best-effort，未做。
 
 **其它遗留：**
 

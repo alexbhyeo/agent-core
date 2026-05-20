@@ -209,6 +209,14 @@ class TeamBackend:
         # ``REMOTE_UNAVAILABLE_SENTINEL`` so the bridge degrades to a
         # normal teammate.
         self._bridge_adapters: dict[str, BridgeProtocolAdapter] = {}
+        # External-CLI member registry: member_name -> cli_agent adapter
+        # name. A member listed here is driven by a third-party CLI
+        # subprocess (ExternalCliRuntime) instead of a local DeepAgent.
+        # Consulted by ``SpawnManager.build_context_from_db`` to set
+        # ``ctx.cli_agent`` so the spawn path picks the external-CLI route.
+        # In-memory (per-process), mirroring the bridge spec registry; a
+        # cross-process cold recovery re-seeds from predefined declarations.
+        self._external_cli_specs: dict[str, str] = {}
         self.message_manager = TeamMessageManager(
             self.team_name,
             member_name,
@@ -1458,4 +1466,90 @@ class TeamBackend:
             protocol=protocol,
             adapter_config=adapter_config or {},
         )
+        return result
+
+    # ------------------------------------------------------------------
+    # External-CLI member support
+    # ------------------------------------------------------------------
+
+    def is_external_cli_agent(self, member_name: str) -> bool:
+        """Return whether ``member_name`` is driven by an external CLI."""
+        return member_name in self._external_cli_specs
+
+    def get_external_cli_agent(self, member_name: str) -> Optional[str]:
+        """Return the cli_agent adapter name for a member, or ``None``."""
+        return self._external_cli_specs.get(member_name)
+
+    def external_cli_agent_names(self) -> frozenset[str]:
+        """Return a snapshot of all registered external-CLI member names."""
+        return frozenset(self._external_cli_specs)
+
+    async def spawn_external_cli_agent(
+        self,
+        *,
+        member_name: str,
+        display_name: str,
+        cli_agent: str,
+        persona: str,
+        desc: Optional[str] = None,
+        model_name: Optional[str] = None,
+    ) -> MemberOpResult:
+        """Register an external-CLI teammate dynamically.
+
+        The member shares the standard teammate DB row (it appears in the
+        roster, claims tasks and sends messages like any teammate) but is
+        recorded in ``_external_cli_specs`` so the spawn path drives it with
+        an ``ExternalCliRuntime`` over the named CLI subprocess instead of a
+        local DeepAgent. Registration happens before ``startup`` triggers
+        the spawn, so ``build_context_from_db`` sees the mapping in time.
+
+        Args:
+            member_name: Unique member identifier.
+            display_name: Human-readable label.
+            cli_agent: Adapter name (``"claude"`` / ``"codex"`` / ...); see
+                ``agent_teams/external/cli_agent/adapters.py``.
+            persona: Persona text stored on the member row.
+            desc: Optional persona override (defaults to ``persona``).
+            model_name: Ignored for external-CLI members (the model lives in
+                the external CLI); accepted for signature symmetry.
+
+        Returns:
+            ``MemberOpResult`` — failure if the adapter is unknown or the
+            underlying ``spawn_member`` rejects the registration.
+        """
+        from openjiuwen.agent_teams.external.cli_agent.adapters import available_adapters
+
+        if not persona:
+            return MemberOpResult.fail("spawn_external_cli_agent requires non-empty 'persona'")
+        if cli_agent not in available_adapters():
+            return MemberOpResult.fail(f"Unknown cli_agent '{cli_agent}'; known: {', '.join(available_adapters())}")
+
+        resolved_desc = desc or persona
+        member_card = AgentCard(
+            id=f"{self.team_name}_{member_name}",
+            name=display_name,
+            description=resolved_desc,
+        )
+        # Record the mapping before spawn_member so the later startup ->
+        # build_context_from_db pass routes this member to the CLI path.
+        self._external_cli_specs[member_name] = cli_agent
+        result = await self.spawn_member(
+            member_name=member_name,
+            display_name=display_name,
+            agent_card=member_card,
+            desc=resolved_desc,
+            prompt=None,
+            status=MemberStatus.UNSTARTED,
+            execution_status=ExecutionStatus.IDLE,
+            mode=self.teammate_mode,
+            role=TeamRole.TEAMMATE,
+        )
+        if not result.ok:
+            self._external_cli_specs.pop(member_name, None)
+            team_logger.warning(
+                "Failed to register external-cli agent '%s' for team %s: %s",
+                member_name,
+                self.team_name,
+                result.reason,
+            )
         return result
