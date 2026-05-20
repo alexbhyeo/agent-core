@@ -5,32 +5,46 @@
 
 Each third-party CLI differs in three ways the spawn path must know:
 
-1. **launch command** — binary + permission-bypass flags + stdin/stream mode,
-2. **input framing** — how a turn's text is written to stdin,
+1. **launch command** — binary + permission-bypass flags + stream mode,
+2. **input framing** — how a turn's text is written to the CLI stdin,
 3. **turn completion** — how to tell from stdout that the turn is done.
 
-:class:`CliAgentAdapter` captures these as data. Launch flags follow the
-conventions proven by the ClawTeam project. Input framing and completion
-detection are best-effort defaults that may need per-version tuning against
-the real CLI — they are deliberately data-driven so tuning needs no code
-change.
+:class:`CliAgentAdapter` captures these as data so tuning needs no code
+change. Confidence varies by CLI and **none of these are validated against
+the real binaries here** — comments on each built-in adapter state what is
+assumed and what to verify in a real environment.
+
+Only CLIs that read stdin continuously (a streaming-input / interactive
+mode) support mid-turn injection; one-shot CLIs (prompt passed as an argv
+flag) set ``supports_stdin_injection=False`` and would need a
+re-invoke-per-turn runtime (not yet implemented).
 """
 
 from __future__ import annotations
 
 import json
+import uuid
 from dataclasses import dataclass, replace
 
 from openjiuwen.core.common.exception.codes import StatusCode
 from openjiuwen.core.common.exception.errors import raise_error
 
-# input_format values
+# ---- input framing strategies ----
 INPUT_TEXT = "text"
-INPUT_STREAM_JSON = "stream_json"
+# Claude Code stream-json: one NDJSON user message per turn on stdin.
+INPUT_CLAUDE_STREAM_JSON = "claude_stream_json"
+# Back-compat alias (kept for importers that referenced the old name).
+INPUT_STREAM_JSON = INPUT_CLAUDE_STREAM_JSON
+# Codex proto: one JSONL "submission" per turn on stdin.
+INPUT_CODEX_PROTO = "codex_proto"
 
-# completion strategy values
+# ---- turn-completion strategies ----
 COMPLETION_NONE = "none"
+# Claude Code stream-json: final event line is {"type": "result", ...}.
 COMPLETION_RESULT_JSON = "result_json"
+# Codex proto: an event line whose msg.type == "task_complete".
+COMPLETION_CODEX_TASK_COMPLETE = "codex_task_complete"
+# Substring marker: line contains the text after the prefix.
 COMPLETION_MARKER_PREFIX = "marker:"
 
 
@@ -41,14 +55,11 @@ class CliAgentAdapter:
     Attributes:
         name: Adapter key (``claude`` / ``codex`` / ...).
         command: Full launch argv (binary + flags).
-        input_format: ``"text"`` (write the raw line) or ``"stream_json"``
-            (wrap as a Claude/Codex stream-json user message).
-        completion: ``"result_json"`` (stdout line is a JSON object with
-            ``type == "result"``), ``"marker:<s>"`` (line contains ``<s>``),
-            or ``"none"`` (never auto-detected — relies on the agent calling
-            an idle tool, or process exit).
+        input_format: Input framing strategy (see ``INPUT_*``).
+        completion: Turn-completion strategy (see ``COMPLETION_*``).
         supports_stdin_injection: Whether mid-turn stdin writes are observed.
-            False CLIs degrade to turn-boundary delivery (no mid-turn steer).
+            False CLIs degrade to turn-boundary delivery (no mid-turn steer)
+            and need a re-invoke-per-turn runtime to work at all.
     """
 
     name: str
@@ -63,60 +74,109 @@ class CliAgentAdapter:
 
     def format_input(self, text: str) -> str:
         """Frame one turn's input text for writing to the CLI stdin."""
-        if self.input_format == INPUT_STREAM_JSON:
+        if self.input_format == INPUT_CLAUDE_STREAM_JSON:
             return json.dumps({"type": "user", "message": {"role": "user", "content": text}})
+        if self.input_format == INPUT_CODEX_PROTO:
+            return json.dumps(
+                {
+                    "id": uuid.uuid4().hex,
+                    "op": {"type": "user_input", "items": [{"type": "text", "text": text}]},
+                }
+            )
         return text
 
     def is_turn_complete(self, line: str) -> bool:
         """Return whether a stdout ``line`` signals the current turn is done."""
         if self.completion == COMPLETION_RESULT_JSON:
-            return _is_result_json(line)
+            return _json_field_equals(line, ("type",), "result")
+        if self.completion == COMPLETION_CODEX_TASK_COMPLETE:
+            return _json_field_equals(line, ("msg", "type"), "task_complete") or _json_field_equals(
+                line, ("type",), "task_complete"
+            )
         if self.completion.startswith(COMPLETION_MARKER_PREFIX):
             marker = self.completion[len(COMPLETION_MARKER_PREFIX) :]
             return bool(marker) and marker in line
         return False
 
 
-def _is_result_json(line: str) -> bool:
+def _json_field_equals(line: str, path: tuple[str, ...], expected: str) -> bool:
+    """Return whether ``line`` is a JSON object with ``path`` == ``expected``."""
     stripped = line.strip()
     if not stripped.startswith("{"):
         return False
     try:
-        payload = json.loads(stripped)
+        node = json.loads(stripped)
     except json.JSONDecodeError:
         return False
-    return isinstance(payload, dict) and payload.get("type") == "result"
+    for key in path:
+        if not isinstance(node, dict):
+            return False
+        node = node.get(key)
+    return node == expected
 
 
-# Built-in adapters. Launch flags mirror ClawTeam's NativeCliAdapter
-# conventions; input/completion are best-effort and tunable per CLI version.
+# Built-in adapters. Launch flags follow ClawTeam's NativeCliAdapter
+# conventions where known. NOT validated against the real binaries — verify
+# command, input framing and completion detection per CLI version.
 _BUILTIN: dict[str, CliAgentAdapter] = {
+    # Claude Code — high confidence. `--print` is non-interactive;
+    # `--input-format stream-json` reads NDJSON user messages from stdin
+    # continuously (supports mid-turn injection); `--output-format
+    # stream-json` (with `--verbose`) emits NDJSON events whose final per-turn
+    # event is {"type": "result", ...}; `--dangerously-skip-permissions`
+    # auto-approves tool use.
     "claude": CliAgentAdapter(
         name="claude",
         command=(
             "claude",
-            "--dangerously-skip-permissions",
-            "-p",
+            "--print",
             "--input-format",
             "stream-json",
             "--output-format",
             "stream-json",
+            "--verbose",
+            "--dangerously-skip-permissions",
         ),
-        input_format=INPUT_STREAM_JSON,
+        input_format=INPUT_CLAUDE_STREAM_JSON,
         completion=COMPLETION_RESULT_JSON,
     ),
+    # Codex CLI — moderate confidence. `codex proto` runs the JSONL protocol
+    # stream over stdin/stdout: stdin takes "submission" objects
+    # ({"id", "op": {"type": "user_input", "items": [...]}}) and stdout emits
+    # "event" objects ({"id", "msg": {"type": ...}}); a turn ends on
+    # msg.type == "task_complete". Config overrides make it non-interactive.
+    # VERIFY: proto submission/event schema and the config keys per version.
     "codex": CliAgentAdapter(
         name="codex",
-        command=("codex", "--dangerously-bypass-approvals-and-sandbox"),
-        input_format=INPUT_TEXT,
-        completion=COMPLETION_NONE,
+        command=(
+            "codex",
+            "proto",
+            "-c",
+            'approval_policy="never"',
+            "-c",
+            'sandbox_mode="danger-full-access"',
+        ),
+        input_format=INPUT_CODEX_PROTO,
+        completion=COMPLETION_CODEX_TASK_COMPLETE,
     ),
+    # OpenClaw CLI — low confidence. ClawTeam drives it one-shot
+    # (`openclaw --local --session-id <id> --message "<msg>"`), i.e. the
+    # prompt is an argv flag, not streamed on stdin. That does NOT fit the
+    # persistent-stdin runtime, so injection is disabled here. TODO: either
+    # confirm an interactive/stdin-streaming mode, or add a
+    # re-invoke-per-turn runtime and pass the message via `--message`.
     "openclaw": CliAgentAdapter(
         name="openclaw",
         command=("openclaw", "--local"),
         input_format=INPUT_TEXT,
         completion=COMPLETION_NONE,
+        supports_stdin_injection=False,
     ),
+    # Hermes agent CLI — unverified placeholder. No confirmed invocation
+    # contract available; assumes an interactive binary that reads plain-text
+    # prompts on stdin. VERIFY launch flags, whether it streams stdin, its
+    # input framing, and how a turn completes; tune via command_override and
+    # the input/completion strategies above.
     "hermes": CliAgentAdapter(
         name="hermes",
         command=("hermes",),
@@ -167,7 +227,10 @@ __all__ = [
     "available_adapters",
     "build_adapter",
     "INPUT_TEXT",
+    "INPUT_CLAUDE_STREAM_JSON",
     "INPUT_STREAM_JSON",
+    "INPUT_CODEX_PROTO",
     "COMPLETION_NONE",
     "COMPLETION_RESULT_JSON",
+    "COMPLETION_CODEX_TASK_COMPLETE",
 ]

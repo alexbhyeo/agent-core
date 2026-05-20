@@ -95,8 +95,19 @@ mid-turn steer（用户选定 stdin 传输，Unix 优先、接口预留 PTY/Wind
 - `external/cli_agent/injector.py`：`Injector` Protocol + `StdinPipeInjector`（向子进程
   stdin 写 newline-framed 文本；仅对持续读 stdin 的 CLI 生效）。
 - `external/cli_agent/adapters.py`：`CliAgentAdapter`（启动 argv + 输入framing + 轮次完成
-  策略）+ claude/codex/openclaw/hermes/generic 注册表。启动 flag 沿用 ClawTeam 约定；
-  输入/完成检测为数据驱动的 best-effort 默认（claude 用 stream-json + result_json 完成）。
+  策略，数据驱动）+ claude/codex/openclaw/hermes/generic 注册表。per-CLI 适配：
+  - **claude**（高置信）：`--print --input-format stream-json --output-format stream-json
+    --verbose --dangerously-skip-permissions`；输入 NDJSON user message，轮次完成 =
+    `{"type":"result"}` 事件。
+  - **codex**（中置信）：`codex proto`（JSONL 协议流）+ `-c approval_policy/-c sandbox_mode`
+    非交互；输入 submission `{"op":{"type":"user_input",...}}`，完成 = event
+    `msg.type=="task_complete"`。
+  - **openclaw**（低置信）：ClawTeam 走一次性 `--message`（prompt 走 argv 非 stdin），
+    不适配持续 stdin 模型——标 `supports_stdin_injection=False`，待补 re-invoke-per-turn
+    runtime 或确认交互模式。
+  - **hermes**（占位）：无确认规格，假设交互式 text-on-stdin；待真实验证（command /
+    framing / 完成检测均可经 command_override + 策略调）。
+  四者均未对真实二进制验证，adapters.py 注释逐条标注置信度与待验证项。
 - `external/runtime.py`：`ExternalCliRuntime` 实现 `MemberRuntime`——run_streaming 写入
   turn 输入并消费 stdout 至 adapter 判定轮次完成（CLI stdout 留作内部，不进 team 流）；
   steer/follow_up 写 stdin；rail/memory/customizer 钩子为 no-op。
