@@ -80,14 +80,44 @@ topic 统一为 `TeamTopic.{TEAM,TASK,MESSAGE}.build(session_id, team_name)`。
   `external/format.py`（外部侧），未重构 `message.py` / `task_board.py`，避免在 P1
   动到工作中的协调层。后续可做去重。
 
-## 已知遗留（P2）
+## P2 进度（形态 B：自动拉起 + 侧信道注入）
 
-- **形态 B 自动拉起 + 侧信道注入**：team 把第三方 CLI 拉成子进程、注入连接 descriptor +
-  MCP 配置，并通过 **stdin 管道**做 mid-turn steer（用户选定 stdin 传输，Unix 优先、
-  接口预留 PTY/Windows）。需要：`MemberRuntime` Protocol（从 `TeamHarness` 抽出运行期
-  ~7 方法）+ `ExternalCliRuntime` + per-CLI adapter + 新 spawn 路径 +
-  `agent_configurator.setup_agent` 按 runtime 分支。harness 是具体类、注入点在
-  `setup_agent` 第 413 行 `TeamHarness.build()`、运行期被调方法少——复用可行。
-- **handler 侧格式化去重**：见上。
+team 把第三方 CLI 拉成子进程、注入连接 descriptor + MCP 配置，并通过 **stdin 管道**做
+mid-turn steer（用户选定 stdin 传输，Unix 优先、接口预留 PTY/Windows）。
+
+**已实现并单测的building blocks（additive，不触碰运行核心）：**
+
+- `agent/member_runtime.py`：`MemberRuntime` Protocol——把 coordination/StreamController/
+  configurator 实际访问的 harness 实例面（7 个 round 方法 + find_rails/register_rail/
+  unregister_rail/register_member_tools/inject_member_memory/run_agent_customizer +
+  workspace/sys_operation 两个 property，共 15 个成员）抽成结构化契约。`TeamHarness`
+  天然满足。
+- `external/cli_agent/injector.py`：`Injector` Protocol + `StdinPipeInjector`（向子进程
+  stdin 写 newline-framed 文本；仅对持续读 stdin 的 CLI 生效）。
+- `external/cli_agent/adapters.py`：`CliAgentAdapter`（启动 argv + 输入framing + 轮次完成
+  策略）+ claude/codex/openclaw/hermes/generic 注册表。启动 flag 沿用 ClawTeam 约定；
+  输入/完成检测为数据驱动的 best-effort 默认（claude 用 stream-json + result_json 完成）。
+- `external/runtime.py`：`ExternalCliRuntime` 实现 `MemberRuntime`——run_streaming 写入
+  turn 输入并消费 stdout 至 adapter 判定轮次完成（CLI stdout 留作内部，不进 team 流）；
+  steer/follow_up 写 stdin；rail/memory/customizer 钩子为 no-op。
+
+**剩余（invasive 集成，未实现）：**
+
+- **spawn/configurator 接线**：`spawn_manager.spawn_teammate` 加 external_cli 分支（走
+  inprocess 形态：TeamAgent shell + coordination 跑在 leader 进程，CLI 二进制是子进程）；
+  `agent_configurator.setup_agent`（`TeamHarness.build()` 调用点）按成员 runtime 分支构造
+  `ExternalCliRuntime`、跳过 rails/memory/customizer；`resources.harness` 类型放宽到
+  `MemberRuntime | None`。
+- **schema 判别**：external_cli teammate 与普通 teammate 都是 role_type=TEAMMATE，
+  role_type 判别区分不开——需独立判别字段（如成员级 `cli_agent` 字段）而非 role 判别。
+- **`tools/team.py` spawn_external_cli_agent**：镜像 `spawn_bridge_agent` 注册 + 拉起 +
+  生命周期回收。
+- **真实 CLI 端到端验证**：adapter 的 stdin 输入格式与轮次完成检测依赖各 CLI（及版本）
+  的真实 stdout 协议，需在能跑 claude/codex 的环境实测调参。本次仅用 fake transport
+  单测了 runtime 的契约行为。
+
+**其它遗留：**
+
+- **handler 侧格式化去重**：见上（P1 只做了 external 侧 `format.py`）。
 - **create_task 等 leader-only ops**：当前外部 client 未暴露 create，按 teammate 默认
   能力集；leader 角色的外部成员如需 create/assign，后续按 role 扩展。
