@@ -172,16 +172,25 @@ _BUILTIN: dict[str, CliAgentAdapter] = {
         completion=COMPLETION_NONE,
         supports_stdin_injection=False,
     ),
-    # Hermes agent CLI — unverified placeholder. No confirmed invocation
-    # contract available; assumes an interactive binary that reads plain-text
-    # prompts on stdin. VERIFY launch flags, whether it streams stdin, its
-    # input framing, and how a turn completes; tune via command_override and
-    # the input/completion strategies above.
+    # Hermes Agent (NousResearch/hermes-agent) — one-shot, NOT stdin-streaming
+    # (researched from the official CLI reference). `hermes -z "<prompt>"` is
+    # the programmatic entry: reads ONE prompt (passed as argv; stdin is
+    # supplementary context), prints only the final answer as plain text, then
+    # exits — no continuous multi-prompt loop and no structured per-turn
+    # delimiter (a turn ends at process exit / stdout EOF). `--yolo` bypasses
+    # dangerous-command approval prompts. Cross-turn continuity uses
+    # `--continue` / `--resume <session_id>`. The team MCP server is registered
+    # out of band: `hermes mcp add <name> --command openjiuwen-team-mcp`.
+    # Because the prompt is an argv arg and the process exits per turn, stdin
+    # injection does not apply; this needs a re-invoke-per-turn runtime (one
+    # `hermes -z --yolo [--continue] "<message>"` per inbound message, reading
+    # stdout to EOF), which is not yet implemented.
     "hermes": CliAgentAdapter(
         name="hermes",
-        command=("hermes",),
+        command=("hermes", "-z", "--yolo"),
         input_format=INPUT_TEXT,
         completion=COMPLETION_NONE,
+        supports_stdin_injection=False,
     ),
     # Line-based echo agent used by tests and simple integrations: one input
     # line, output terminated by an explicit end-of-turn marker.

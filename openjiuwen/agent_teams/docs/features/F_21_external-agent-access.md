@@ -105,8 +105,13 @@ mid-turn steer（用户选定 stdin 传输，Unix 优先、接口预留 PTY/Wind
   - **openclaw**（低置信）：ClawTeam 走一次性 `--message`（prompt 走 argv 非 stdin），
     不适配持续 stdin 模型——标 `supports_stdin_injection=False`，待补 re-invoke-per-turn
     runtime 或确认交互模式。
-  - **hermes**（占位）：无确认规格，假设交互式 text-on-stdin；待真实验证（command /
-    framing / 完成检测均可经 command_override + 策略调）。
+  - **hermes**（NousResearch/hermes-agent，已调研官方 CLI）：`hermes -z "<prompt>" --yolo`
+    一次性入口——prompt 走 argv（stdin 仅补充上下文），输出纯文本最终答案后退出，无多轮
+    stdin 循环、无结构化轮次分隔（轮次完成 = 进程退出/EOF）；`--yolo` 跳过危险命令审批；
+    跨轮用 `--continue`/`--resume <id>`；MCP 回调走 `hermes mcp add <name> --command
+    openjiuwen-team-mcp`。与 openclaw 同属一次性模型 → `supports_stdin_injection=False`，
+    需 re-invoke-per-turn runtime（每条入站消息跑一次 `hermes -z`，读 stdout 到 EOF）。
+  claude/codex 适配持续 stdin 模型；openclaw/hermes 为一次性，需 re-invoke runtime（未做）。
   四者均未对真实二进制验证，adapters.py 注释逐条标注置信度与待验证项。
 - `external/runtime.py`：`ExternalCliRuntime` 实现 `MemberRuntime`——run_streaming 写入
   turn 输入并消费 stdout 至 adapter 判定轮次完成（CLI stdout 留作内部，不进 team 流）；
