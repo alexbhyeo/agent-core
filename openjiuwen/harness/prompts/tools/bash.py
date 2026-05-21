@@ -238,10 +238,10 @@ BASH_PARAMS: Dict[str, Dict[str, str]] = {
         ),
     },
     "max_output_chars": {
-        "cn": "最大输出字符数，默认 8000（上限 20000），防止超大输出撑爆上下文",
+        "cn": "最大输出字符数，0 表示不限制（默认）；非零时上限 20000，防止超大输出撑爆上下文",
         "en": (
-            "Max output characters, default 8000 (max 20000), "
-            "prevents oversized output from flooding context"
+            "Max output characters; 0 (default) means no limit; "
+            "non-zero values are capped at 20000 to prevent oversized output from flooding context"
         ),
     },
     "shell_type": {

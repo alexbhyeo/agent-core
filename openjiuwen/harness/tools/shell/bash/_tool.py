@@ -100,6 +100,22 @@ class BashTool(Tool):
         return max(1, min(timeout, max_timeout))
 
     @staticmethod
+    def _resolve_max_output_chars(raw_value: Any, default: int = 0) -> int:
+        """Parse and validate a max_output_chars value. 0 means no limit."""
+        try:
+            value = int(raw_value)
+        except (TypeError, ValueError):
+            value = default
+        if value == 0:
+            return 0
+        try:
+            max_chars = int(os.getenv("BASH_TOOL_MAX_OUTPUT_CHARS") or "20000")
+        except ValueError:
+            max_chars = 20000
+        max_chars = max(200, max_chars)
+        return max(200, min(value, max_chars))
+
+    @staticmethod
     def _parse_inputs(inputs: Dict[str, Any]) -> _BashInputs:
         """Parse and clamp tool inputs."""
         shell_type = inputs.get("shell_type", "auto")
@@ -110,7 +126,7 @@ class BashTool(Tool):
             timeout=BashTool._resolve_timeout(inputs.get("timeout", 300)),
             workdir=inputs.get("workdir", ""),
             run_in_background=bool(inputs.get("run_in_background", False)),
-            max_output_chars=max(200, min(int(inputs.get("max_output_chars", 8000)), 20000)),
+            max_output_chars=BashTool._resolve_max_output_chars(inputs.get("max_output_chars", 0)),
             shell_type=shell_type,
             description=inputs.get("description", ""),
         )
@@ -193,7 +209,7 @@ class BashTool(Tool):
         # persist large outputs to disk before truncation
         persisted_path: str | None = None
         persisted_size: int | None = None
-        if len(stdout) + len(stderr) > p.max_output_chars:
+        if p.max_output_chars > 0 and len(stdout) + len(stderr) > p.max_output_chars:
             persisted_path, persisted_size = persist_large_output(stdout, stderr)
 
         return ToolOutput(

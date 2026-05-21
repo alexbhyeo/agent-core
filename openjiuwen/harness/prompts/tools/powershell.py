@@ -218,8 +218,8 @@ POWERSHELL_PARAMS: Dict[str, Dict[str, str]] = {
         "en": "Run in background (default false); returns PID immediately when true",
     },
     "max_output_chars": {
-        "cn": "最大输出字符数，默认 8000，最大 20000",
-        "en": "Max output characters, default 8000, max 20000",
+        "cn": "最大输出字符数，0 表示不限制（默认）；非零时上限 20000",
+        "en": "Max output characters; 0 (default) means no limit; non-zero values are capped at 20000",
     },
     "description": {
         "cn": "命令描述（可选），用于日志和审计",
