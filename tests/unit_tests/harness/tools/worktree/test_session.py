@@ -9,6 +9,7 @@ import pytest
 from openjiuwen.harness.tools.worktree.models import WorktreeSession
 from openjiuwen.harness.tools.worktree.session import (
     get_current_session,
+    init_session_state,
     require_current_session,
     set_current_session,
 )
@@ -39,6 +40,23 @@ class TestSetCurrentSession:
         set_current_session(session)
         assert get_current_session() is session
         logger.info("set_current_session + get verified")
+        # Cleanup
+        set_current_session(None)
+
+    @pytest.mark.asyncio
+    @pytest.mark.level1
+    async def test_parent_initialized_holder_observes_child_task_mutation(self):
+        """A parent-created holder lets child Task mutations flow back."""
+        init_session_state()
+        session = _make_session("child")
+
+        async def task():
+            set_current_session(session)
+
+        await asyncio.gather(task())
+
+        assert get_current_session() is session
+
         # Cleanup
         set_current_session(None)
 

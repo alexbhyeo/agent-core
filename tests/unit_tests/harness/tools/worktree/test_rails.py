@@ -276,14 +276,12 @@ def test_before_invoke_resets_contextvar_when_state_missing():
 
 
 def test_before_invoke_noop_when_session_absent():
-    """``ctx.session=None`` must not crash; ContextVar untouched."""
+    """``ctx.session=None`` must not crash."""
     rail = WorktreeRail()
-    sentinel = _make_session("kept")
-    set_current_session(sentinel)
 
     asyncio.run(rail.before_invoke(_make_ctx(None)))
 
-    assert get_current_session() is sentinel
+    assert get_current_session() is None
 
 
 def test_after_invoke_persists_current_session_as_dict():

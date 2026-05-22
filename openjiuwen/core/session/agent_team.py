@@ -79,12 +79,16 @@ class Session:
         if self._post_run_done:
             return
         await self.close_stream()
-        await self._inner.checkpointer().post_agent_team_execute(self._inner)
+        await self.commit()
         self._post_run_done = True
+
+    async def commit(self):
+        """Persist the current team session state without closing the stream."""
+        await self._inner.checkpointer().post_agent_team_execute(self._inner)
 
     async def flush_checkpoint(self):
         """Persist the current team session state without closing the stream."""
-        await self._inner.checkpointer().post_agent_team_execute(self._inner)
+        await self.commit()
 
     def create_agent_session(self, card: AgentCard | None = None, agent_id: str | None = None) -> AgentSession:
         if card is None:

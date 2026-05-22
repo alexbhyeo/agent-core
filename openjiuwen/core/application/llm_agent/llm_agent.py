@@ -214,7 +214,8 @@ class LLMAgent(ControllerAgent):
                     await self._write_memory(inputs, result_for_memory_list, session)
             finally:
                 if need_cleanup:
-                    await session.post_run()
+                    await session.close_stream()
+                    await session.commit()
 
         task = asyncio.create_task(stream_process())
 

@@ -731,6 +731,12 @@ class TestNewReActAgentStream(unittest.IsolatedAsyncioTestCase):
         async def mock_post_run():
             await data_queue.put(None)  # 发送结束信号
 
+        async def mock_close_stream():
+            await data_queue.put(None)
+
+        async def mock_commit():
+            return None
+
         async def mock_stream_iterator():
             while True:
                 data = await data_queue.get()
@@ -740,6 +746,8 @@ class TestNewReActAgentStream(unittest.IsolatedAsyncioTestCase):
 
         mock_session.write_stream = mock_write_stream
         mock_session.post_run = mock_post_run
+        mock_session.close_stream = mock_close_stream
+        mock_session.commit = mock_commit
         mock_session.stream_iterator = mock_stream_iterator
         return mock_session
 

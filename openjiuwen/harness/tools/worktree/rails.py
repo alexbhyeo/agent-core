@@ -168,6 +168,7 @@ class WorktreeRail(DeepAgentRail):
         :class:`WorktreeSession` (defensive fallback for legacy
         in-process checkpointers).
         """
+
         if ctx.session is None:
             return
         stored = ctx.session.get_state(_SESSION_STATE_KEY)

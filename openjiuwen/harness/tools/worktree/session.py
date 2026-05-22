@@ -2,17 +2,11 @@
 
 """Worktree session state management via ContextVar.
 
-Uses a mutable container (list) inside the ContextVar so that
-mutations propagate across ``asyncio.gather`` Task boundaries.
-``asyncio.gather`` copies the ContextVar binding (the *reference*
-to the container), not the container itself — so tool calls
-within the same agent share the same container and see each
-other's changes.
-
-Inter-agent isolation is achieved naturally: in-process spawn
-copies the ContextVar reference, then the child agent's
-``init_cwd()`` / first tool call operates on the same container
-until it explicitly replaces it.
+Uses a mutable holder inside the ContextVar so that mutations propagate
+across ``asyncio.gather`` Task boundaries. ``asyncio.gather`` copies the
+ContextVar binding (the holder reference), not the holder itself, so tool
+calls within the same agent share the same holder and see each other's
+changes.
 """
 
 from contextvars import ContextVar

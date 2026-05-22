@@ -1439,7 +1439,8 @@ class ReActAgent(BaseAgent):
         finally:
             if need_cleanup:
                 await self.context_engine.save_contexts(session)
-                await session.post_run()
+                await session.close_stream()
+                await session.commit()
 
     async def write_invoke_result_to_stream(
             self,
@@ -1515,8 +1516,12 @@ class ReActAgent(BaseAgent):
             )
             need_cleanup = True
 
-        # Only call pre_run/post_run for agent sessions, not workflow sessions
-        self.is_agent_session = hasattr(session, "pre_run") and hasattr(session, "post_run")
+        # Only manage agent-session stream lifecycle, not workflow sessions.
+        self.is_agent_session = (
+            hasattr(session, "pre_run")
+            and hasattr(session, "close_stream")
+            and hasattr(session, "commit")
+        )
         # self.is_agent_session = isinstance(session, AgentSession)
         if self.is_agent_session:
             await session.pre_run(
@@ -1548,7 +1553,8 @@ class ReActAgent(BaseAgent):
                 if need_cleanup:
                     await self.context_engine.save_contexts(session)
                 if self.is_agent_session:
-                    await session.post_run()
+                    await session.close_stream()
+                    await session.commit()
 
         if self.is_agent_session:
             # Agent sessions use stream_iterator for consuming output
