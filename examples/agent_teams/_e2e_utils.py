@@ -7,6 +7,7 @@ import asyncio
 import os
 import re
 from asyncio import CancelledError
+from datetime import datetime
 from pathlib import Path
 from typing import (
     Any,
@@ -17,6 +18,11 @@ from typing import (
 
 import yaml
 
+from openjiuwen.agent_teams.monitor import (
+    MonitorEvent,
+    TeamMonitor,
+    TeamStreamLogger,
+)
 from openjiuwen.agent_teams.schema.blueprint import TeamAgentSpec
 from openjiuwen.core.common.logging import logger
 from openjiuwen.core.runner.runner import Runner
@@ -71,6 +77,7 @@ _COLOR_DIM = "\033[2m"
 _COLOR_GREEN = "\033[92m"
 _COLOR_CYAN = "\033[96m"
 _COLOR_YELLOW = "\033[93m"
+_COLOR_MAGENTA = "\033[95m"
 
 
 def _write(text: str) -> None:
@@ -101,6 +108,25 @@ def _extract_content(payload: Any) -> str:
     return str(payload)
 
 
+def _format_monitor_event(evt: MonitorEvent) -> str:
+    """Render a MonitorEvent as its type plus only the populated fields."""
+    fields = evt.model_dump(exclude_none=True)
+    fields.pop("event_type", None)
+    detail = " ".join(f"{k}={v}" for k, v in fields.items())
+    return f"{evt.event_type.value} {detail}".rstrip()
+
+
+async def _drain_monitor(monitor: TeamMonitor) -> None:
+    """Print every monitor event until the monitor is stopped.
+
+    Runs as a background task alongside the stream consumer; the
+    ``events()`` iterator terminates when ``monitor.stop()`` enqueues
+    its sentinel, so this coroutine returns on its own at teardown.
+    """
+    async for evt in monitor.events():
+        _write(f"{_COLOR_MAGENTA}[Monitor] {_format_monitor_event(evt)}{_COLOR_RESET}\n")
+
+
 async def consume_stream(
     spec: TeamAgentSpec,
     query: str,
@@ -121,6 +147,10 @@ async def consume_stream(
             yields a ``team.runtime_ready`` event. Use it to wire up
             facade APIs that need the team to be in the pool (e.g.
             ``Runner.register_human_agent_inbound``).
+
+    A ``TeamMonitor`` is attached on the same ``team.runtime_ready``
+    signal (once the team is in the pool) and every monitor event is
+    printed from a background task until the stream ends.
     """
     logger.info("Starting team stream with query: %s", query)
 
@@ -128,66 +158,89 @@ async def consume_stream(
     buf: list[str] = []
     has_llm_output = False
     ready_pending = on_runtime_ready
+    monitor: TeamMonitor | None = None
+    monitor_task: asyncio.Task[None] | None = None
+    # Aggregated diagnostic log of the full team stream; the runner feeds
+    # every chunk through it and flushes when the stream ends. A fresh
+    # timestamped file per run avoids appending across separate runs.
+    debug_path = f"./debug_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt"
+    stream_logger = TeamStreamLogger(debug_path)
 
-    async for chunk in Runner.run_agent_team_streaming(
-        agent_team=spec,
-        inputs={"query": query},
-        session=session_id,
-    ):
-        chunk_type = getattr(chunk, "type", "")
-        payload = getattr(chunk, "payload", None)
-
-        if (
-            ready_pending is not None
-            and isinstance(payload, dict)
-            and payload.get("event_type") == "team.runtime_ready"
+    try:
+        async for chunk in Runner.run_agent_team_streaming(
+            agent_team=spec,
+            inputs={"query": query},
+            session=session_id,
+            stream_logger=stream_logger,
         ):
-            await ready_pending(spec.team_name, session_id)
-            ready_pending = None
+            chunk_type = getattr(chunk, "type", "")
+            payload = getattr(chunk, "payload", None)
 
-        if chunk_type == _CHUNK_TOOL_CALL:
-            _flush_buffer(cur_type, buf)
-            cur_type, buf = "", []
-            tool_name = payload.get("tool_name", "") if isinstance(payload, dict) else ""
-            tool_args = payload.get("tool_args", "") if isinstance(payload, dict) else ""
-            _write(f"{_COLOR_CYAN}● {tool_name}{_COLOR_RESET}")
-            if tool_args:
-                _write(f"{_COLOR_DIM}({tool_args}){_COLOR_RESET}")
-            _write("\n")
-            continue
+            if isinstance(payload, dict) and payload.get("event_type") == "team.runtime_ready":
+                if ready_pending is not None:
+                    await ready_pending(spec.team_name, session_id)
+                    ready_pending = None
+                # Team is now in the pool, so the monitor facade can resolve it.
+                if monitor is None:
+                    monitor = await Runner.get_agent_team_monitor(
+                        team_name=spec.team_name,
+                        session_id=session_id,
+                    )
+                    if monitor is not None:
+                        await monitor.start()
+                        monitor_task = asyncio.create_task(_drain_monitor(monitor))
 
-        if chunk_type == _CHUNK_TOOL_RESULT:
-            tool_result = payload.get("tool_result", "") if isinstance(payload, dict) else str(payload)
-            preview = str(tool_result)[:200]
-            _write(f"{_COLOR_DIM}  ⎿ {preview}{_COLOR_RESET}\n\n")
-            continue
+            if chunk_type == _CHUNK_TOOL_CALL:
+                _flush_buffer(cur_type, buf)
+                cur_type, buf = "", []
+                tool_name = payload.get("tool_name", "") if isinstance(payload, dict) else ""
+                tool_args = payload.get("tool_args", "") if isinstance(payload, dict) else ""
+                _write(f"{_COLOR_CYAN}● {tool_name}{_COLOR_RESET}")
+                if tool_args:
+                    _write(f"{_COLOR_DIM}({tool_args}){_COLOR_RESET}")
+                _write("\n")
+                continue
 
-        if chunk_type == _CHUNK_MESSAGE:
-            _flush_buffer(cur_type, buf)
-            cur_type, buf = "", []
-            _write(f"{_COLOR_DIM}  ⚙ {_extract_content(payload)}{_COLOR_RESET}\n")
-            continue
+            if chunk_type == _CHUNK_TOOL_RESULT:
+                tool_result = payload.get("tool_result", "") if isinstance(payload, dict) else str(payload)
+                preview = str(tool_result)[:200]
+                _write(f"{_COLOR_DIM}  ⎿ {preview}{_COLOR_RESET}\n\n")
+                continue
 
-        if chunk_type == _CHUNK_INTERACTION:
-            _flush_buffer(cur_type, buf)
-            cur_type, buf = "", []
-            _write(f"{_COLOR_YELLOW}[Interaction] {payload}{_COLOR_RESET}\n")
-            continue
+            if chunk_type == _CHUNK_MESSAGE:
+                _flush_buffer(cur_type, buf)
+                cur_type, buf = "", []
+                _write(f"{_COLOR_DIM}  ⚙ {_extract_content(payload)}{_COLOR_RESET}\n")
+                continue
 
-        if chunk_type == _CHUNK_ANSWER and has_llm_output:
-            continue
+            if chunk_type == _CHUNK_INTERACTION:
+                _flush_buffer(cur_type, buf)
+                cur_type, buf = "", []
+                _write(f"{_COLOR_YELLOW}[Interaction] {payload}{_COLOR_RESET}\n")
+                continue
 
-        if chunk_type != cur_type:
-            _flush_buffer(cur_type, buf)
-            cur_type = chunk_type
-            buf = []
+            if chunk_type == _CHUNK_ANSWER and has_llm_output:
+                continue
 
-        if chunk_type == _CHUNK_LLM_OUTPUT:
-            has_llm_output = True
+            if chunk_type != cur_type:
+                _flush_buffer(cur_type, buf)
+                cur_type = chunk_type
+                buf = []
 
-        buf.append(_extract_content(payload))
+            if chunk_type == _CHUNK_LLM_OUTPUT:
+                has_llm_output = True
 
-    _flush_buffer(cur_type, buf)
+            buf.append(_extract_content(payload))
+
+        _flush_buffer(cur_type, buf)
+    finally:
+        if monitor is not None:
+            await monitor.stop()
+        if monitor_task is not None:
+            try:
+                await monitor_task
+            except asyncio.CancelledError:
+                pass
     logger.info("Team stream finished.")
 
 
