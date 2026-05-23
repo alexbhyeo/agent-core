@@ -145,6 +145,17 @@ class TeamRuntimeManager:
             target_team_name=team_name,
             team_db_state=team_db_state,
         )
+        team_logger.info(
+            "activate: team {} session {} dispatched to {} "
+            "(in_db={}, in_session={}, db_state={}, pooled={})",
+            team_name,
+            target_session_id,
+            action.kind.value,
+            team_in_db,
+            team_in_session,
+            team_db_state,
+            pool_entry is not None,
+        )
         return await self._apply_action(
             action,
             spec=spec,
@@ -178,13 +189,31 @@ class TeamRuntimeManager:
         """
         entry = await self._resolve_entry(team_name=team_name, session_id=session_id)
         if entry is None:
+            team_logger.debug(
+                "finalize: no pool entry for team {} session {}; nothing to settle",
+                team_name,
+                session_id,
+            )
             return
         agent = entry.agent
         try:
-            if await agent.is_shutdown_requested() or agent.lifecycle != "persistent":
+            shutdown_requested = await agent.is_shutdown_requested()
+            if shutdown_requested or agent.lifecycle != "persistent":
+                team_logger.info(
+                    "finalize: stopping team {} session {} (shutdown_requested={}, lifecycle={})",
+                    team_name,
+                    session_id,
+                    shutdown_requested,
+                    agent.lifecycle,
+                )
                 await agent.stop_coordination()
                 await self._pool.remove(team_name)
             else:
+                team_logger.info(
+                    "finalize: pausing persistent team {} session {}",
+                    team_name,
+                    session_id,
+                )
                 await agent.pause_coordination()
                 entry.state = RuntimeState.PAUSED
         except Exception as exc:
@@ -227,6 +256,7 @@ class TeamRuntimeManager:
         so we only tear down the kernel and skip the status write entirely.
         """
         member = agent.team_member
+        member_name = getattr(agent, "member_name", "?")
         try:
             current_status: Optional[MemberStatus] = None
             if member is not None:
@@ -244,20 +274,33 @@ class TeamRuntimeManager:
             if already_finalized:
                 # External party (leader stop/pause, shutdown_self) already
                 # wrote a terminal/quiescent status. Just close the kernel.
+                team_logger.info(
+                    "finalize_member: team member {} already finalized (status={}); closing kernel only",
+                    member_name,
+                    current_status.value if current_status is not None else None,
+                )
                 await agent.stop_coordination()
                 return
             if current_status == MemberStatus.SHUTDOWN_REQUESTED:
+                team_logger.info(
+                    "finalize_member: shutting down team member {} on request",
+                    member_name,
+                )
                 await agent.stop_coordination()
                 if member is not None:
                     await member.update_status(MemberStatus.SHUTDOWN)
                 return
+            team_logger.info(
+                "finalize_member: pausing team member {}; marking READY for next assignment",
+                member_name,
+            )
             await agent.pause_coordination()
             if member is not None:
                 await member.update_status(MemberStatus.READY)
         except Exception as exc:
             team_logger.warning(
                 "Failed to finalize team member {}: {}",
-                getattr(agent, "member_name", "?"),
+                member_name,
                 exc,
             )
 
@@ -275,9 +318,15 @@ class TeamRuntimeManager:
         """
         entry = await self._resolve_entry(team_name=team_name, session_id=session_id)
         if entry is None:
+            team_logger.debug(
+                "pause: no pool entry for team {} session {}; nothing to pause",
+                team_name,
+                session_id,
+            )
             return False
         await entry.agent.pause_coordination()
         entry.state = RuntimeState.PAUSED
+        team_logger.info("pause: team {} session {} paused", team_name, session_id)
         return True
 
     async def interact(
@@ -410,6 +459,11 @@ class TeamRuntimeManager:
         """Tear down the active TeamAgent runtime; preserve persisted data."""
         entry = await self._resolve_entry(team_name=team_name, session_id=session_id)
         if entry is None:
+            team_logger.debug(
+                "stop_team: no pool entry for team {} session {}; nothing to stop",
+                team_name,
+                session_id,
+            )
             return False
         try:
             await entry.agent.stop_coordination()
@@ -421,6 +475,11 @@ class TeamRuntimeManager:
                 exc,
             )
         await self._pool.remove(team_name)
+        team_logger.info(
+            "stop_team: team {} session {} stopped and removed from pool",
+            team_name,
+            session_id,
+        )
         return True
 
     async def get_monitor(

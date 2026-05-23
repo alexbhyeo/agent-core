@@ -780,7 +780,7 @@ class TeamBackend:
         if any(member.status not in MEMBER_SETTLED_STATUSES for member in members):
             return None
 
-        if await self.message_manager.has_unread_messages(include_broadcast=False):
+        if await self.message_manager.has_unread_messages(include_broadcast=True):
             return None
 
         return TeamCompletionSnapshot(member_count=len(members), task_count=len(tasks))
