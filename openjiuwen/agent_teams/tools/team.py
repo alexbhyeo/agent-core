@@ -756,9 +756,10 @@ class TeamBackend:
                (``TASK_TERMINAL_STATUSES``).
             2. Every member -- including the leader -- is in a settled
                status (``MEMBER_SETTLED_STATUSES``).
-            3. No direct (point-to-point) message is left unread by any
-               member. Broadcast messages are excluded -- a fan-out
-               announcement does not block team conclusion.
+            3. No message is left unread by any member, broadcasts
+               included. Completion is judged strictly: any undelivered
+               message -- direct or fan-out broadcast -- blocks the team
+               from concluding.
 
         Read-only; safe to call repeatedly. Queries the member DAO directly
         so the leader itself is part of the roster check (``list_members``
