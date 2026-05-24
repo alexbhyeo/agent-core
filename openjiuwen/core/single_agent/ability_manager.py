@@ -582,10 +582,21 @@ class AbilityManager:
         final_results: List[Tuple[Any, ToolMessage]] = []
         for i, result in enumerate(results):
             tool_ctx = tool_contexts[i]
-            if isinstance(result, Exception):
+            if isinstance(result, BaseException):
                 # Handle exception
                 if isinstance(result, ToolInterruptException):
                     final_results.append((result, None))
+                    continue
+
+                if isinstance(result, asyncio.CancelledError):
+                    tc = tool_calls[i]
+                    error_msg = f"[Interrupted] Tool '{tc.name}' execution was cancelled by user."
+                    logger.warning(error_msg)
+                    tool_message = ToolMessage(
+                        content=error_msg,
+                        tool_call_id=tc.id,
+                    )
+                    final_results.append((None, tool_message))
                     continue
 
                 error_msg = f"Ability execution error: {str(result)}"

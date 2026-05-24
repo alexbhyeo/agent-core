@@ -3,6 +3,7 @@
 
 import asyncio
 import os
+import signal
 import tempfile
 from datetime import (
     datetime,
@@ -88,6 +89,27 @@ class AsyncProcessHandler:
         self._queue: asyncio.Queue[StreamEvent] = asyncio.Queue()
         self._is_executed = False
 
+    def _kill_process_tree(self) -> None:
+        """Kill the subprocess and all its children using process group.
+
+        Requires ``start_new_session=True`` when creating the subprocess
+        for full process-tree coverage.  Falls back to ``process.kill()``
+        when the process group is not available (e.g. Windows).
+        """
+        pid = self._process.pid
+        if pid is None:
+            return
+        try:
+            if os.name != "nt":
+                os.killpg(pid, signal.SIGKILL)
+            else:
+                self._process.kill()
+        except OSError:
+            try:
+                self._process.kill()
+            except ProcessLookupError:
+                pass
+
     async def invoke(self) -> InvokeData:
         """One-time execution to get structured subprocess result by wrapping stream().
 
@@ -109,6 +131,23 @@ class AsyncProcessHandler:
                 timeout=self._overall_timeout
             )
             exit_code = self._process.returncode
+        except asyncio.CancelledError:
+            sys_operation_logger.warning(
+                "Process cancelled by user, killing subprocess tree",
+                event_type=LogEventType.SYS_OP_ERROR,
+                metadata={"pid": self._process.pid},
+            )
+            self._kill_process_tree()
+            try:
+                await asyncio.wait_for(self._process.communicate(), timeout=5)
+            except Exception as ex:
+                sys_operation_logger.warning(
+                    "Failed to drain subprocess after cancellation",
+                    event_type=LogEventType.SYS_OP_ERROR,
+                    exception=ex,
+                    metadata={"pid": self._process.pid},
+                )
+            raise
         except asyncio.TimeoutError as ori_ex:
             error_msg = f"Process communicate timed out after {self._overall_timeout} seconds" \
                 if not str(ori_ex) else None
@@ -118,7 +157,7 @@ class AsyncProcessHandler:
                                        exception=ori_ex,
                                        metadata={"timeout": self._overall_timeout})
             try:
-                self._process.kill()
+                self._kill_process_tree()
                 timeout_stdout, timeout_stderr = await asyncio.wait_for(
                     self._process.communicate(),
                     timeout=30
@@ -194,8 +233,23 @@ class AsyncProcessHandler:
                                                event_type=LogEventType.SYS_OP_STREAM,
                                                metadata={"timeout": 0.1})
                     continue
+        except asyncio.CancelledError:
+            sys_operation_logger.warning(
+                "Stream cancelled by user, killing subprocess tree",
+                event_type=LogEventType.SYS_OP_ERROR,
+                metadata={"pid": self._process.pid},
+            )
+            self._kill_process_tree()
+            for task in tasks:
+                if not task.done():
+                    task.cancel()
+            yield StreamEvent(
+                type=StreamEventType.ERROR,
+                data="Execution cancelled by user"
+            )
+            return
         except asyncio.TimeoutError:
-            self._process.kill()
+            self._kill_process_tree()
             await self._process.wait()
             yield StreamEvent(
                 type=StreamEventType.ERROR,

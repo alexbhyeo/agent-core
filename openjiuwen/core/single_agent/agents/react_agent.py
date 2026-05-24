@@ -624,6 +624,7 @@ class ReActAgent(BaseAgent):
             preview_messages.insert(0, SystemMessage(content=preview_system_prompt))
         return preview_messages
 
+
     async def _call_model(
             self,
             ctx: AgentCallbackContext,
@@ -1432,8 +1433,10 @@ class ReActAgent(BaseAgent):
             # after_invoke rails have fired; return result (possibly adapted by rails via ctx.extra)
             return ctx.extra.get("invoke_result", invoke_inputs.result)
         except asyncio.CancelledError:
-            # Clear context messages to prevent stale messages from accumulating
-            # when cancelled requests leave behind partial state
+            # 外部取消（非工具级 CancelledError）。
+            # Fix 1 确保工具级 CancelledError 在 asyncio.gather 中被捕获并转为
+            # ToolMessage，不会传播到这里。此处只清理当前轮次的消息（工具调用请求 +
+            # 部分结果），保留历史对话上下文（with_history=False）。
             await self.clear_context_messages(session_id=session.get_session_id())
             raise  # Re-raise to propagate cancellation signal
         finally:
