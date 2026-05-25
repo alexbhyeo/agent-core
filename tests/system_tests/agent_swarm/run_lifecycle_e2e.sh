@@ -2,16 +2,16 @@
 # Launch agent_team_lifecycle_e2e.py from the repository root.
 #
 # Activates the local .venv, sets PYTHONPATH, exports the model /
-# endpoint defaults that examples/agent_teams/config.yaml interpolates,
+# endpoint defaults that tests/system_tests/agent_swarm/config.yaml interpolates,
 # then runs the lifecycle E2E walkthrough. Safe to invoke from any
 # working directory — the script resolves the repo root from its own
 # location.
 #
 # Run all scenarios:
-#     ./examples/agent_teams/run_lifecycle_e2e.sh
+#     ./tests/system_tests/agent_swarm/run_lifecycle_e2e.sh
 #
 # Run a subset (pass scenario names after `--`):
-#     ./examples/agent_teams/run_lifecycle_e2e.sh -- cold_recover resume
+#     ./tests/system_tests/agent_swarm/run_lifecycle_e2e.sh -- cold_recover resume
 #
 # Available scenarios (see agent_team_lifecycle_e2e.py for details):
 #     create, resume, stop_new_session, cold_recover, session_switch
@@ -19,16 +19,16 @@
 # Override the model / endpoint defaults by exporting before invocation:
 #
 #     export MODEL_NAME=glm-5.1
-#     ./examples/agent_teams/run_lifecycle_e2e.sh
+#     ./tests/system_tests/agent_swarm/run_lifecycle_e2e.sh
 #
 # Windows: project keeps shell scripts unix-only. Run the launcher
-# directly with `python examples\agent_teams\agent_team_lifecycle_e2e.py`
+# directly with `python tests\system_tests\agent_swarm\agent_team_lifecycle_e2e.py`
 # from an activated venv instead.
 
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-REPO_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
+REPO_ROOT="$(cd "${SCRIPT_DIR}/../../.." && pwd)"
 
 cd "${REPO_ROOT}"
 
@@ -42,7 +42,7 @@ fi
 source .venv/bin/activate
 export PYTHONPATH="${REPO_ROOT}:${PYTHONPATH:-}"
 
-# Model / endpoint defaults consumed by examples/agent_teams/config.yaml
+# Model / endpoint defaults consumed by tests/system_tests/agent_swarm/config.yaml
 # (env interpolation happens in _e2e_utils.load_team_config). `${VAR:-default}`
 # keeps any value the user already exported.
 export API_KEY="${API_KEY:-sk-xxx}"
@@ -64,4 +64,4 @@ for arg in "$@"; do
     ARGS+=("${arg}")
 done
 
-exec python examples/agent_teams/agent_team_lifecycle_e2e.py "${ARGS[@]}"
+exec python tests/system_tests/agent_swarm/agent_team_lifecycle_e2e.py "${ARGS[@]}"
