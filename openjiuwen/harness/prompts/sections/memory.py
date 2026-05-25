@@ -71,6 +71,10 @@ MEMORY_PROMPT_CN = """# 持久化存储体系
 
 对话过程中，发现有价值的信息时，应该立即进行分类、存储，并及时记录，确保不拖延记录过程：
 
+**⚠️ 敏感信息冲突处理原则**
+
+如果待记录的内容与敏感信息过滤规则存在冲突，**以敏感信息过滤规则为准，不记录该内容**。敏感信息过滤规则具有最高优先级。
+
 1. **用户画像信息（user_profile）**：记录用户的身份信息、偏好、习惯等稳定属性，比如用户的职业、兴趣、工作模式、喜好、不满等。
    - **存储**：写入 `USER.md`。
    - **注意**：USER.md中只允许写入用户相关的记忆内容。当用户提出对Agent的身份、偏好、回答习惯等属性的定义时，记忆工具不做记录
@@ -119,6 +123,10 @@ Each conversation session starts from a blank state. Cross-session information p
 ### Information Collection, Storage Operations, and Recording
 
 When valuable information appears during the conversation, classify it and store it immediately. Do not delay recording:
+
+**⚠️ Sensitive Information Conflict Resolution**
+
+If the content to be recorded conflicts with sensitive information filtering rules, **sensitive information filtering rules take precedence — do not record that content**. Sensitive information filtering rules have the highest priority.
 
 1. **User Profile Information (`user_profile`)**: Stable user attributes such as identity, preferences, habits, work style, likes/dislikes.
    - **Storage**: Write to `USER.md`.
