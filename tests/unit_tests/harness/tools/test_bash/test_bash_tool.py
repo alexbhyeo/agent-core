@@ -294,7 +294,7 @@ class TestBashToolHistoryPath(unittest.TestCase):
             set_workspace(workspace)
             tool = BashTool(MagicMock())
             path = tool._build_history_path(session)
-            assert path.startswith(workspace)
+            assert path.startswith(os.path.realpath(workspace))
             assert ".agent_history" in path
         finally:
             shutil.rmtree(workspace, ignore_errors=True)

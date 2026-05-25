@@ -345,6 +345,7 @@ class TestOrchestratorRunSession(
                 EXTENDED_EVOLVE_PIPELINE
             )
 
+    @patch(f"{_LEARNINGS_STAGE_MOD}.run_learnings", new=_noop_agen)
     async def test_extended_pipeline_runs_extension_task_pipeline(
         self,
     ):
