@@ -246,9 +246,10 @@ class EventDispatcher:
         # shutdown request (a human agent has no autonomous round to
         # consume the shutdown message the way a teammate does, so it
         # must collapse directly); MEMBER_CANCELED routes to
-        # cancel_agent; STANDBY pauses the periodic poll timers so a
-        # paused leader does not leave human-agent avatars polling
-        # forever.
+        # cancel_agent; STANDBY stays whitelisted for parity with the
+        # teammate path — its on_standby pause_polls is a no-op for a
+        # human agent, whose bus never starts periodic poll timers in
+        # the first place (see EventBus._start_poll_tasks).
         #
         # Team events rendered for the controller: MESSAGE / BROADCAST
         # reach MessageHandler (role-aware hitt.msg_received_for_human),

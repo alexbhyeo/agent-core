@@ -229,3 +229,45 @@ section 用例对术语调整不敏感，仍然通过（关键词如 `relay chan
 
 `pytest tests/unit_tests/agent_teams/test_team_agent_coordination.py test_hitt.py
 test_coordination_lifecycle.py test_coordination_loop.py`：129 通过，无回归。
+
+## Follow-up：human-agent 不启动周期 poll timer（2026-05-26）
+
+### 背景
+
+上一个 follow-up 放行 `MESSAGE` / `BROADCAST` 给 human-agent 后，
+`MessageHandler.on_message_or_broadcast` 里那句对所有 role 共用的
+`await self._poll.resume_polls()` 被激活——human-agent 收到消息会重启周期 poll
+timer。顺藤摸瓜发现更根本的问题：`EventBus.start()` 本就**无条件**为所有 role 起
+`POLL_MAILBOX` / `POLL_TASK` 两个 timer，**包括 human-agent**；而 human-agent 的这两个
+poll inner event 在 dispatch 入口全程被 mute，于是 timer 自启动起就纯空转（每 30s 两次
+无用唤醒，被 dispatch 在 `framework.trigger` 之前 return）。`STANDBY → pause_polls` 是
+设计者已知此空转后打的补丁，message → `resume_polls` 又会把它撤销。功能无影响（poll 被
+mute 兜住），但代码起了一个全程用不到的 timer，不诚实。
+
+### 决策：EventBus 按 role 根本不起 poll timer
+
+`EventBus.__init__` 从 `role` 派生 `_periodic_poll_enabled = role != HUMAN_AGENT`；
+`start` 与 `resume_polls` 共用新私有方法 `_start_poll_tasks()`，门控收到这一个点
+（顺手消除两处重复的 `create_task`）。human-agent 的 bus 主事件循环照常跑（transport
+事件仍送达），只是周期 poll task 不再创建。连带效果：dispatch 的 `POLL_*` human-agent
+短路降为纯防御性双保险；`STANDBY` 的 `pause_polls` 对 human-agent 变 no-op（无 timer 可
+停），白名单仍保留 `STANDBY` 是为对齐 teammate 路径，不连锁改动。
+
+安全性：human-agent 的 `POLL_MAILBOX` / `POLL_TASK` 本就被 dispatch 完全 mute，不起 timer
+等价于现状（功能上零差异），只是省掉空转——不损失任何既有能力。
+
+### 拒绝的方案
+
+- **在 `on_message_or_broadcast` 里对 human-agent 跳过 `resume_polls`**：治标——只挡住
+  message 触发的重启，挡不住 `start()` 启动即空转的根本；且在所有 role 共用的 handler
+  里塞 caller-role 分支，与 [[feedback_no_role_aware_tool_hacks]] 同源的"共用路径别加
+  role hack"精神相悖。根因在 EventBus 起了用不到的 timer，就在 EventBus 治。
+
+### 验证
+
+新增 3 条单测（`test_coordination_loop.py`）：
+`test_human_agent_bus_does_not_start_poll_timers`（human-agent start 后无 poll task）、
+`test_non_human_bus_starts_poll_timers`（leader / teammate 仍起）、
+`test_human_agent_resume_polls_stays_noop`（pause 后 resume 不复活 timer，pause 标志仍
+清零）。`pytest test_coordination_loop.py test_coordination_lifecycle.py
+test_team_agent_coordination.py test_hitt.py test_persistent_team.py`：143 通过，无回归。

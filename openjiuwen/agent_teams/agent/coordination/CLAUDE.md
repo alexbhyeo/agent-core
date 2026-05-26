@@ -6,7 +6,7 @@
 
 | 文件 | 类 | 职责 |
 |---|---|---|
-| `event_bus.py` | `EventBus` / `InnerEventType` / `InnerEventMessage` | 事件入队 + 周期 poll timer + lifecycle（`start(wake_callback=...)` / `stop`）；天然实现 `PollController`（`pause_polls` / `resume_polls`） |
+| `event_bus.py` | `EventBus` / `InnerEventType` / `InnerEventMessage` | 事件入队 + 周期 poll timer + lifecycle（`start(wake_callback=...)` / `stop`）；天然实现 `PollController`（`pause_polls` / `resume_polls`）。**`HUMAN_AGENT` 角色不启动周期 poll timer**（poll 全程被 dispatch mute，起 timer 纯空转）——`start` / `resume_polls` 共用 `_start_poll_tasks`，按 `_periodic_poll_enabled` 单点门控 |
 | `dispatcher.py` | `EventDispatcher` + `AgentRoundController` / `TeamLifecycleController` / `PollController` / `DispatcherHost` | 三类 narrow protocol 划分调用面；触发规则（agent_ready / inner-vs-transport / 角色级粗筛）+ 持有私有 `AsyncCallbackFramework` 实例 + 把 6 个场景 handler 的 `get_callbacks()` 注册到 framework；handler 实例作为字段直接暴露（`dispatcher.lifecycle / .member / .message / .task_board / .stale_task / .team_completion`） |
 | `handlers/` | `BaseCoordinationHandler` + 6 个场景 handler | 见下文"handler 拆分" |
 | `kernel.py` | `CoordinationKernel` | 整体协调 facade：`setup` 时构造 event_bus → 注入到 dispatcher 作 `poll_ctrl`；`start` 时调 `event_bus.start(wake_callback=dispatcher.dispatch)` 闭合循环依赖；start 委托 `SessionManager.bind_session`；pause / resume / drain |
