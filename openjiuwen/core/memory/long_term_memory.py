@@ -292,10 +292,10 @@ class LongTermMemory(metaclass=Singleton):
             )
         self._sys_mem_config = config
 
-        if config.crypto_key and self.memory_index:
-            codec = AesStorageCodec(config.crypto_key)
+        codec = AesStorageCodec(config.crypto_key)
+        if self.memory_index:
             self.memory_index.set_storage_codec(codec)
-            self._storage_codec = codec
+        self._storage_codec = codec
 
         data_id_generator = DataIdManager()
 

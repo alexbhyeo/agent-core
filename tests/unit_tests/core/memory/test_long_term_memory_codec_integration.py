@@ -52,11 +52,12 @@ def _setup_minimal_ltm(ltm, crypto_key):
     ltm.memory_index = SimpleMemoryIndex(kv_store=kv, vector_store=vs, embedding_model=emb)
     ltm._sys_mem_config = MemoryEngineConfig(crypto_key=crypto_key)
 
+    from openjiuwen.core.memory.codec.aes_storage_codec import AesStorageCodec
+    codec = AesStorageCodec(crypto_key)
     if crypto_key:
         crypt = AesGcmCrypt()
         CryptUtils.register_crypt(CryptUtils.AES_GCM_CRYPT_NAME, crypt)
-        from openjiuwen.core.memory.codec.aes_storage_codec import AesStorageCodec
-        ltm.memory_index.set_storage_codec(AesStorageCodec(crypto_key))
+    ltm.memory_index.set_storage_codec(codec)
 
     return ltm
 
@@ -71,12 +72,14 @@ class TestLongTermMemoryCodecInjection:
         assert ltm.memory_index is not None
         assert ltm.memory_index._codec is not None
 
-    def test_set_config_no_crypto_key_no_codec(self):
+    def test_set_config_empty_key_codec_still_present(self):
         ltm = LongTermMemory()
         _setup_minimal_ltm(ltm, b"")
 
         assert ltm.memory_index is not None
-        assert ltm.memory_index._codec is None
+        assert ltm.memory_index._codec is not None
+        assert ltm.memory_index._codec.encode("hello") == "hello"
+        assert ltm.memory_index._codec.decode("hello") == "hello"
 
     @pytest.mark.asyncio
     async def test_full_write_read_cycle(self):
