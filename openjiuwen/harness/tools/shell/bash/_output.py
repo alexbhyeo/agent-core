@@ -7,6 +7,7 @@ import hashlib
 import os
 import re
 import tempfile
+from dataclasses import dataclass
 from pathlib import Path
 
 
@@ -143,13 +144,20 @@ def _merge(first: str, second: str) -> str:
     return f"{first}\n{second}"
 
 
+@dataclass(frozen=True)
+class CommandOutput:
+    """Bundled command execution result and rendering configuration."""
+
+    stdout: str
+    stderr: str
+    exit_code: int
+    warning: str | None
+    max_output_chars: int
+
+
 def render_tool_content(
-    stdout: str,
-    stderr: str,
-    exit_code: int,
+    output: CommandOutput,
     is_error: bool,
-    warning: str | None,
-    max_output_chars: int,
 ) -> tuple[str, bool]:
     """Render command output into the model-facing (content, is_error) standard.
 
@@ -160,40 +168,32 @@ def render_tool_content(
     prepended so it stays visible to the model.
 
     Args:
-        stdout: Captured standard output.
-        stderr: Captured standard error.
-        exit_code: Process exit code.
+        output: Bundled command result and rendering configuration.
         is_error: Whether the exit code is semantically an error, as decided by
             the command-aware ``interpret_exit_code``.
-        warning: Destructive-command warning to prepend, or None.
-        max_output_chars: Persist-to-disk threshold; 0 disables persistence.
 
     Returns:
         The ``(content, is_error)`` pair for the Anthropic tool_result shape.
     """
     if is_error:
         # Error path: stderr leads so the failure detail comes first.
-        merged = _merge(stderr, stdout)
-        parts = [f"Exit code {exit_code}", merged]
-        return _prepend_warning("\n".join(p for p in parts if p), warning), True
+        merged = _merge(output.stderr, output.stdout)
+        parts = [f"Exit code {output.exit_code}", merged]
+        return _prepend_warning("\n".join(p for p in parts if p), output.warning), True
 
     # Data path: stdout leads.
-    merged = _merge(stdout, stderr)
+    merged = _merge(output.stdout, output.stderr)
     processed = _LEADING_BLANK_LINES.sub("", merged).rstrip() if merged else merged
-    if max_output_chars > 0 and len(merged) > max_output_chars:
-        path, size = persist_large_output(stdout, stderr)
+    if output.max_output_chars > 0 and len(merged) > output.max_output_chars:
+        path, size = persist_large_output(output.stdout, output.stderr)
         preview, has_more = _generate_preview(processed, _PREVIEW_SIZE_BYTES)
         processed = _build_persisted_message(path, size, preview, has_more)
-    return _prepend_warning(processed, warning), False
+    return _prepend_warning(processed, output.warning), False
 
 
 def render_partial_on_failure(
+    output: CommandOutput,
     failure_message: str,
-    stdout: str,
-    stderr: str,
-    exit_code: int,
-    warning: str | None,
-    max_output_chars: int,
 ) -> str | None:
     """Render output collected before a post-launch failure (e.g. a timeout).
 
@@ -202,18 +202,14 @@ def render_partial_on_failure(
     failure reason as a header, instead of dropping it.
 
     Args:
+        output: Bundled command result and rendering configuration.
         failure_message: Why the command failed (e.g. the timeout message).
-        stdout: Output collected before the failure.
-        stderr: Error output collected before the failure.
-        exit_code: Process exit code (often a kill signal for timeouts).
-        warning: Destructive-command warning to prepend, or None.
-        max_output_chars: Persist-to-disk threshold; 0 disables persistence.
 
     Returns:
         The model-facing content string, or None when nothing was collected (the
         caller should fall back to the bare failure message).
     """
-    if not stdout and not stderr:
+    if not output.stdout and not output.stderr:
         return None
-    content, _ = render_tool_content(stdout, stderr, exit_code, True, warning, max_output_chars)
+    content, _ = render_tool_content(output, True)
     return f"{failure_message}\n{content}" if content else failure_message

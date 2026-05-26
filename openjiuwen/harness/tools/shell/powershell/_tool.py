@@ -21,6 +21,7 @@ from openjiuwen.core.sys_operation import SysOperation
 from openjiuwen.harness.prompts.tools import build_tool_card
 from openjiuwen.harness.tools.base_tool import ToolOutput
 from openjiuwen.harness.tools.shell.powershell._output import (
+    CommandOutput,
     render_partial_on_failure,
     render_tool_content,
 )
@@ -178,12 +179,14 @@ class PowerShellTool(Tool):
             partial = None
             if res.data is not None:
                 partial = render_partial_on_failure(
+                    CommandOutput(
+                        stdout=res.data.stdout or "",
+                        stderr=res.data.stderr or "",
+                        exit_code=res.data.exit_code if res.data.exit_code is not None else -1,
+                        warning=warning,
+                        max_output_chars=p.max_output_chars,
+                    ),
                     res.message,
-                    res.data.stdout or "",
-                    res.data.stderr or "",
-                    res.data.exit_code if res.data.exit_code is not None else -1,
-                    warning,
-                    p.max_output_chars,
                 )
             if partial is not None:
                 return ToolOutput(success=False, data={"content": partial}, error=partial)
@@ -200,7 +203,14 @@ class PowerShellTool(Tool):
             await _detect_and_record_deletions(_history_path)
 
         content, is_error = render_tool_content(
-            stdout, stderr, exit_code, meaning.is_error, warning, p.max_output_chars,
+            CommandOutput(
+                stdout=stdout,
+                stderr=stderr,
+                exit_code=exit_code,
+                warning=warning,
+                max_output_chars=p.max_output_chars,
+            ),
+            meaning.is_error,
         )
         return ToolOutput(
             success=not is_error,
@@ -285,12 +295,14 @@ class PowerShellTool(Tool):
             await _detect_and_record_deletions(_history_path)
 
         content, is_error = render_tool_content(
-            accumulated_stdout,
-            accumulated_stderr,
-            final_exit_code,
+            CommandOutput(
+                stdout=accumulated_stdout,
+                stderr=accumulated_stderr,
+                exit_code=final_exit_code,
+                warning=warning,
+                max_output_chars=p.max_output_chars,
+            ),
             meaning.is_error,
-            warning,
-            p.max_output_chars,
         )
         yield ToolOutput(
             success=not is_error,

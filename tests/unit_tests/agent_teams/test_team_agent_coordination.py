@@ -25,11 +25,14 @@ from openjiuwen.agent_teams.schema.blueprint import (
     TeamAgentSpec,
 )
 from openjiuwen.agent_teams.schema.events import (
+    BroadcastEvent,
     EventMessage,
+    MemberShutdownEvent,
     MemberStatusChangedEvent,
     MessageEvent,
     TaskClaimedEvent,
     TaskCompletedEvent,
+    TaskCreatedEvent,
     TaskListDrainedEvent,
     TeamCleanedEvent,
     TeamCompletedEvent,
@@ -38,6 +41,7 @@ from openjiuwen.agent_teams.schema.events import (
 )
 from openjiuwen.agent_teams.schema.team import (
     TeamCompletionSnapshot,
+    TeamMemberSpec,
     TeamRole,
     TeamRuntimeContext,
     TeamSpec,
@@ -78,6 +82,50 @@ def _make_leader(lifecycle: str = "temporary") -> TeamAgent:
             id="t1",
             name="leader",
             description="test",
+        ),
+    )
+    agent.configure(spec, context)
+    return agent
+
+
+def _make_human_agent(member_name: str = "human_alice") -> TeamAgent:
+    """Build a configured ``role=HUMAN_AGENT`` avatar runtime.
+
+    Mirrors ``_make_leader`` but with a HITT-enabled spec and a
+    HUMAN_AGENT runtime context, so dispatcher role-aware filtering can
+    be exercised directly.
+    """
+    team_spec = TeamSpec(
+        team_name="hitt-team",
+        display_name="hitt-team",
+        leader_member_name="leader-1",
+    )
+    spec = TeamAgentSpec(
+        agents={"leader": DeepAgentSpec()},
+        team_name="hitt-team",
+        lifecycle="temporary",
+        enable_hitt=True,
+        predefined_members=[
+            TeamMemberSpec(
+                member_name=member_name,
+                display_name="Alice",
+                role_type=TeamRole.HUMAN_AGENT,
+                persona="user avatar",
+            ),
+        ],
+    )
+    context = TeamRuntimeContext(
+        role=TeamRole.HUMAN_AGENT,
+        member_name=member_name,
+        persona="user avatar",
+        team_spec=team_spec,
+        db_config=DatabaseConfig(db_type="memory"),
+    )
+    agent = TeamAgent(
+        AgentCard(
+            id=member_name,
+            name=member_name,
+            description="avatar",
         ),
     )
     agent.configure(spec, context)
@@ -249,6 +297,250 @@ async def test_tool_approval_event_resumes_interrupt():
     assert interactive_input.user_inputs["call-1"]["approved"] is True
     assert interactive_input.user_inputs["call-1"]["feedback"] == "ok"
     assert interactive_input.user_inputs["call-1"]["auto_confirm"] is True
+
+
+@pytest.mark.asyncio
+@pytest.mark.level0
+async def test_idle_human_agent_tears_down_on_self_shutdown():
+    """An idle human agent must tear its avatar down on MEMBER_SHUTDOWN.
+
+    Unlike a teammate, a human agent has no autonomous LLM round to
+    consume the shutdown message and reach the round-end
+    ``close_stream`` path. When idle there is no round to ride, so the
+    dispatcher must let MEMBER_SHUTDOWN through and the member handler
+    must call ``shutdown_self`` directly; otherwise the avatar's run
+    cycle never ends and the member is stuck in SHUTDOWN_REQUESTED
+    forever (notably blocking a temporary team's ``clean_team``).
+    """
+    agent = _make_human_agent("human_alice")
+    agent.shutdown_self = AsyncMock()
+    assert not agent.has_in_flight_round()
+
+    event = EventMessage.from_event(
+        MemberShutdownEvent(
+            team_name="hitt-team",
+            member_name="human_alice",
+            force=False,
+        )
+    )
+    await agent._coordination.dispatcher.dispatch(event)
+
+    agent.shutdown_self.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+@pytest.mark.level0
+async def test_busy_human_agent_not_interrupted_on_self_shutdown():
+    """A controller-driven round in flight must not be interrupted.
+
+    ``shutdown_member`` already wrote SHUTDOWN_REQUESTED before this
+    event, so the in-flight round closes the stream at its own round-end
+    (the teammate path). The handler must therefore leave a non-forced
+    shutdown alone rather than collapsing the avatar mid-turn.
+    """
+    agent = _make_human_agent("human_alice")
+    agent.shutdown_self = AsyncMock()
+    agent.has_in_flight_round = MagicMock(return_value=True)
+
+    event = EventMessage.from_event(
+        MemberShutdownEvent(
+            team_name="hitt-team",
+            member_name="human_alice",
+            force=False,
+        )
+    )
+    await agent._coordination.dispatcher.dispatch(event)
+
+    agent.shutdown_self.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.level1
+async def test_forced_shutdown_collapses_busy_human_agent():
+    """``force=True`` bypasses the grace period and tears down immediately."""
+    agent = _make_human_agent("human_alice")
+    agent.shutdown_self = AsyncMock()
+    agent.has_in_flight_round = MagicMock(return_value=True)
+
+    event = EventMessage.from_event(
+        MemberShutdownEvent(
+            team_name="hitt-team",
+            member_name="human_alice",
+            force=True,
+        )
+    )
+    await agent._coordination.dispatcher.dispatch(event)
+
+    agent.shutdown_self.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+@pytest.mark.level0
+async def test_human_agent_ignores_other_member_shutdown():
+    """A human agent only tears down on its own shutdown event.
+
+    MEMBER_SHUTDOWN targeting a different member must not collapse the
+    avatar — it observes nothing about other members' lifecycles.
+    """
+    agent = _make_human_agent("human_alice")
+    agent.shutdown_self = AsyncMock()
+
+    event = EventMessage.from_event(
+        MemberShutdownEvent(
+            team_name="hitt-team",
+            member_name="dev-1",
+            force=False,
+        )
+    )
+    await agent._coordination.dispatcher.dispatch(event)
+
+    agent.shutdown_self.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.level0
+async def test_human_agent_dispatch_delivers_message_broadcast_and_task_claimed():
+    """F_14 team events must survive the human-agent whitelist in dispatch.
+
+    The role-aware rendering branches in ``MessageHandler`` /
+    ``TaskBoardHandler`` (``hitt.msg_received_for_human`` /
+    ``hitt.task_assigned_to_self_human``) are only reachable when
+    MESSAGE / BROADCAST / TASK_CLAIMED pass the coarse whitelist in
+    ``dispatch``. F_14 shipped those handler branches but left the
+    whitelist muting the events, so the controller-facing rendering
+    never ran. Drive each event through the real ``dispatch`` and
+    assert the framework is triggered with the matching event_type.
+    """
+    agent = _make_human_agent("human_alice")
+    trigger = AsyncMock()
+    agent._coordination.dispatcher._framework.trigger = trigger
+
+    models = [
+        MessageEvent(
+            team_name="hitt-team",
+            message_id="m1",
+            from_member_name="leader-1",
+            to_member_name="human_alice",
+        ),
+        BroadcastEvent(
+            team_name="hitt-team",
+            message_id="b1",
+            from_member_name="leader-1",
+        ),
+        TaskClaimedEvent(
+            team_name="hitt-team",
+            member_name="human_alice",
+            task_id="t1",
+        ),
+    ]
+    for model in models:
+        trigger.reset_mock()
+        event = EventMessage.from_event(model)
+        await agent._coordination.dispatcher.dispatch(event)
+        trigger.assert_awaited_once()
+        assert trigger.await_args.args[0] == event.event_type
+
+
+@pytest.mark.asyncio
+@pytest.mark.level0
+async def test_human_agent_dispatch_mutes_task_board_survey_events():
+    """Task-board survey events stay muted for a human-agent avatar.
+
+    TASK_CREATED / TASK_UPDATED / ... drive ``_nudge_idle_agent``, which
+    would push the avatar to autonomously scan the board for claimable
+    work. Only TASK_CLAIMED (a direct assignment to the avatar) is a
+    controller notification; survey events must not reach the framework.
+    """
+    agent = _make_human_agent("human_alice")
+    trigger = AsyncMock()
+    agent._coordination.dispatcher._framework.trigger = trigger
+
+    event = EventMessage.from_event(
+        TaskCreatedEvent(
+            team_name="hitt-team",
+            task_id="t1",
+            status="pending",
+        )
+    )
+    await agent._coordination.dispatcher.dispatch(event)
+
+    trigger.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.level1
+async def test_human_agent_ignores_other_member_task_claim():
+    """A claim targeting someone else must not nudge a human-agent avatar.
+
+    A regular teammate / leader falls through to the board nudge so an
+    idle member sees the change (see
+    ``test_task_claimed_for_other_member_falls_through_to_board_nudge``).
+    A human-agent avatar never autonomously surveys the board, so
+    ``on_task_claimed`` short-circuits for a claim addressed to another
+    member — no ``list_tasks`` survey, no ``deliver_input``.
+    """
+    agent = _make_leader()
+    # Role check consults backend.is_human_agent (not TeamRole); piggy-back
+    # on the leader fixture as the existing human-template tests do.
+    agent.team_backend._human_agent_names.add("leader-1")
+
+    agent._configurator.task_manager = MagicMock()
+    agent._configurator.task_manager.list_tasks = AsyncMock(return_value=[])
+    agent._is_agent_running = lambda: False
+    agent._start_agent = AsyncMock()
+    agent.steer = AsyncMock()
+
+    event = EventMessage.from_event(
+        TaskClaimedEvent(
+            team_name="test-team",
+            member_name="dev-1",
+            task_id="task-7",
+        )
+    )
+    await agent._coordination.dispatcher.task_board.on_task_claimed(event)
+
+    agent._configurator.task_manager.list_tasks.assert_not_awaited()
+    agent._start_agent.assert_not_called()
+    agent.steer.assert_not_called()
+
+
+@pytest.mark.asyncio
+@pytest.mark.level0
+async def test_teammate_does_not_self_shutdown_on_member_shutdown():
+    """Teammates keep the round-end teardown path on MEMBER_SHUTDOWN.
+
+    A teammate consumes its shutdown message through the mailbox drain
+    and final round, so the member handler must not short-circuit it
+    with a direct ``shutdown_self`` (that is the human-agent-only path).
+    """
+    team_spec = TeamSpec(
+        team_name="test-team",
+        display_name="test-team",
+        leader_member_name="leader-1",
+    )
+    spec = TeamAgentSpec(agents={"leader": DeepAgentSpec()}, team_name="test-team")
+    ctx = TeamRuntimeContext(
+        role=TeamRole.TEAMMATE,
+        member_name="dev-1",
+        persona="dev",
+        team_spec=team_spec,
+        db_config=DatabaseConfig(db_type="memory"),
+    )
+    agent = TeamAgent(AgentCard(id="dev-1", name="dev", description="test"))
+    agent.configure(spec, ctx)
+    agent.shutdown_self = AsyncMock()
+
+    await agent._coordination.dispatcher.member._handle_teammate_member_event(
+        EventMessage.from_event(
+            MemberShutdownEvent(
+                team_name="test-team",
+                member_name="dev-1",
+                force=False,
+            )
+        )
+    )
+
+    agent.shutdown_self.assert_not_awaited()
 
 
 @pytest.mark.asyncio

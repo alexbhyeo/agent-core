@@ -6,7 +6,7 @@
 
 | 文件 | 类 | 职责 |
 |---|---|---|
-| `event_bus.py` | `EventBus` / `InnerEventType` / `InnerEventMessage` | 事件入队 + 周期 poll timer + lifecycle（`start(wake_callback=...)` / `stop`）；天然实现 `PollController`（`pause_polls` / `resume_polls`） |
+| `event_bus.py` | `EventBus` / `InnerEventType` / `InnerEventMessage` | 事件入队 + 周期 poll timer + lifecycle（`start(wake_callback=...)` / `stop`）；天然实现 `PollController`（`pause_polls` / `resume_polls`）。**`HUMAN_AGENT` 角色不启动周期 poll timer**（poll 全程被 dispatch mute，起 timer 纯空转）——`start` / `resume_polls` 共用 `_start_poll_tasks`，按 `_periodic_poll_enabled` 单点门控 |
 | `dispatcher.py` | `EventDispatcher` + `AgentRoundController` / `TeamLifecycleController` / `PollController` / `DispatcherHost` | 三类 narrow protocol 划分调用面；触发规则（agent_ready / inner-vs-transport / 角色级粗筛）+ 持有私有 `AsyncCallbackFramework` 实例 + 把 6 个场景 handler 的 `get_callbacks()` 注册到 framework；handler 实例作为字段直接暴露（`dispatcher.lifecycle / .member / .message / .task_board / .stale_task / .team_completion`） |
 | `handlers/` | `BaseCoordinationHandler` + 6 个场景 handler | 见下文"handler 拆分" |
 | `kernel.py` | `CoordinationKernel` | 整体协调 facade：`setup` 时构造 event_bus → 注入到 dispatcher 作 `poll_ctrl`；`start` 时调 `event_bus.start(wake_callback=dispatcher.dispatch)` 闭合循环依赖；start 委托 `SessionManager.bind_session`；pause / resume / drain |
@@ -30,7 +30,7 @@ handler **不持有原始 host 引用**。新增依赖一律通过 narrow protoc
 | handler | 监听 event | 状态 | 关键方法 |
 |---|---|---|---|
 | `AgentLifecycleHandler` | `USER_INPUT` / `STANDBY` / `CLEANED` / `TOOL_APPROVAL_RESULT` | 无 | `on_user_input` / `on_standby` / `on_cleaned` / `on_tool_approval_result` |
-| `MemberHandler` | 6 个 `MEMBER_*` | 共享 `stale_claim_throttle` | `on_member_event` 分流到 `_handle_leader_member_event` / `_handle_teammate_member_event`；`MEMBER_STATUS_CHANGED → READY/ERROR` 时 `_nudge_idle_member_with_stale_claims` |
+| `MemberHandler` | 6 个 `MEMBER_*` | 共享 `stale_claim_throttle` | `on_member_event` 分流到 `_handle_leader_member_event` / `_handle_teammate_member_event`；`MEMBER_STATUS_CHANGED → READY/ERROR` 时 `_nudge_idle_member_with_stale_claims`；自身 `MEMBER_SHUTDOWN` 时 teammate 不在此 teardown（走 drain → 末轮 → round-end close_stream），**human-agent 走 `_shutdown_human_agent`：有 in-flight round 且非 force 则不打断（靠 round-end close），空闲或 force 才 `_lifecycle.shutdown_self()`** |
 | `MessageHandler` | `MESSAGE` / `BROADCAST` / `POLL_MAILBOX` + `MEMBER_SHUTDOWN`（fan-out） | 无 | `on_message_or_broadcast`（leader 额外 ack user-bound + 通知 human-agent inbound）/ `on_poll_mailbox` / `on_member_shutdown_drain`（仅 teammate 给自己 drain）。`_format_message` 是 role-aware：是 human-agent 时走 `hitt.msg_received_for_human` 前缀 `[转发给控制者的…]`，否则走 `dispatcher.msg_received` |
 | `TaskBoardHandler` | `TASK_CLAIMED` / 5 个 `TASK_*` | 无 | `on_task_claimed`（targeted assignment）/ `on_task_board_event` → `_nudge_idle_agent`。self 分支 role-aware：是 human-agent 时走 `hitt.task_assigned_to_self_human` 前缀 `[任务指派给控制者]`（best-effort 查 task title 内联），否则走 `dispatcher.task_assigned_to_self` |
 | `StaleTaskHandler` | `POLL_TASK` | 共享 `stale_claim_throttle` + 独占 `_last_pending_nudge` | `on_poll_task` → `_check_stale_claimed_tasks` + `_check_stale_pending_tasks` |
