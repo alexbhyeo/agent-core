@@ -134,7 +134,6 @@ class Session:
     async def commit(self):
         """Persist the current session state without closing the stream."""
         await self._inner.checkpointer().post_agent_execute(self._inner)
-        return self
 
     def create_workflow_session(self) -> WorkflowSession:
         return WorkflowSession(parent=self._inner, session_id=self.get_session_id())

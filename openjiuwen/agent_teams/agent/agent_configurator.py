@@ -29,6 +29,7 @@ from openjiuwen.agent_teams.paths import (
     team_memory_dir as default_team_memory_dir,
 )
 from openjiuwen.agent_teams.prompts import role_policy
+from openjiuwen.agent_teams.runtime.team_plan import is_team_plan_enabled
 from openjiuwen.agent_teams.schema.blueprint import TeamAgentSpec
 from openjiuwen.agent_teams.schema.deep_agent_spec import SysOperationSpec
 from openjiuwen.agent_teams.schema.team import (
@@ -340,6 +341,7 @@ class AgentConfigurator:
         )
 
         resolved_team_name = (ctx.team_spec.team_name if ctx.team_spec else None) or spec.team_name
+        teammate_mode = str(spec.teammate_mode)
 
         team_workspace_mount: str | None = None
         team_workspace_path: str | None = None
@@ -353,7 +355,7 @@ class AgentConfigurator:
         team_tool_rail = TeamToolRail(
             team_backend=self.team_backend,
             role=ctx.role.value,
-            teammate_mode=spec.teammate_mode,
+            teammate_mode=teammate_mode,
             lifecycle=spec.lifecycle,
             language=resolved_language,
             on_teammate_created=self._on_teammate_created,
@@ -371,7 +373,7 @@ class AgentConfigurator:
             persona=ctx.persona,
             member_name=member_name,
             lifecycle=spec.lifecycle,
-            teammate_mode=spec.teammate_mode,
+            teammate_mode=teammate_mode,
             language=resolved_language,
             team_mode=_resolve_team_mode(spec),
             base_prompt=agent_spec.system_prompt,
@@ -424,6 +426,7 @@ class AgentConfigurator:
             first_iter_gate=first_iter_gate,
             team_workspace_rail=team_workspace_rail,
             tool_approval_rail=tool_approval_rail,
+            initial_plan_mode=ctx.role == TeamRole.LEADER and is_team_plan_enabled(spec),
         )
 
         # Team memory manager (only when explicitly enabled in the spec).
@@ -532,20 +535,20 @@ class AgentConfigurator:
 
         is_leader = ctx.role == TeamRole.LEADER
         current_member_name = ctx.member_name or (ctx.team_spec.leader_member_name if ctx.team_spec else "")
-
         agent_team = TeamBackend(
             team_name=team_name,
             member_name=current_member_name,
             is_leader=is_leader,
             db=db,
             messager=messager,
-            teammate_mode=MemberMode(spec.teammate_mode),
+            teammate_mode=MemberMode(str(spec.teammate_mode)),
             predefined_members=spec.predefined_members or None,
             model_config_allocator=self.model_allocator.allocate if self.model_allocator else None,
             leader_allocation=self.leader_allocation if is_leader else None,
             enable_hitt=spec.enable_hitt,
             on_team_cleaned=on_team_cleaned,
             on_team_built=on_team_built,
+            leader_member_name=ctx.team_spec.leader_member_name if ctx.team_spec else None,
         )
         self.team_backend = agent_team
         self.task_manager = agent_team.task_manager

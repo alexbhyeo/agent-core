@@ -90,14 +90,21 @@ class Session:
         """Persist the current team session state without closing the stream."""
         await self.commit()
 
-    def create_agent_session(self, card: AgentCard | None = None, agent_id: str | None = None) -> AgentSession:
+    def create_agent_session(
+        self,
+        card: AgentCard | None = None,
+        agent_id: str | None = None,
+        *,
+        share_stream_writer: bool = True,
+    ) -> AgentSession:
         if card is None:
             card = AgentCard(id=agent_id or "team_agent", name=agent_id or "team_agent")
+        stream_writer_manager = self._inner.stream_writer_manager() if share_stream_writer else None
         return create_agent_session(
             session_id=self._session_id,
             envs=self.get_envs(),
             card=card,
-            stream_writer_manager=self._inner.stream_writer_manager(),
+            stream_writer_manager=stream_writer_manager,
             close_stream_on_post_run=False,
             source_metadata={
                 "source_agent_id": card.id,

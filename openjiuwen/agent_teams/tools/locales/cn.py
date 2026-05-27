@@ -69,9 +69,14 @@ STRINGS: dict[str, str] = {
     "shutdown_member.force": "是否强制关闭，默认 false。仅在成员卡死、长期无响应或无法正常收尾时使用",
     # ===== approve_plan ========================================================
     # approve_plan._desc lives in descs/cn/approve_plan.md
-    "approve_plan.member_name": "提交计划的成员 member_name（语义化 slug，不是显示名）",
+    "approve_plan.plan_id": "成员提交的一版执行计划 ID；Leader 使用该字段精确审批某一版计划",
     "approve_plan.approved": "是否批准当前计划。true 表示进入实施，false 表示退回修改",
     "approve_plan.feedback": "审批反馈。拒绝时应说明原因和修改方向；批准时可补充约束、提醒或额外要求",
+    # ===== submit_plan ==========================================================
+    "submit_plan._desc": "在 plan_mode 任务执行前提交已写好的执行计划 Markdown 文件",
+    "submit_plan.task_id": "执行前需要提交计划的任务 ID",
+    "submit_plan.plan_id": "可选。成员计划 ID；不传时系统自动生成。Leader 后续用该 plan_id 审批",
+    "submit_plan.plan_path": "成员已经写好的 Markdown 计划文件路径；系统会复制为受管快照供 Leader 审批",
     # ===== approve_tool ========================================================
     # approve_tool._desc lives in descs/cn/approve_tool.md
     "approve_tool.member_name": "发起该工具审批请求的成员 member_name（语义化 slug，不是显示名）",

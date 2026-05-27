@@ -106,6 +106,7 @@ LEADER_ONLY_TOOLS: Set[str] = {
 # Tools that only members can use
 MEMBER_ONLY_TOOLS: Set[str] = {
     "claim_task",  # Claim or complete a task
+    "submit_plan",  # Submit a plan before executing in plan_mode
     # Worktree tools — members work in isolated worktrees
     # "enter_worktree",          # Enter an isolated git worktree
     # "exit_worktree",           # Exit the current worktree session
@@ -475,27 +476,30 @@ class ApprovePlanTool(TeamTool):
         self.card.input_params = {
             "type": "object",
             "properties": {
-                "member_name": {
+                "plan_id": {
                     "type": "string",
-                    "description": t("approve_plan", "member_name"),
+                    "description": t("approve_plan", "plan_id"),
                 },
                 "approved": {"type": "boolean", "description": t("approve_plan", "approved")},
                 "feedback": {"type": "string", "description": t("approve_plan", "feedback")},
             },
-            "required": ["member_name", "approved"],
+            "required": ["plan_id", "approved"],
         }
 
     async def invoke(self, inputs: Dict[str, Any], **kwargs) -> ToolOutput:
-        member_name = inputs.get("member_name")
         approved = inputs.get("approved")
+        plan_id = inputs.get("plan_id")
         success = await self.team.approve_plan(
-            member_name=member_name,
+            plan_id=plan_id,
             approved=approved,
             feedback=inputs.get("feedback"),
         )
         return ToolOutput(
             success=success,
-            data={"member_name": member_name, "approved": approved},
+            data={
+                "plan_id": plan_id,
+                "approved": approved,
+            },
             error=None if success else "Failed to approve/reject plan",
         )
 
@@ -504,7 +508,7 @@ class ApprovePlanTool(TeamTool):
             return output.error or "Failed to approve/reject plan"
         d = output.data
         decision = "approved" if d["approved"] else "rejected"
-        return f"Plan {decision}: member_name={d['member_name']} decision={decision}"
+        return f"Plan {decision}: plan_id={d['plan_id']} decision={decision}"
 
 
 class ApproveToolCallTool(TeamTool):
@@ -1027,6 +1031,58 @@ class UpdateTaskTool(TeamTool):
         return f"Task #{d['task_id']} {d['status']}"
 
 
+class SubmitPlanTool(TeamTool):
+    """Submit an execution plan for a plan-mode task."""
+
+    def __init__(
+        self,
+        task_manager: TeamTaskManager,
+        t: Translator,
+        *,
+        name: str = "submit_plan",
+        tool_id: str = "team.submit_plan",
+    ):
+        super().__init__(
+            ToolCard(
+                id=tool_id,
+                name=name,
+                description=t("submit_plan"),
+            )
+        )
+        self.task_manager = task_manager
+        self.card.input_params = {
+            "type": "object",
+            "properties": {
+                "task_id": {"type": "string", "description": t("submit_plan", "task_id")},
+                "plan_id": {"type": "string", "description": t("submit_plan", "plan_id")},
+                "plan_path": {"type": "string", "description": t("submit_plan", "plan_path")},
+            },
+            "required": ["task_id", "plan_path"],
+        }
+
+    async def invoke(self, inputs: Dict[str, Any], **kwargs) -> ToolOutput:
+        result = await self.task_manager.submit_plan(
+            task_id=inputs.get("task_id"),
+            plan_id=inputs.get("plan_id"),
+            plan_path=inputs.get("plan_path") or "",
+        )
+        return ToolOutput(
+            success=bool(result.get("success")),
+            data=result,
+            error=None if result.get("success") else result.get("message", "Failed to submit member plan"),
+        )
+
+    def map_result(self, output: ToolOutput) -> str:
+        if not output.success:
+            return output.error or "Failed to submit member plan"
+        d = output.data
+        return (
+            f"Member plan submitted: task_id={d.get('task_id')} plan_id={d.get('plan_id')} "
+            f"status={d.get('status')} "
+            f"member_plan_md={d.get('member_plan_md')}"
+        )
+
+
 class ClaimTaskTool(TeamTool):
     """Claim or complete a task (Teammate only)."""
 
@@ -1471,6 +1527,7 @@ def create_team_tools(
         "update_task": UpdateTaskTool(agent_team, t),
         "view_task": ViewTaskToolV2(task_mgr, t),
         "claim_task": ClaimTaskTool(task_mgr, t),
+        "submit_plan": SubmitPlanTool(task_mgr, t),
         "member_complete_task": MemberCompleteTaskTool(task_mgr, t),
         # Messaging
         "send_message": SendMessageTool(
@@ -1487,11 +1544,13 @@ def create_team_tools(
         allowed = LEADER_TOOLS
     else:
         allowed = MEMBER_TOOLS
-    # approve_plan / approve_tool only make sense in plan_mode — teammates
-    # submit plans and intercepted tool calls go to the leader for sign-off.
-    # build_mode has no such workflow, so keep the leader's toolset clean.
-    if role == "leader" and teammate_mode != "plan_mode":
-        allowed = allowed - {"approve_plan", "approve_tool"}
+    # Plan tools only make sense in plan_mode.
+    if teammate_mode != "plan_mode":
+        allowed = allowed - {
+            "approve_plan",
+            "approve_tool",
+            "submit_plan",
+        }
     # clean_team is a temporary-team primitive only. Persistent teams are
     # torn down by the operator through SDK facades (delete_agent_team etc.);
     # letting the leader LLM call clean_team mid-round would race the runtime

@@ -70,6 +70,7 @@ from openjiuwen.core.session.agent_team import (
     create_agent_team_session,
 )
 from openjiuwen.core.session.checkpointer import CheckpointerFactory
+from openjiuwen.core.session.interaction.interactive_input import InteractiveInput
 
 if TYPE_CHECKING:
     from openjiuwen.agent_teams.agent.team_agent import TeamAgent
@@ -334,15 +335,16 @@ class TeamRuntimeManager:
 
     async def interact(
         self,
-        payload: InteractPayload | str,
+        payload: InteractPayload | str | InteractiveInput,
         *,
         team_name: str,
         session_id: str,
     ) -> DeliverResult:
         """Route an interact payload through the active team's gate.
 
-        ``payload`` accepts either an :class:`InteractPayload` (one of
-        ``GodViewMessage`` / ``OperatorMessage`` / ``HumanAgentMessage``)
+        ``payload`` accepts an ``InteractiveInput`` for pending leader
+        interrupts, an :class:`InteractPayload` (one of
+        ``GodViewMessage`` / ``OperatorMessage`` / ``HumanAgentMessage``),
         or a free-form ``str``. String inputs are parsed by
         :func:`parse_interact_str` exactly once at this layer:
 
@@ -377,15 +379,22 @@ class TeamRuntimeManager:
             when the runtime is shutting down. Other failure reasons
             propagate from the underlying inbox.
         """
+        entry = await self._resolve_entry(team_name=team_name, session_id=session_id)
+        if entry is None:
+            return DeliverResult.failure("not_active")
+
+        if isinstance(payload, InteractiveInput):
+            if entry.agent.has_pending_interrupt():
+                await entry.agent.resume_interrupt(payload)
+                return DeliverResult.success(None)
+            return DeliverResult.failure("unsupported_interactive_input")
+
         if isinstance(payload, str):
             parsed = parse_interact_str(payload)
             payloads: list[InteractPayload] = parsed or [GodViewMessage(body=payload)]
         else:
             payloads = [payload]
 
-        entry = await self._resolve_entry(team_name=team_name, session_id=session_id)
-        if entry is None:
-            return DeliverResult.failure("not_active")
         ticket = await entry.interact_gate.admit()
         if ticket is None:
             return DeliverResult.failure("gate_closed")

@@ -96,7 +96,7 @@ STRINGS: dict[str, str] = {
     ),
     # ===== approve_plan ========================================================
     # approve_plan._desc lives in descs/en/approve_plan.md
-    "approve_plan.member_name": "member_name of the member who submitted the plan (semantic slug, not display label)",
+    "approve_plan.plan_id": "Member plan submission ID to approve or reject one exact plan revision.",
     "approve_plan.approved": (
         "Whether to approve the current plan. true means proceed to implementation; false means revise it"
     ),
@@ -105,6 +105,13 @@ STRINGS: dict[str, str] = {
         "reason and revision direction; when approving, "
         "you may add constraints, reminders, or extra requirements"
     ),
+    # ===== submit_plan ==========================================================
+    "submit_plan._desc": "Submit a prepared execution-plan Markdown file for a plan-mode task before implementation",
+    "submit_plan.task_id": "Task ID to plan before execution",
+    "submit_plan.plan_id": "Optional member plan ID; the system generates one when omitted. "
+                           "The Leader uses this plan_id for review",
+    "submit_plan.plan_path": "Path to the member-authored Markdown plan file; the system copies "
+                             "it to a managed snapshot for Leader review",
     # ===== approve_tool ========================================================
     # approve_tool._desc lives in descs/en/approve_tool.md
     "approve_tool.member_name": (

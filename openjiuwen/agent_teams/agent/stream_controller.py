@@ -402,10 +402,10 @@ class StreamController:
         error_text: str = ""
         self.streaming_active = True
         try:
-            async for chunk in harness.run_streaming(
-                inputs,
-                session_id=get_session_id() or None,
-            ):
+            stream_kwargs: dict[str, Any] = {"session_id": get_session_id() or None}
+            if self._state.team_session is not None:
+                stream_kwargs["team_session"] = self._state.team_session
+            async for chunk in harness.run_streaming(inputs, **stream_kwargs):
                 if error_seen:
                     continue
                 detected = _detect_task_failed(chunk)

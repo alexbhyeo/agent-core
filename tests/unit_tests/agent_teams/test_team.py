@@ -224,6 +224,32 @@ class TestSpawnMember:
 class TestApprovePlan:
     """Test approve_plan functionality"""
 
+    @staticmethod
+    async def _submit_member_plan(agent_team, member_name: str = "member1"):
+        from openjiuwen.agent_teams.tools.task_manager import TeamTaskManager
+
+        task = await agent_team.task_manager.add(title="Plan task", content="Do work")
+        assert task.ok
+        assign_result = await agent_team.task_manager.assign(task.task_id, member_name)
+        assert assign_result.ok
+        member_task_manager = TeamTaskManager(
+            team_name=agent_team.team_name,
+            member_name=member_name,
+            db=agent_team.db,
+            messager=agent_team.messager,
+            plans_dir=agent_team.task_manager.plans_dir,
+            team_plan_id=agent_team.task_manager.team_plan_id,
+        )
+        plan_path = agent_team.task_manager.plans_dir / "draft-plan.md"
+        plan_path.parent.mkdir(parents=True, exist_ok=True)
+        plan_path.write_text("1. inspect\n2. implement\n", encoding="utf-8")
+        submit_result = await member_task_manager.submit_plan(
+            task.task_id,
+            plan_path=str(plan_path),
+        )
+        assert submit_result["success"] is True
+        return task, submit_result["plan_id"]
+
     @pytest.mark.asyncio
     @pytest.mark.level0
     async def test_approve_plan_success(self, agent_team, sample_agent_card):
@@ -232,76 +258,76 @@ class TestApprovePlan:
         await agent_team.spawn_member(
             member_name="member1",
             display_name="Member One",
-            agent_card=sample_agent_card
+            agent_card=sample_agent_card,
+            mode=MemberMode.PLAN_MODE,
         )
+        task, plan_id = await self._submit_member_plan(agent_team)
 
         # Approve plan
         result = await agent_team.approve_plan(
-            member_name="member1",
+            plan_id=plan_id,
             approved=True,
             feedback="Plan looks good"
         )
 
         assert result is True
+        approved_task = await agent_team.task_manager.get(task.task_id)
+        assert approved_task.status == TaskStatus.PLAN_APPROVED.value
 
     @pytest.mark.asyncio
     @pytest.mark.level0
-    async def test_approve_plan_sends_message(self, agent_team, sample_agent_card):
-        """Test that approve_plan sends a message"""
+    async def test_approve_plan_uses_task_event_without_duplicate_message(self, agent_team, sample_agent_card):
+        """Test that approve_plan relies on task events instead of duplicate direct messages."""
         await agent_team.spawn_member(
             member_name="member1",
             display_name="Member One",
-            agent_card=sample_agent_card
+            agent_card=sample_agent_card,
+            mode=MemberMode.PLAN_MODE,
         )
+        _, plan_id = await self._submit_member_plan(agent_team)
 
         with patch.object(agent_team.message_manager, 'send_message', new_callable=AsyncMock,
                           return_value="msg123") as mock_send:
-            await agent_team.approve_plan(
-                member_name="member1",
+            result = await agent_team.approve_plan(
+                plan_id=plan_id,
                 approved=True,
                 feedback="Great plan!"
             )
 
-            mock_send.assert_called_once()
-            call_args = mock_send.call_args
-            content = call_args.kwargs.get('content') or call_args[1].get('content')
-            to_member = call_args.kwargs.get('to_member_name') or call_args[1].get('to_member_name')
-
-            assert "APPROVED" in content
-            assert "Great plan!" in content
-            assert to_member == "member1"
+            assert result is True
+            mock_send.assert_not_called()
 
     @pytest.mark.asyncio
     @pytest.mark.level0
-    async def test_reject_plan_sends_message(self, agent_team, sample_agent_card):
-        """Test that rejecting a plan sends appropriate message"""
+    async def test_reject_plan_uses_task_event_without_duplicate_message(self, agent_team, sample_agent_card):
+        """Test that rejecting a plan relies on task events instead of duplicate direct messages."""
         await agent_team.spawn_member(
             member_name="member1",
             display_name="Member One",
-            agent_card=sample_agent_card
+            agent_card=sample_agent_card,
+            mode=MemberMode.PLAN_MODE,
         )
+        task, plan_id = await self._submit_member_plan(agent_team)
 
         with patch.object(agent_team.message_manager, 'send_message', new_callable=AsyncMock,
                           return_value="msg123") as mock_send:
-            await agent_team.approve_plan(
-                member_name="member1",
+            result = await agent_team.approve_plan(
+                plan_id=plan_id,
                 approved=False,
                 feedback="Please revise"
             )
 
-            mock_send.assert_called_once()
-            call_args = mock_send.call_args
-            content = call_args.kwargs.get('content') or call_args[1].get('content')
-
-            assert "REJECTED" in content
-            assert "Please revise" in content
+            assert result is True
+            mock_send.assert_not_called()
+            rejected_task = await agent_team.task_manager.get(task.task_id)
+            assert rejected_task.status == TaskStatus.CLAIMED.value
 
     @pytest.mark.asyncio
     @pytest.mark.level0
-    async def test_approve_plan_member_not_found(self, agent_team):
-        """Test approving plan for non-existent member"""
+    async def test_approve_plan_missing_plan(self, agent_team):
+        """Test approving a non-existent plan."""
         result = await agent_team.approve_plan(
-            member_name="nonexistent_member",
+            plan_id="missing-plan",
             approved=True
         )
 
@@ -314,19 +340,22 @@ class TestApprovePlan:
         await agent_team.spawn_member(
             member_name="member1",
             display_name="Member One",
-            agent_card=sample_agent_card
+            agent_card=sample_agent_card,
+            mode=MemberMode.PLAN_MODE,
         )
+        task, plan_id = await self._submit_member_plan(agent_team)
 
         with patch.object(agent_team.message_manager, 'send_message', new_callable=AsyncMock,
                           return_value="msg123") as mock_send:
-            await agent_team.approve_plan(
-                member_name="member1",
+            result = await agent_team.approve_plan(
+                plan_id=plan_id,
                 approved=True
             )
 
-            call_args = mock_send.call_args
-            content = call_args.kwargs.get('content') or call_args[1].get('content')
-            assert "Your plan has been APPROVED" in content
+            assert result is True
+            mock_send.assert_not_called()
+            approved_task = await agent_team.task_manager.get(task.task_id)
+            assert approved_task.status == TaskStatus.PLAN_APPROVED.value
 
 
 class TestApproveTool:
@@ -496,7 +525,8 @@ class TestCancelMember:
             member_name="member1",
             display_name="Member One",
             agent_card=sample_agent_card,
-            status=MemberStatus.BUSY
+            status=MemberStatus.BUSY,
+            mode=MemberMode.BUILD_MODE,
         )
 
         # Create member1's task_manager

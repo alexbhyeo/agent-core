@@ -29,7 +29,6 @@ from openjiuwen.agent_teams.schema.events import (
     MemberCanceledEvent,
     MemberShutdownEvent,
     MemberSpawnedEvent,
-    PlanApprovalEvent,
     TeamCleanedEvent,
     TeamCreatedEvent,
     TeamTopic,
@@ -88,6 +87,9 @@ class TeamBackend:
         *,
         on_team_cleaned: Callable[[], Awaitable[None]] | None = None,
         on_team_built: Callable[[], Awaitable[None]] | None = None,
+        plan_storage_dir: str | None = None,
+        plan_id: str | None = None,
+        leader_member_name: str | None = None,
     ):
         """Initialize agent team manager.
 
@@ -131,6 +133,7 @@ class TeamBackend:
         self.team_name = team_name
         self.member_name = member_name
         self.is_leader = is_leader
+        self.leader_member_name = str(leader_member_name or (member_name if is_leader else "")).strip()
         self.db = db
         self.messager = messager
         self.teammate_mode = teammate_mode
@@ -150,7 +153,15 @@ class TeamBackend:
         self._on_team_cleaned = on_team_cleaned
         self._on_team_built = on_team_built
 
-        self.task_manager = TeamTaskManager(self.team_name, member_name, self.db, messager)
+        self.task_manager = TeamTaskManager(
+            self.team_name,
+            member_name,
+            self.db,
+            messager,
+            plans_dir=plan_storage_dir,
+            team_plan_id=plan_id,
+            leader_member_name=self.leader_member_name,
+        )
         # Roster of human-collaborator members. Sync in-memory cache so
         # the many sync callers (coordination handlers, rails, prompt
         # sections) can consult it cheaply. **DB is the source of truth**:
@@ -384,87 +395,70 @@ class TeamBackend:
 
         return True
 
-    async def approve_plan(self, member_name: str, approved: bool, feedback: Optional[str] = None) -> bool:
-        """Approve or reject a member's plan
-
-        If approved, approve member's claimed tasks (CLAIMED -> PLAN_APPROVED).
-        If rejected, send feedback to member.
+    async def approve_plan(
+        self,
+        plan_id: str,
+        approved: bool = True,
+        feedback: Optional[str] = None,
+    ) -> bool:
+        """Approve or reject a member's submitted task plan.
 
         Args:
-            member_name: Member identifier
+            plan_id: Exact member plan submission identifier to review.
             approved: True to approve, False to reject
             feedback: Optional feedback message
-
         Returns:
             True if successful, False otherwise
 
         Example:
             success = team.approve_plan(
-                member_name="member123",
+                plan_id="plan123",
                 approved=True,
                 feedback="Plan looks good"
             )
         """
+        if not plan_id:
+            team_logger.error("approve_plan requires plan_id")
+            return False
+
+        plan_record = self.task_manager.get_plan_record(plan_id)
+        if not plan_record:
+            team_logger.error("Plan %s not found", plan_id)
+            return False
+        member_name = str(plan_record.get("member_name") or "")
+        task_id = str(plan_record.get("task_id") or "")
+        if not member_name:
+            team_logger.error("Plan %s has no member_name", plan_id)
+            return False
         member_data = await self.db.member.get_member(member_name, self.team_name)
         if member_data is None:
             team_logger.error(f"Member {member_name} not found in team {self.team_name}")
             return False
 
-        team_logger.info(f"Approving plan for member {member_name}: {approved}, feedback: {feedback}")
-
-        # Prepare message
-        if approved:
-            # Approve member's claimed tasks (CLAIMED -> PLAN_APPROVED)
-            claimed_tasks = await self.task_manager.get_tasks_by_assignee(
-                member_name=member_name, status=TaskStatus.CLAIMED.value
-            )
-            approved_count = 0
-            for task in claimed_tasks:
-                if await self.task_manager.approve_plan(task.task_id):
-                    approved_count += 1
-
-            if approved_count > 0:
-                team_logger.info(f"Approved {approved_count} tasks for member {member_name}")
-
-            content = (
-                f"Your plan has been APPROVED. {approved_count} task(s) are now approved for completion."
-                f"Feedback: {feedback}"
-                if feedback
-                else f"Your plan has been APPROVED. {approved_count} task(s) are now approved for completion."
-            )
-        else:
-            content = (
-                f"Your plan has been REJECTED. Please revise and resubmit. "
-                f"Feedback: {feedback if feedback else 'No specific feedback provided.'}"
-            )
-
-        # Send message via TeamMessageManager
-        message_id = await self.message_manager.send_message(
-            content=content,
-            to_member_name=member_name,
+        team_logger.info(
+            "Approving plan for member {}: approved={}, task_id={}, plan_id={}, feedback={}",
+            member_name,
+            approved,
+            task_id,
+            plan_id,
+            feedback,
         )
-
-        if not message_id:
-            team_logger.error(f"Failed to send approval message to member {member_name}")
+        result = await self.task_manager.approve_plan(
+            plan_id=plan_id,
+            approved=approved,
+            feedback=feedback or "",
+            leader_name=self.member_name,
+        )
+        if not result.ok:
+            team_logger.error("Failed to approve/reject plan {}: {}", plan_id, result.reason)
             return False
 
-        # Publish plan approval event
-        try:
-            await self.messager.publish(
-                topic_id=TeamTopic.TEAM.build(get_session_id(), self.team_name),
-                message=EventMessage.from_event(
-                    PlanApprovalEvent(
-                        team_name=self.team_name,
-                        member_name=member_name,
-                        approved=approved,
-                    )
-                ),
-            )
-            team_logger.debug(f"Plan approval event published for member: {member_name}")
-        except Exception as e:
-            team_logger.error(f"Failed to publish plan approval event for {member_name}: {e}")
-
-        team_logger.info(f"Plan approval sent to member {member_name}")
+        team_logger.info(
+            "Plan approval state updated for member {}, approved={}, task_id={}",
+            member_name,
+            approved,
+            task_id,
+        )
         return True
 
     async def approve_tool(

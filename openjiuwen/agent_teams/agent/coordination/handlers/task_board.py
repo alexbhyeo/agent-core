@@ -28,6 +28,8 @@ class TaskBoardHandler(BaseCoordinationHandler):
         TeamEvent.TASK_CLAIMED: "on_task_claimed",
         # Task board (everything except TASK_CLAIMED nudges idle agent)
         TeamEvent.TASK_CREATED: "on_task_board_event",
+        TeamEvent.TASK_PLAN_REQUEST: "on_task_board_event",
+        TeamEvent.TASK_PLAN_RESPONSE: "on_task_plan_decision",
         TeamEvent.TASK_UPDATED: "on_task_board_event",
         TeamEvent.TASK_COMPLETED: "on_task_board_event",
         TeamEvent.TASK_CANCELLED: "on_task_board_event",
@@ -104,6 +106,30 @@ class TaskBoardHandler(BaseCoordinationHandler):
             member_name,
             payload.task_id,
             is_self_human,
+        )
+        await self._round.deliver_input(content)
+
+    async def on_task_plan_decision(self, event: EventMessage) -> None:
+        """Notify a member when the leader approves or rejects its plan."""
+        member_name = self._blueprint.member_name
+        if not member_name or self._infra.task_manager is None:
+            return
+        payload = event.get_payload()
+        if payload.member_name != member_name:
+            await self.on_task_board_event(event)
+            return
+        await self._poll.resume_polls()
+        if getattr(payload, "tool_call_id", ""):
+            team_logger.debug(
+                "[{}] task plan decision resumes pending interrupt, skip extra deliver_input",
+                member_name,
+            )
+            return
+        key = "dispatcher.task_plan_approved_to_self" if payload.approved else "dispatcher.task_plan_rejected_to_self"
+        content = t(
+            key,
+            task_id=payload.task_id,
+            feedback=getattr(payload, "feedback", "") or "",
         )
         await self._round.deliver_input(content)
 

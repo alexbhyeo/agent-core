@@ -79,11 +79,13 @@ _LABELS: dict[str, dict[str, str]] = {
         "team_workspace_abs": "绝对路径",
         "members_heading": "# 成员关系",
         "leader_mode_plan": (
-            "团队成员执行模式: plan_mode（成员领取任务后需先提交计划，由你通过 approve_plan 审批后才能执行）"
+            "团队成员执行模式: plan_mode（成员选择或接到任务后需直接通过 submit_plan 提交计划，"
+            "由你通过 approve_plan 审批后才能执行）"
         ),
         "leader_mode_build": ("团队成员执行模式: build_mode（成员领取任务后自主执行并直接完成，无需你审批计划）"),
         "teammate_mode_plan": (
-            "你的执行模式: plan_mode（领取任务后必须先通过 write_plan 提交计划，"
+            "你的执行模式: plan_mode（选择或接到任务后必须先通过 submit_plan 提交计划，"
+            "该工具会认领任务；"
             "等待 leader 通过 approve_plan 审批后才能开始执行）"
         ),
         "teammate_mode_build": ("你的执行模式: build_mode（领取任务后可自主执行并直接标记完成，无需 leader 审批计划）"),
@@ -108,7 +110,8 @@ _LABELS: dict[str, dict[str, str]] = {
         "members_heading": "# Relationships",
         "leader_mode_plan": (
             "Teammate execution mode: plan_mode (teammates must submit a plan "
-            "after claiming a task and wait for your approval via approve_plan "
+            "with submit_plan after selecting or receiving a task; "
+            "that tool reserves the task, then teammates wait for your exact plan_id approval via approve_plan "
             "before executing)"
         ),
         "leader_mode_build": (
@@ -116,9 +119,9 @@ _LABELS: dict[str, dict[str, str]] = {
             "complete tasks autonomously without plan approval)"
         ),
         "teammate_mode_plan": (
-            "Your execution mode: plan_mode (after claiming a task you must "
-            "submit a plan via write_plan and wait for the leader to approve "
-            "it via approve_plan before executing)"
+            "Your execution mode: plan_mode (after selecting or receiving a task you must "
+            "submit a plan via submit_plan; that tool reserves the task. Wait for the leader to approve "
+            "that plan_id via approve_plan before executing)"
         ),
         "teammate_mode_build": (
             "Your execution mode: build_mode (after claiming a task you "

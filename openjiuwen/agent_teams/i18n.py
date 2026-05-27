@@ -55,6 +55,13 @@ STRINGS: dict[str, dict[str, str]] = {
             "[任务指派] 任务 [{task_id}] 已指派给你，请通过 view_task 工具查看任务详情并执行。"
         ),
         # agent/dispatcher.py — message formatting
+        "dispatcher.task_plan_approved_to_self": (
+            "[计划已批准] 任务 [{task_id}] 的执行计划已通过。请开始执行，完成后用 claim_task(status='completed') 标记完成。"
+            "{feedback}"
+        ),
+        "dispatcher.task_plan_rejected_to_self": (
+            "[计划需修改] 任务 [{task_id}] 的执行计划未通过。请根据反馈修改并重新调用 submit_plan。反馈：{feedback}"
+        ),
         "dispatcher.msg_type_broadcast": "广播消息",
         "dispatcher.msg_type_direct": "单播消息",
         "dispatcher.msg_received": (
@@ -154,6 +161,14 @@ STRINGS: dict[str, dict[str, str]] = {
             "Use view_task to inspect the details and start working on it."
         ),
         # agent/dispatcher.py — message formatting
+        "dispatcher.task_plan_approved_to_self": (
+            "[Plan Approved] Your execution plan for task [{task_id}] was approved. "
+            "Start execution and call claim_task(status='completed') when done. {feedback}"
+        ),
+        "dispatcher.task_plan_rejected_to_self": (
+            "[Plan Rejected] Your execution plan for task [{task_id}] needs revision. "
+            "Update it and call submit_plan again. Feedback: {feedback}"
+        ),
         "dispatcher.msg_type_broadcast": "broadcast",
         "dispatcher.msg_type_direct": "direct message",
         "dispatcher.msg_received": (

@@ -14,8 +14,11 @@ from openjiuwen.agent_teams.context import (
 )
 from openjiuwen.agent_teams.messager import Messager
 from openjiuwen.agent_teams.schema.status import (
+    MemberMode,
     MemberStatus,
+    TaskStatus,
 )
+from openjiuwen.agent_teams.tools.task_manager import TeamTaskManager
 from openjiuwen.agent_teams.tools.database import (
     DatabaseConfig,
     DatabaseType,
@@ -507,6 +510,31 @@ class TestShutdownMemberTool:
 class TestApprovePlanTool:
     """Test ApprovePlanTool"""
 
+    @staticmethod
+    async def _submit_member_plan(agent_team, member_name: str = "member1"):
+        task = await agent_team.task_manager.add(title="Plan task", content="Do work")
+        assert task.ok
+        assign_result = await agent_team.task_manager.assign(task.task_id, member_name)
+        assert assign_result.ok
+
+        member_task_manager = TeamTaskManager(
+            team_name=agent_team.team_name,
+            member_name=member_name,
+            db=agent_team.db,
+            messager=agent_team.messager,
+            plans_dir=agent_team.task_manager.plans_dir,
+            team_plan_id=agent_team.task_manager.team_plan_id,
+        )
+        plan_path = agent_team.task_manager.plans_dir / "draft-plan.md"
+        plan_path.parent.mkdir(parents=True, exist_ok=True)
+        plan_path.write_text("1. inspect\n2. implement\n", encoding="utf-8")
+        submit_result = await member_task_manager.submit_plan(
+            task.task_id,
+            plan_path=str(plan_path),
+        )
+        assert submit_result["success"] is True
+        return task, submit_result["plan_id"]
+
     @pytest.mark.level0
     def test_initialization(self, agent_team, t):
         """Test tool initialization"""
@@ -519,31 +547,66 @@ class TestApprovePlanTool:
     @pytest.mark.level0
     async def test_invoke_approve(self, agent_team, t, sample_agent_card):
         """Test invoking approve plan tool to approve"""
-        await agent_team.spawn_member(member_name="member1", display_name="Member One", agent_card=sample_agent_card)
+        await agent_team.spawn_member(
+            member_name="member1",
+            display_name="Member One",
+            agent_card=sample_agent_card,
+            mode=MemberMode.PLAN_MODE,
+        )
+        task, plan_id = await self._submit_member_plan(agent_team)
 
         tool = ApprovePlanTool(agent_team, t)
-        result = await tool.invoke({"member_name": "member1", "approved": True, "feedback": "Great plan!"})
+        result = await tool.invoke({"plan_id": plan_id, "approved": True, "feedback": "Great plan!"})
 
         assert result.success is True
         assert result.error is None
+        approved_task = await agent_team.task_manager.get(task.task_id)
+        assert approved_task.status == TaskStatus.PLAN_APPROVED.value
+
+    @pytest.mark.asyncio
+    @pytest.mark.level0
+    async def test_invoke_requires_plan_id(self, agent_team, t, sample_agent_card):
+        """Test invoking approve plan tool requires plan_id."""
+        await agent_team.spawn_member(
+            member_name="member1",
+            display_name="Member One",
+            agent_card=sample_agent_card,
+            mode=MemberMode.PLAN_MODE,
+        )
+        task, _ = await self._submit_member_plan(agent_team)
+
+        tool = ApprovePlanTool(agent_team, t)
+        result = await tool.invoke({"task_id": task.task_id, "approved": True, "feedback": "Great plan!"})
+
+        assert result.success is False
+        approved_task = await agent_team.task_manager.get(task.task_id)
+        assert approved_task.status == TaskStatus.CLAIMED.value
 
     @pytest.mark.asyncio
     @pytest.mark.level0
     async def test_invoke_reject(self, agent_team, t, sample_agent_card):
         """Test invoking approve plan tool to reject"""
-        await agent_team.spawn_member(member_name="member1", display_name="Member One", agent_card=sample_agent_card)
+        await agent_team.spawn_member(
+            member_name="member1",
+            display_name="Member One",
+            agent_card=sample_agent_card,
+            mode=MemberMode.PLAN_MODE,
+        )
+        task, plan_id = await self._submit_member_plan(agent_team)
 
         tool = ApprovePlanTool(agent_team, t)
-        result = await tool.invoke({"member_name": "member1", "approved": False, "feedback": "Please revise"})
+        result = await tool.invoke({"plan_id": plan_id, "approved": False, "feedback": "Please revise"})
 
         assert result.success is True
+        rejected_task = await agent_team.task_manager.get(task.task_id)
+        assert rejected_task.status == TaskStatus.CLAIMED.value
 
     @pytest.mark.asyncio
     @pytest.mark.level0
     async def test_invoke_member_not_found(self, agent_team, t):
-        """Test invoking approve plan tool for non-existent member"""
+        """Test invoking approve plan tool for a non-existent plan."""
         tool = ApprovePlanTool(agent_team, t)
-        result = await tool.invoke({"member_name": "nonexistent", "approved": True})
+        result = await tool.invoke({"plan_id": "missing-plan", "approved": True})
 
         assert result.success is False
 

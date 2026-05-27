@@ -370,6 +370,7 @@ class ExitPlanModeTool(Tool):
         if not plan_text.strip():
             return _EXIT_PLAN_EMPTY_MSG[lang].format(plan_path=plan_path_str)
 
+        agent.restore_mode_after_plan_exit(session)
         prefix = _EXIT_PLAN_WITH_CONTENT_PREFIX[lang].format(plan_path=plan_path_str)
         return prefix + plan_text
 
