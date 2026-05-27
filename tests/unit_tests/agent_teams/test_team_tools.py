@@ -1286,6 +1286,7 @@ class TestMappedToolOutput:
                         "status": "claimed",
                         "assignee": "dev-1",
                         "blocked_by": ["t1"],
+                        "updated_at": 1_700_000_000_000,
                     },
                 ],
                 "count": 2,
@@ -1295,6 +1296,9 @@ class TestMappedToolOutput:
         assert "#t1 [pending] Fix bug" in result
         assert "(dev-1)" in result
         assert "[blocked by #t1]" in result
+        # t2 carries updated_at → its line shows the absolute local time;
+        # t1 has no updated_at → the None guard skips time rendering.
+        assert "2023-11-" in result
 
     @pytest.mark.level1
     def test_view_task_map_result_get(self, agent_team, t):
@@ -1310,12 +1314,14 @@ class TestMappedToolOutput:
                 "assignee": "dev-1",
                 "blocked_by": [],
                 "blocks": ["t2", "t3"],
+                "updated_at": 1_700_000_000_000,
             },
         )
         result = tool.map_result(output)
         assert "Task #t1: Fix bug" in result
         assert "Content: Fix the login bug" in result
         assert "Blocks: #t2, #t3" in result
+        assert "Updated:" in result
 
     @pytest.mark.level1
     def test_send_message_map_result(self, agent_team, t):

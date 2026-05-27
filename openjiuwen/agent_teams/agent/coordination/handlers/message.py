@@ -22,6 +22,8 @@ from openjiuwen.agent_teams.agent.coordination.handlers.base import BaseCoordina
 from openjiuwen.agent_teams.i18n import t
 from openjiuwen.agent_teams.schema.events import EventMessage, MessageEvent, TeamEvent
 from openjiuwen.agent_teams.schema.team import TeamRole
+from openjiuwen.agent_teams.timefmt import format_time_context
+from openjiuwen.agent_teams.tools.database.engine import get_current_time
 from openjiuwen.core.common.logging import team_logger
 
 
@@ -140,7 +142,7 @@ class MessageHandler(BaseCoordinationHandler):
                 if is_bridge:
                     text = await self._bridge_deliverable_for(member_name, msg)
                 else:
-                    text = self._format_message(msg, is_human_agent=is_human_agent)
+                    text = self._format_message(msg, is_human_agent=is_human_agent, now_ms=get_current_time())
                 team_logger.debug("[{}] message from={}, id={}", member_name, msg.from_member_name, msg.message_id)
 
                 await self._round.deliver_input(text, use_steer=use_steer)
@@ -177,7 +179,7 @@ class MessageHandler(BaseCoordinationHandler):
         # fall back to the plain teammate format. A bridge avatar is
         # never a human_agent, so the human-forwarding template stays off.
         if spec is None:
-            return self._format_message(msg, is_human_agent=False)
+            return self._format_message(msg, is_human_agent=False, now_ms=get_current_time())
 
         language = "cn"
         team_spec = self._blueprint.team_spec
@@ -357,11 +359,15 @@ class MessageHandler(BaseCoordinationHandler):
         merged.sort(key=lambda m: m.timestamp, reverse=True)
         return merged
 
-    def _format_message(self, msg: Any, *, is_human_agent: bool) -> str:
+    def _format_message(self, msg: Any, *, is_human_agent: bool, now_ms: int) -> str:
         """Format one TeamMessage for agent input.
 
         Includes message_id so the agent can call mark_message_read,
-        and distinguishes direct vs broadcast messages.
+        and distinguishes direct vs broadcast messages. The message's
+        send time is rendered as ``<absolute local time> (<relative
+        diff>)`` so the agent can judge recency and ordering — mailbox
+        delivery is often delayed, and a bare epoch tells the LLM
+        nothing about how stale the message is.
 
         Rendering is role-aware. A teammate / leader sees
         ``dispatcher.msg_received`` ("reply via send_message if the
@@ -371,6 +377,11 @@ class MessageHandler(BaseCoordinationHandler):
         not to autonomously call ``send_message`` — the avatar's
         outbound actions are driven only by Inbox instructions from
         its controller.
+
+        Args:
+            msg: The team message row to render.
+            is_human_agent: Whether the recipient is a human-agent avatar.
+            now_ms: Current millisecond UTC epoch, the relative-time anchor.
         """
         msg_type = t("dispatcher.msg_type_broadcast") if msg.broadcast else t("dispatcher.msg_type_direct")
         key = "hitt.msg_received_for_human" if is_human_agent else "dispatcher.msg_received"
@@ -380,4 +391,5 @@ class MessageHandler(BaseCoordinationHandler):
             message_id=msg.message_id,
             sender=msg.from_member_name,
             content=msg.content,
+            time_info=format_time_context(msg.timestamp, now_ms),
         )

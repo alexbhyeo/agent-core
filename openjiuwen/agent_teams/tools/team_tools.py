@@ -30,6 +30,8 @@ if TYPE_CHECKING:
     from openjiuwen.agent_teams.models.allocator import Allocation
 
 from openjiuwen.agent_teams.schema.status import TaskStatus
+from openjiuwen.agent_teams.timefmt import format_time_context
+from openjiuwen.agent_teams.tools.database.engine import get_current_time
 from openjiuwen.agent_teams.tools.locales import Translator
 from openjiuwen.agent_teams.tools.message_manager import TeamMessageManager
 from openjiuwen.agent_teams.tools.task_manager import TeamTaskManager
@@ -955,10 +957,16 @@ class ViewTaskToolV2(TeamTool):
         return ToolOutput(success=True, data=result.model_dump())
 
     def map_result(self, output: ToolOutput) -> str:
-        """Map view_task result — tiered output by action."""
+        """Map view_task result — tiered output by action.
+
+        Both tiers render the task's last-transition time as ``<absolute
+        local time> (<relative diff>)`` so the model can tell how long a
+        task has been sitting in its current status.
+        """
         if not output.success:
             return output.error or "Task not found"
         d = output.data
+        now_ms = get_current_time()
         # Detail view (get action) — mirrors TaskGetTool
         if "content" in d:
             lines = [
@@ -968,6 +976,8 @@ class ViewTaskToolV2(TeamTool):
             ]
             if d.get("assignee"):
                 lines.append(f"Assignee: {d['assignee']}")
+            if d.get("updated_at") is not None:
+                lines.append(f"Updated: {format_time_context(d['updated_at'], now_ms)}")
             if d.get("blocked_by"):
                 lines.append(f"Blocked by: {', '.join(f'#{tid}' for tid in d['blocked_by'])}")
             if d.get("blocks"):
@@ -978,12 +988,14 @@ class ViewTaskToolV2(TeamTool):
         if not tasks:
             return "No tasks found"
         lines = []
-        for t in tasks:
-            parts = [f"#{t['task_id']} [{t['status']}] {t['title']}"]
-            if t.get("assignee"):
-                parts.append(f"({t['assignee']})")
-            if t.get("blocked_by"):
-                parts.append(f"[blocked by {', '.join(f'#{tid}' for tid in t['blocked_by'])}]")
+        for task in tasks:
+            parts = [f"#{task['task_id']} [{task['status']}] {task['title']}"]
+            if task.get("assignee"):
+                parts.append(f"({task['assignee']})")
+            if task.get("updated_at") is not None:
+                parts.append(f"({format_time_context(task['updated_at'], now_ms)})")
+            if task.get("blocked_by"):
+                parts.append(f"[blocked by {', '.join(f'#{tid}' for tid in task['blocked_by'])}]")
             lines.append(" ".join(parts))
         return "\n".join(lines)
 

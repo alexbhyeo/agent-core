@@ -26,6 +26,7 @@ from pathlib import Path
 from openjiuwen.agent_teams.external.client import ExternalTeamClient, InboxView
 from openjiuwen.agent_teams.external.descriptor import TeamJoinDescriptor
 from openjiuwen.agent_teams.external.format import render_messages, render_task_board
+from openjiuwen.agent_teams.tools.database.engine import get_current_time
 
 _PROG = "team-member"
 
@@ -85,9 +86,10 @@ def _load_descriptor(args: argparse.Namespace) -> TeamJoinDescriptor:
 
 
 def _print_inbox(view: InboxView, *, is_leader: bool) -> None:
+    now_ms = get_current_time()
     if view.messages:
-        print(render_messages(view.messages))
-    board = render_task_board(view.tasks, is_leader=is_leader)
+        print(render_messages(view.messages, now_ms=now_ms))
+    board = render_task_board(view.tasks, is_leader=is_leader, now_ms=now_ms)
     if board:
         if view.messages:
             print()
