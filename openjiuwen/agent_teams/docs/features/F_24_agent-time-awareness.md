@@ -5,8 +5,8 @@
 | 项 | 值 |
 |---|---|
 | 日期 | 2026-05-27 |
-| 范围 | `openjiuwen/agent_teams/timefmt.py`（新增）、`i18n.py`、`schema/task.py`、`tools/task_manager.py`、`tools/team_tools.py`、`external/format.py`、`agent/coordination/handlers/{message,task_board,stale_task}.py`、`mcp/server.py`、`skill/cli.py`、`tests/unit_tests/agent_teams/test_timefmt.py`（新增）+ 受影响的 `test_format.py` / `test_team_agent_coordination.py` / `test_team_tools.py` |
-| 测试基线 | `pytest tests/unit_tests/agent_teams/`：1246 passed, 16 skipped |
+| 范围 | `openjiuwen/agent_teams/timefmt.py`（新增）、`i18n.py`、`schema/task.py`、`tools/task_manager.py`、`tools/team_tools.py`、`external/format.py`、`agent/bridge_inbound_compose.py`、`agent/coordination/handlers/{message,task_board,stale_task,member}.py`、`mcp/server.py`、`skill/cli.py`、`tests/unit_tests/agent_teams/test_timefmt.py`（新增）+ 受影响的 `test_format.py` / `test_team_agent_coordination.py` / `test_team_tools.py` / `test_bridge_wrap_compose.py` |
+| 测试基线 | `pytest tests/unit_tests/agent_teams/`：1247 passed, 16 skipped |
 | Refs | `#751` |
 
 ## 背景
@@ -65,6 +65,11 @@ status/assignee 同级），不破坏 `TaskSummary` 的 lightweight 契约。
   （`model_dump(exclude_none=True)` 会剔除 None）。
 - **时钟漂移与缺失值的边界**：`now < timestamp`（未来）和 `< 10s` 都归 "刚刚"，绝不渲染
   负数或 "0 秒前"；`timestamp` 为 None → `time.unknown`。
+- **边缘渲染点一并覆盖**：`stale_pending` 自提示行、`MemberHandler` 的 stale-claim 聚合行、
+  MCP `list_tasks` 结构化输出、bridge 正常路径都注入时间。bridge 经 `compose_bridge_inbound`
+  的可选 `time_info: str | None` 参数（传渲染好的字符串，让该纯函数保持零依赖），由
+  `message.py` 调用方算好 `format_time_context(msg.timestamp, now_ms)` 传入——bridge avatar
+  调度转发时也能判断消息延迟。
 
 ## 拒绝的方案
 
@@ -87,16 +92,15 @@ status/assignee 同级），不破坏 `TaskSummary` 的 lightweight 契约。
   断言）、`test_team_agent_coordination.py`（`_format_message` mock 补 `timestamp` + 传 `now_ms`；
   3 个 task-board nudge 测试的 mock task 补 `updated_at`，否则 MagicMock 参与算术抛 TypeError）、
   `test_team_tools.py`（两个 `view_task` map_result 用例补 `updated_at` + 断言时间渲染）。
-- 全量基线：`pytest tests/unit_tests/agent_teams/` → 1246 passed, 16 skipped。
+- 边缘点补齐新增 `test_bridge_wrap_compose.py` 的 `time_info` 用例；`stale_pending` /
+  `MemberHandler` 聚合行与 MCP `list_tasks` 复用既有带 `updated_at` 的 mock，无新增 break。
+- 全量基线：`pytest tests/unit_tests/agent_teams/` → 1247 passed, 16 skipped。
 
 ## 已知遗留
 
 - **core 层时间约定不统一**（session tracer 用 `datetime`、memory 用 ISO 字符串、session
   controller 用秒级 float）。本次只覆盖 agent_teams 渲染层，不上推到 core 层统一。
-- **`stale_pending` 任务行与 `MemberHandler` 的 stale-claim 聚合行未注入时间**。它们是 leader
-  自提示/聚合提醒，时间感价值低且上下文已含 "超过 10 分钟" 措辞；`dispatcher.stale_claim_header`
-  本次保留硬编码阈值描述，未参数化。
-- **bridge 正常路径不注入时间**：bridge avatar 的入站走 `compose_bridge_inbound` 转发给远程
-  执行者，时间感对纯文本执行者无意义；仅 spec 缺失的 fallback 分支经 `_format_message` 带时间。
-- **MCP `list_tasks` 工具的结构化输出未加 `updated_at`**：它返回给 MCP 客户端的是结构化字段、
-  不走文本渲染，本次未扩展（可选增强）。
+- **`dispatcher.stale_claim_header` 仍保留硬编码 "超过 10 分钟" 阈值描述**（聚合提示头）。
+  其下的每条任务明细行已带各自的认领时间，头部阈值描述影响很小，未参数化。
+- **MCP `get_task` 仍返回原始 `updated_at` 整数**（`model_dump`），未渲染成可读时间。它是
+  单任务详情的结构化输出，外部 agent 可自行处理；`list_tasks` / `read_inbox` 已给渲染字符串。
