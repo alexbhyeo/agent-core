@@ -17,7 +17,7 @@ from openjiuwen.harness.schema.agent_mode import AgentMode
 from openjiuwen.harness.tools.base_tool import ToolOutput
 
 if TYPE_CHECKING:
-    pass
+    from openjiuwen.harness.deep_agent import DeepAgent
 
 # ---------------------------------------------------------------------------
 # Word lists for slug generation (adjective-verb-noun, aligns with Claude Code)

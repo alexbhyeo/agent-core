@@ -37,6 +37,7 @@ from openjiuwen.core.workflow import WorkflowCard
 
 if TYPE_CHECKING:
     from openjiuwen.core.runner.drunner.remote_client.remote_agent import RemoteAgent
+    from openjiuwen.core.session.agent import Session
 
 
 def _is_remote_agent(provider: Any) -> bool:

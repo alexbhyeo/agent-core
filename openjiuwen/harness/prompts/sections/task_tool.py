@@ -10,7 +10,10 @@ For tool registration metadata, see sections/tools/task_tool.py
 
 from __future__ import annotations
 
-from typing import Dict, Optional
+from typing import TYPE_CHECKING, Dict, Optional
+
+if TYPE_CHECKING:
+    from openjiuwen.harness.prompts.builder import PromptSection
 
 # ---------------------------------------------------------------------------
 # Task system prompt (bilingual) - for system message injection

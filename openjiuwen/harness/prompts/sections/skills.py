@@ -3,9 +3,12 @@
 """Skill prompt section for DeepAgent (used by SkillUseRail)."""
 from __future__ import annotations
 
-from typing import Dict, Iterable, List, Optional
+from typing import TYPE_CHECKING, Dict, Iterable, List, Optional
 
 from openjiuwen.harness.prompts.sections import SectionName
+
+if TYPE_CHECKING:
+    from openjiuwen.harness.prompts.builder import PromptSection
 
 # ---------------------------------------------------------------------------
 # List-skill system prompt (bilingual)
