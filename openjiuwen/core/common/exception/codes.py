@@ -258,6 +258,9 @@ class StatusCode(Enum):
     RESOURCE_VALUE_INVALID = (110404, "{resource_type} value is invalid, reason='{reason}'")
 
     RESOURCE_ADD_ERROR = (110430, "resource add failed, card='{card}', error='{reason}'")
+    RESOURCE_GET_ERROR = (
+        110431,
+        "resource get failed, resource_id='{resource_id}', resource_type='{resource_type}', error='{reason}'")
 
     # tag manager error 110480 - 110499
     RESOURCE_TAG_REMOVE_TAG_ERROR = (110480, "tag is invalid, tag='{tag}', error='{reason}'")
