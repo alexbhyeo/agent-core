@@ -268,7 +268,8 @@ class ExternalTeamClient:
 
     # ---- internals ------------------------------------------------------
 
-    def _raise_not_connected(self) -> NoReturn:
+    @staticmethod
+    def _raise_not_connected() -> NoReturn:
         raise_error(
             StatusCode.AGENT_TEAM_STATE_INVALID,
             reason="ExternalTeamClient is not connected; call connect() first",

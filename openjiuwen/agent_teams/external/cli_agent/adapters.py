@@ -25,6 +25,7 @@ from __future__ import annotations
 import json
 import uuid
 from dataclasses import dataclass, replace
+from typing import Any
 
 from openjiuwen.core.common.exception.codes import StatusCode
 from openjiuwen.core.common.exception.errors import raise_error
@@ -210,7 +211,7 @@ class CliAgentAdapter:
         if self.completion == COMPLETION_CODEX_JSON:
             return _json_field_equals(line, ("type",), "turn.completed")
         if self.completion.startswith(COMPLETION_MARKER_PREFIX):
-            marker = self.completion[len(COMPLETION_MARKER_PREFIX) :]
+            marker = self.completion[len(COMPLETION_MARKER_PREFIX):]
             return bool(marker) and marker in line
         return False
 

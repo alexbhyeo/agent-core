@@ -79,10 +79,18 @@ class SpawnManager:
         # shell that re-binds the member's transport address.
         existing = self.spawned_handles.get(member_name)
         if existing is not None:
-            team_logger.debug("[{}] teammate {} already spawned; skip duplicate", self._configurator.member_name or "?", member_name)
+            team_logger.debug(
+                "[{}] teammate {} already spawned; skip duplicate",
+                self._configurator.member_name or "?",
+                member_name,
+            )
             return existing
         if member_name in self._spawning:
-            team_logger.debug("[{}] teammate {} spawn already in flight; skip duplicate", self._configurator.member_name or "?", member_name)
+            team_logger.debug(
+                "[{}] teammate {} spawn already in flight; skip duplicate",
+                self._configurator.member_name or "?",
+                member_name,
+            )
             return None
         self._spawning.add(member_name)
         try:

@@ -169,7 +169,8 @@ STRINGS: dict[str, dict[str, str]] = {
             "Detected {count} task(s) you claimed that have been open for over 10 minutes. Please push forward:"
         ),
         "dispatcher.stale_claim_self": (
-            "[Nudge] Your claimed task [{task_id}] {title} (claimed {time_info}) is still open. Please continue: {content}"
+            "[Nudge] Your claimed task [{task_id}] {title} (claimed {time_info}) is still open. "
+            "Please continue: {content}"
         ),
         # agent/dispatcher.py — task assignment notification
         "dispatcher.task_assigned_to_self": (

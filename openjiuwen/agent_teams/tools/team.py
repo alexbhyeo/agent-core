@@ -8,6 +8,7 @@ This module implements Agent Team which manages team members, tasks, and message
 
 import asyncio
 import shutil
+from dataclasses import dataclass
 from pathlib import Path
 from typing import (
     TYPE_CHECKING,
@@ -61,6 +62,18 @@ from openjiuwen.agent_teams.tools.message_manager import TeamMessageManager
 from openjiuwen.agent_teams.tools.task_manager import TeamTaskManager
 from openjiuwen.core.common.logging import team_logger
 from openjiuwen.core.single_agent.schema.agent_card import AgentCard
+
+
+@dataclass
+class CapabilityOverrides:
+    """Runtime capability overrides for a single build_team call.
+
+    Both flags default to None, meaning "inherit the spec ceiling".
+    Pass True/False to explicitly enable or disable the capability for this run.
+    """
+
+    enable_hitt: bool | None = None
+    enable_bridge: bool | None = None
 
 
 class TeamBackend:
@@ -996,8 +1009,7 @@ class TeamBackend:
         desc: str,
         leader_display_name: str,
         leader_desc: str,
-        enable_hitt: Optional[bool] = None,
-        enable_bridge: Optional[bool] = None,
+        overrides: Optional[CapabilityOverrides] = None,
     ):
         """Create a team and register the leader as a member.
 
@@ -1009,17 +1021,13 @@ class TeamBackend:
             desc: Team goal, scope, and directives.
             leader_display_name: Human-readable display label for the leader member.
             leader_desc: Persona description of the leader member.
-            enable_hitt: Runtime instance HITT switch (None inherits the
-                spec ceiling, True enables, False disables). Cannot exceed
-                ``TeamAgentSpec.enable_hitt`` — passing True when the spec
-                ceiling is False is a config error and raises. When the
-                effective flag is False, predefined HUMAN_AGENT members
-                are skipped (with a warning).
-            enable_bridge: Runtime instance Bridge switch. Same semantics
-                as ``enable_hitt`` applied to the bridge feature.
-                Predefined BRIDGE_AGENT members are skipped (with a
-                warning) when the effective flag is False.
+            overrides: Optional runtime capability overrides. Use
+                ``CapabilityOverrides(enable_hitt=True/False)`` to override
+                the HITT or bridge capability ceiling for this run. None
+                means each flag inherits its spec ceiling.
         """
+        enable_hitt = overrides.enable_hitt if overrides is not None else None
+        enable_bridge = overrides.enable_bridge if overrides is not None else None
         # Step A: enforce spec ceiling
         if enable_hitt is True and not self._spec_enable_hitt:
             from openjiuwen.core.common.exception.codes import StatusCode

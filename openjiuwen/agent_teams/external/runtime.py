@@ -119,7 +119,7 @@ class _CliRuntimeBase(ABC):
             yield chunk
 
     @abstractmethod
-    def _drive(self, inputs: dict[str, Any]) -> AsyncIterator[Any]:
+    async def _drive(self, inputs: dict[str, Any]) -> AsyncIterator[Any]:
         """Drive one round; yield an ``OutputSchema`` per surfaced narration line."""
         ...
 

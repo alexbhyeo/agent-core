@@ -36,6 +36,7 @@ from openjiuwen.agent_teams.tools.locales import Translator
 from openjiuwen.agent_teams.tools.message_manager import TeamMessageManager
 from openjiuwen.agent_teams.tools.task_manager import TeamTaskManager
 from openjiuwen.agent_teams.tools.team import (
+    CapabilityOverrides,
     TeamBackend,
 )
 from openjiuwen.core.common.logging import team_logger
@@ -216,7 +217,7 @@ class BuildTeamTool(TeamTool):
             desc=inputs.get("team_desc"),
             leader_display_name=leader_display_name,
             leader_desc=inputs["leader_desc"],
-            enable_hitt=enable_hitt_arg,
+            overrides=CapabilityOverrides(enable_hitt=enable_hitt_arg),
         )
         return ToolOutput(
             success=True,
