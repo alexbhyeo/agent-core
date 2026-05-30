@@ -176,8 +176,7 @@ class ContextProcessorRail(DeepAgentRail):
                 (
                     "MessageSummaryOffloader",
                     MessageSummaryOffloaderConfig(
-                        tokens_threshold=60000,
-                        large_message_threshold=60000,
+                        large_message_threshold=10000,
                         offload_message_type=["tool"],
                         protected_tool_names=["read_file:*SKILL.md", "reload_original_context_messages"],
                         messages_to_keep=None,
