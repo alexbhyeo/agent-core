@@ -66,7 +66,7 @@ class TaskBoardHandler(BaseCoordinationHandler):
             return
         payload = event.get_payload()
         backend = self._infra.team_backend
-        is_self_human = backend is not None and backend.is_human_agent(member_name)
+        is_self_human = backend is not None and await backend.is_human_agent(member_name)
         if payload.member_name != member_name:
             # A claim targeting someone else nudges idle teammates / the
             # leader with the refreshed board. A human-agent avatar never

@@ -83,12 +83,27 @@ class MemberDao:
                 team_logger.error("Member %s already exists", member_name)
                 return False
 
+    async def is_human_agent(self, team_name: str, member_name: str) -> bool:
+        """Return True if ``member_name`` is a human-agent member.
+
+        Single-row probe (index-friendly) for the common case of
+        checking one member's role without scanning the full roster.
+        """
+        from openjiuwen.agent_teams.schema.team import TeamRole
+
+        async with self._session_local() as session:
+            stmt = select(TeamMember.member_name).where(
+                TeamMember.team_name == team_name,
+                TeamMember.member_name == member_name,
+                TeamMember.role == TeamRole.HUMAN_AGENT.value,
+            )
+            return (await session.execute(stmt)).scalar_one_or_none() is not None
+
     async def list_human_agent_names(self, team_name: str) -> list[str]:
         """Return member names whose ``role`` is ``human_agent``.
 
-        Used by ``TeamBackend.refresh_human_agent_roster`` to rebuild
-        the in-memory HITT roster cache from DB after cold recovery or
-        teammate-process startup.
+        Used by ``TeamBackend.human_agent_names()`` to enumerate all
+        human-agent members on the team.
         """
         from openjiuwen.agent_teams.schema.team import TeamRole
 

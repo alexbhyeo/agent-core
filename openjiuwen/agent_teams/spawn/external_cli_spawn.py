@@ -28,7 +28,7 @@ if TYPE_CHECKING:
     from openjiuwen.agent_teams.schema.team import TeamAgentSpec, TeamRuntimeContext
 
 
-def _build_member_system_prompt(
+async def _build_member_system_prompt(
     team_agent: "TeamAgent",
     spec: "TeamAgentSpec",
     ctx: "TeamRuntimeContext",
@@ -54,7 +54,7 @@ def _build_member_system_prompt(
 
     language = (ctx.team_spec.language if ctx.team_spec else None) or "cn"
     backend = team_agent.team_backend
-    human_names = sorted(backend.human_agent_names()) if backend is not None else []
+    human_names = sorted(await backend.human_agent_names()) if backend is not None else []
     bridge_names = sorted(backend.bridge_agent_names()) if backend is not None else []
     prompt = build_team_member_system_prompt(
         role=ctx.role,
@@ -106,7 +106,7 @@ async def external_cli_spawn(
 
     # Build the member's system prompt from the team-rail sections (the same
     # sections an in-process member gets), excluding the other DeepAgent rails.
-    system_prompt = _build_member_system_prompt(team_agent, spec, ctx, member_name)
+    system_prompt = await _build_member_system_prompt(team_agent, spec, ctx, member_name)
     adapter = build_adapter(ctx.cli_agent) if ctx.cli_agent else None
 
     # Resolve the static launch config declared on the spec for this CLI kind.

@@ -125,8 +125,7 @@ class TeamRuntimeManager:
         # session and stale contextvars / state cannot leak across.
         if pool_entry is not None and pool_entry.current_session_id != target_session_id:
             team_logger.info(
-                "activate: stale pool entry for team {} on session {}; "
-                "stop+remove before rebuilding on session {}",
+                "activate: stale pool entry for team {} on session {}; stop+remove before rebuilding on session {}",
                 team_name,
                 pool_entry.current_session_id,
                 target_session_id,
@@ -150,8 +149,7 @@ class TeamRuntimeManager:
             team_db_state=team_db_state,
         )
         team_logger.info(
-            "activate: team {} session {} dispatched to {} "
-            "(in_db={}, in_session={}, db_state={}, pooled={})",
+            "activate: team {} session {} dispatched to {} (in_db={}, in_session={}, db_state={}, pooled={})",
             team_name,
             target_session_id,
             action.kind.value,
@@ -272,8 +270,7 @@ class TeamRuntimeManager:
                         exc,
                     )
             already_finalized = (
-                current_status is not None
-                and current_status in TeamRuntimeManager._MEMBER_FINALIZED_STATUSES
+                current_status is not None and current_status in TeamRuntimeManager._MEMBER_FINALIZED_STATUSES
             )
             if already_finalized:
                 # External party (leader stop/pause, shutdown_self) already
@@ -404,16 +401,24 @@ class TeamRuntimeManager:
             # routing directives — they fold back into a no-mention
             # message for the leader / avatar instead of silently
             # writing a bus message to a non-existent member.
-            payloads = await self._resolve_recipients(entry.agent, payloads)
-
-            last_result: DeliverResult = DeliverResult.success(None)
-            for entry_payload in payloads:
-                last_result = await self._dispatch_payload(entry.agent, entry_payload)
-                if not last_result.ok:
-                    return last_result
-            return last_result
+            return await self.dispatch_payloads(entry.agent, payloads)
         finally:
             await entry.interact_gate.consume_done(ticket)
+
+    @staticmethod
+    async def dispatch_payloads(
+        agent: "TeamAgent",
+        payloads: list[InteractPayload],
+    ) -> DeliverResult:
+        """Resolve and dispatch interact payloads through the runtime router."""
+        payloads = await TeamRuntimeManager._resolve_recipients(agent, payloads)
+
+        last_result: DeliverResult = DeliverResult.success(None)
+        for entry_payload in payloads:
+            last_result = await TeamRuntimeManager._dispatch_payload(agent, entry_payload)
+            if not last_result.ok:
+                return last_result
+        return last_result
 
     @staticmethod
     async def _resolve_recipients(
@@ -468,6 +473,11 @@ class TeamRuntimeManager:
             return result
         if isinstance(payload, HumanAgentMessage):
             try:
+                if payload.target is not None:
+                    if payload.target in {"all", "*"}:
+                        await agent.auto_start_all()
+                    else:
+                        await agent.auto_start_member(payload.target)
                 inbox = HumanAgentInbox(
                     backend,
                     backend.message_manager,
@@ -507,7 +517,7 @@ class TeamRuntimeManager:
         backend = entry.agent.team_backend
         if backend is None:
             return False
-        backend.register_human_agent_inbound(member_name, callback)
+        await backend.register_human_agent_inbound(member_name, callback)
         return True
 
     async def stop_team(
@@ -792,9 +802,7 @@ class TeamRuntimeManager:
 
         if db_config is None:
             details = "; ".join(parse_errors) if parse_errors else "no parseable team bucket found"
-            raise RuntimeError(
-                f"Cannot resolve team session release info for {session_id}: {details}"
-            )
+            raise RuntimeError(f"Cannot resolve team session release info for {session_id}: {details}")
 
         return TeamSessionReleaseInfo(
             team_names=sorted(team_names),

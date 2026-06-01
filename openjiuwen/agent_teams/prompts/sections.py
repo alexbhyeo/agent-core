@@ -956,12 +956,12 @@ def build_team_static_sections(
 ) -> list[PromptSection]:
     """Build the never-changing team sections for one member.
 
-    Single source of truth for the static section set: both
-    :class:`TeamPolicyRail` (in-process DeepAgent members) and the external
-    CLI spawn path consume this so every member's team prompt is built the
-    same way. Covers role / hitt / bridge / workflow / lifecycle / persona /
-    extra; the dynamic info / members sections are built separately because
-    they depend on live DB state.
+    Single source of truth for one-shot static team sections. In-process
+    DeepAgent members call this through :class:`TeamPolicyRail` for role /
+    bridge / workflow / lifecycle / persona / extra; HITT is refreshed by
+    the rail dynamically instead of being passed here. External CLI members
+    use this function to build a standalone prompt snapshot, so callers may
+    still pass ``human_agent_names`` to include a static HITT section.
 
     Args:
         role: LEADER or TEAMMATE (other roles get the role-appropriate slices).
@@ -972,8 +972,10 @@ def build_team_static_sections(
         team_mode: Team mode ("default" / "predefined" / "hybrid").
         base_prompt: Optional user-supplied prompt appended as the extra section.
         language: Prompt language ("cn" / "en").
-        human_agent_names: Registered human-agent member names (HITT section).
-        expose_human_agents_to_teammates: Whether teammates see human agents.
+        human_agent_names: Optional registered human-agent member names used
+            for one-shot HITT prompt snapshots, mainly external CLI members.
+        expose_human_agents_to_teammates: Whether teammates see human agents
+            in that one-shot HITT snapshot.
         bridge_agent_names: Registered bridge-agent member names (bridge section).
 
     Returns:

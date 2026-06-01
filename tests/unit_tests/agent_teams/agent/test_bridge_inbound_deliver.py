@@ -278,4 +278,5 @@ async def test_bridge_deliverable_rephrase_mode_includes_sender_context(db, mess
     # The REPHRASE outbound includes the sender's role + persona so the
     # remote sees who it's talking to.
     assert "leader" in adapter.last_text.lower()
+    assert "human_agent" not in adapter.last_text
     assert "leader persona" in adapter.last_text or "L" in adapter.last_text

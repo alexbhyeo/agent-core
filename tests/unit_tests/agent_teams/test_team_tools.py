@@ -474,7 +474,7 @@ class TestSpawnMemberTool:
         )
         assert result.success is True, result.error
         assert result.data["role_type"] == "human_agent"
-        assert team.is_human_agent("alice") is True
+        assert await team.is_human_agent("alice") is True
 
     @pytest.mark.asyncio
     @pytest.mark.level0

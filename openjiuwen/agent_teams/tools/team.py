@@ -198,15 +198,6 @@ class TeamBackend:
             team_plan_id=plan_id,
             leader_member_name=self.leader_member_name,
         )
-        # Roster of human-collaborator members. Sync in-memory cache so
-        # the many sync callers (coordination handlers, rails, prompt
-        # sections) can consult it cheaply. **DB is the source of truth**:
-        # this set is empty at construction time and rebuilt from
-        # ``team_member.role`` by ``refresh_human_agent_roster()`` at
-        # backend bootstrap. ``spawn_member`` also writes through to the
-        # set when it persists a HUMAN_AGENT row, so the cache and DB
-        # never diverge for the lifetime of this backend.
-        self._human_agent_names: set[str] = set()
         # Per-human-agent callback fired by the leader's dispatcher when
         # a team-side message reaches the avatar — see
         # ``register_human_agent_inbound`` for the registration surface.
@@ -364,12 +355,6 @@ class TeamBackend:
         )
         if not success:
             return MemberOpResult.fail(f"Database rejected create_member for {member_name} in team {self.team_name}")
-
-        # Write through to the in-memory HITT roster cache so sync
-        # callers (coordination handlers, rails) see the new human
-        # immediately, without waiting for the next ``refresh_human_agent_roster``.
-        if role == TeamRole.HUMAN_AGENT:
-            self._human_agent_names.add(member_name)
 
         team_logger.info(f"Member {member_name} created successfully")
         return MemberOpResult.success()
@@ -1254,47 +1239,21 @@ class TeamBackend:
             )
         return result
 
-    async def refresh_human_agent_roster(self) -> None:
-        """Rebuild the in-memory HITT roster from ``team_member.role``.
+    async def is_human_agent(self, member_name: Optional[str]) -> bool:
+        """Whether ``member_name`` is a registered human-agent member.
 
-        Cold-recovery entry points (leader ``recover_team``, teammate
-        ``from_spawn_payload``) call this before the backend serves any
-        sync ``is_human_agent`` / ``human_agent_names()`` lookups so the
-        cache picks up dynamically-spawned humans that were never in
-        ``predefined_members``. Idempotent — replaces the cache wholesale
-        with the DB snapshot.
-
-        Calls ``db.initialize()`` first so callers can drive the refresh
-        before any other DB-touching method has lazily warmed the DAOs.
-        Test setups that build a half-wired backend (no engine, no
-        session) survive as a no-op rather than crashing.
+        Queries ``team_member.role`` from DB on every call — no in-memory
+        cache, so the answer is always current regardless of when the
+        member was spawned.
         """
-        initializer = getattr(self.db, "initialize", None)
-        if initializer is not None:
-            await initializer()
-        member_dao = getattr(self.db, "member", None)
-        if member_dao is None:
-            team_logger.debug(
-                "Skipping human-agent roster refresh for team %s: member DAO unavailable",
-                self.team_name,
-            )
-            return
-        names = await member_dao.list_human_agent_names(self.team_name)
-        self._human_agent_names.clear()
-        self._human_agent_names.update(names)
-        team_logger.debug(
-            "Refreshed human-agent roster for team %s from DB: %s",
-            self.team_name,
-            sorted(self._human_agent_names),
-        )
-
-    def is_human_agent(self, member_name: Optional[str]) -> bool:
-        """Whether ``member_name`` is a registered human-agent member."""
         if not member_name:
             return False
-        return member_name in self._human_agent_names
+        member_dao = self.db.member
+        if member_dao is None:
+            return False
+        return await member_dao.is_human_agent(self.team_name, member_name)
 
-    def register_human_agent_inbound(
+    async def register_human_agent_inbound(
         self,
         member_name: str,
         callback: Optional[Any],
@@ -1307,10 +1266,11 @@ class TeamBackend:
         registration. Unknown member names raise ``KeyError`` so typos
         surface immediately rather than silently dropping notifications.
         """
-        if member_name not in self._human_agent_names:
+        if not await self.is_human_agent(member_name):
+            names = await self.human_agent_names()
             raise KeyError(
                 f"'{member_name}' is not a registered human-agent member; "
-                f"registered members: {sorted(self._human_agent_names)}"
+                f"registered members: {sorted(names)}"
             )
         if callback is None:
             self._human_agent_inbound_callbacks.pop(member_name, None)
@@ -1321,9 +1281,17 @@ class TeamBackend:
         """Return the inbound callback registered for ``member_name``, if any."""
         return self._human_agent_inbound_callbacks.get(member_name)
 
-    def human_agent_names(self) -> frozenset[str]:
-        """Snapshot of currently registered human-agent member names."""
-        return frozenset(self._human_agent_names)
+    async def human_agent_names(self) -> frozenset[str]:
+        """Snapshot of currently registered human-agent member names.
+
+        Queries ``team_member.role`` from DB — no in-memory cache, so
+        the answer always reflects the current roster.
+        """
+        member_dao = self.db.member
+        if member_dao is None:
+            return frozenset()
+        names = await member_dao.list_human_agent_names(self.team_name)
+        return frozenset(names)
 
     def hitt_enabled(self) -> bool:
         """Whether the HITT capability is currently engaged for this team.

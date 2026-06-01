@@ -693,9 +693,9 @@ async def multi_human_backend(db, messager):
 @pytest.mark.level0
 async def test_build_team_registers_every_declared_human_member(multi_human_backend, db):
     assert multi_human_backend.hitt_enabled() is True
-    assert multi_human_backend.is_human_agent("human_designer") is True
-    assert multi_human_backend.is_human_agent("human_pm") is True
-    assert multi_human_backend.is_human_agent("team_leader") is False
+    assert await multi_human_backend.is_human_agent("human_designer") is True
+    assert await multi_human_backend.is_human_agent("human_pm") is True
+    assert await multi_human_backend.is_human_agent("team_leader") is False
     # Both must be persisted as UNSTARTED members so the leader's
     # standard startup sweep brings up a real DeepAgent for each.
     for name in ("human_designer", "human_pm"):
@@ -1184,7 +1184,7 @@ async def test_hitt_enabled_reflects_capability_not_roster(db, messager):
         enable_hitt=True,
     )
     assert backend.hitt_enabled() is True
-    assert backend.human_agent_names() == frozenset()
+    assert await backend.human_agent_names() == frozenset()
 
 
 @pytest.mark.asyncio

@@ -370,11 +370,21 @@ class InMemoryTeamDatabase:
             team_logger.info("Member %s created", member_name)
             return True
 
+    async def is_human_agent(self, team_name: str, member_name: str) -> bool:
+        """Return True if ``member_name`` is a human-agent member.
+
+        Mirror of ``MemberDao.is_human_agent`` for the in-memory backend.
+        """
+        from openjiuwen.agent_teams.schema.team import TeamRole
+
+        member = self._members.get(member_name)
+        return member is not None and member.team_name == team_name and member.role == TeamRole.HUMAN_AGENT.value
+
     async def list_human_agent_names(self, team_name: str) -> list[str]:
         """Return member names whose ``role`` is ``human_agent``.
 
         Mirror of ``MemberDao.list_human_agent_names`` for the in-memory
-        backend; used by ``TeamBackend.refresh_human_agent_roster``.
+        backend; used by ``TeamBackend.human_agent_names()``.
         """
         from openjiuwen.agent_teams.schema.team import TeamRole
 

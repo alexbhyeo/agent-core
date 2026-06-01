@@ -247,7 +247,7 @@ async def test_spawn_manager_role_inference_for_bridge(db, messager):
     )
     assert result.ok
     assert backend.is_bridge_agent("codex") is True
-    assert backend.is_human_agent("codex") is False
+    assert await backend.is_human_agent("codex") is False
     # The persisted role is what SpawnManager.build_context_from_db reads
     # to assign BRIDGE_AGENT on cold recovery — assert it directly.
     member = await backend.get_member("codex")

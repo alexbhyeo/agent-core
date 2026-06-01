@@ -53,26 +53,31 @@ from openjiuwen.core.single_agent.schema.agent_card import (
 )
 
 
-def _make_leader(lifecycle: str = "temporary") -> TeamAgent:
+def _make_leader(
+    lifecycle: str = "temporary",
+    *,
+    team_name: str = "test-team",
+    member_name: str = "leader-1",
+) -> TeamAgent:
     team_spec = TeamSpec(
-        team_name="test-team",
-        display_name="test-team",
-        leader_member_name="leader-1",
+        team_name=team_name,
+        display_name=team_name,
+        leader_member_name=member_name,
     )
 
     spec = TeamAgentSpec(
         agents={"leader": DeepAgentSpec()},
-        team_name="test-team",
+        team_name=team_name,
         lifecycle=lifecycle,
         leader=LeaderSpec(
-            member_name="leader-1",
+            member_name=member_name,
             display_name="Leader",
             persona="PM",
         ),
     )
     context = TeamRuntimeContext(
         role=TeamRole.LEADER,
-        member_name="leader-1",
+        member_name=member_name,
         persona="PM",
         team_spec=team_spec,
         db_config=DatabaseConfig(db_type="memory"),
@@ -220,15 +225,22 @@ async def test_human_agent_inbound_callback_fires_on_message_event():
     agent = _make_leader()
 
     # Register a human-agent member name on the live backend so
-    # ``is_human_agent`` recognises the recipient.
-    agent.team_backend._human_agent_names.add("human_alice")
+    # ``is_human_agent`` recognises the recipient. Persist to DB
+    # so async queries find the row.
+    await agent.team_backend.spawn_member(
+        member_name="human_alice",
+        display_name="Alice",
+        agent_card=AgentCard(),
+        desc="user avatar",
+        role=TeamRole.HUMAN_AGENT,
+    )
 
     received: list = []
 
     async def cb(evt):
         received.append(evt)
 
-    agent.team_backend.register_human_agent_inbound("human_alice", cb)
+    await agent.team_backend.register_human_agent_inbound("human_alice", cb)
 
     # Mock the message DB lookup the dispatcher does to fetch the body.
     fake_row = MagicMock()
@@ -479,10 +491,16 @@ async def test_human_agent_ignores_other_member_task_claim():
     ``on_task_claimed`` short-circuits for a claim addressed to another
     member — no ``list_tasks`` survey, no ``deliver_input``.
     """
-    agent = _make_leader()
-    # Role check consults backend.is_human_agent (not TeamRole); piggy-back
-    # on the leader fixture as the existing human-template tests do.
-    agent.team_backend._human_agent_names.add("leader-1")
+    agent = _make_leader(team_name="human-claim-other-team", member_name="human-leader-other")
+    # Role check consults backend.is_human_agent (not TeamRole); persist
+    # a HUMAN_AGENT row so async DB queries find it.
+    await agent.team_backend.spawn_member(
+        member_name="human-leader-other",
+        display_name="Leader",
+        agent_card=AgentCard(),
+        desc="leader as human",
+        role=TeamRole.HUMAN_AGENT,
+    )
 
     agent._configurator.task_manager = MagicMock()
     agent._configurator.task_manager.list_tasks = AsyncMock(return_value=[])
@@ -492,7 +510,7 @@ async def test_human_agent_ignores_other_member_task_claim():
 
     event = EventMessage.from_event(
         TaskClaimedEvent(
-            team_name="test-team",
+            team_name="human-claim-other-team",
             member_name="dev-1",
             task_id="task-7",
         )
@@ -810,7 +828,7 @@ async def test_task_claimed_for_self_uses_teammate_template():
     # Make sure the leader is NOT registered as a human-agent member —
     # the default after _make_leader is an empty roster, but assert it
     # explicitly so the test does not silently drift.
-    assert "leader-1" not in agent.team_backend.human_agent_names()
+    assert "leader-1" not in await agent.team_backend.human_agent_names()
 
     agent._configurator.task_manager = MagicMock()
     agent._configurator.task_manager.get = AsyncMock(return_value=MagicMock(title="Fix bug"))
@@ -849,12 +867,18 @@ async def test_task_claimed_for_self_uses_human_template_when_human_agent():
     inlined so the controller sees what was assigned without a separate
     ``view_task`` round-trip.
     """
-    agent = _make_leader()
+    agent = _make_leader(team_name="human-claim-self-team", member_name="human-leader-self")
     # Register the leader's member_name as a human-agent member. The
     # role check in TaskBoardHandler only consults
-    # ``backend.is_human_agent`` — TeamRole itself is not gated, so
-    # piggy-backing on the leader fixture keeps the test small.
-    agent.team_backend._human_agent_names.add("leader-1")
+    # ``backend.is_human_agent`` — persist a HUMAN_AGENT row so async
+    # DB queries find it.
+    await agent.team_backend.spawn_member(
+        member_name="human-leader-self",
+        display_name="Leader",
+        agent_card=AgentCard(),
+        desc="leader as human",
+        role=TeamRole.HUMAN_AGENT,
+    )
 
     task_row = MagicMock()
     task_row.title = "Write design doc"
@@ -866,8 +890,8 @@ async def test_task_claimed_for_self_uses_human_template_when_human_agent():
 
     event = EventMessage.from_event(
         TaskClaimedEvent(
-            team_name="test-team",
-            member_name="leader-1",
+            team_name="human-claim-self-team",
+            member_name="human-leader-self",
             task_id="task-7",
         )
     )
@@ -901,8 +925,14 @@ async def test_task_claimed_for_human_self_swallows_title_lookup_error():
     the prompt still goes out with an empty title placeholder so the
     avatar still gets notified.
     """
-    agent = _make_leader()
-    agent.team_backend._human_agent_names.add("leader-1")
+    agent = _make_leader(team_name="human-claim-error-team", member_name="human-leader-error")
+    await agent.team_backend.spawn_member(
+        member_name="human-leader-error",
+        display_name="Leader",
+        agent_card=AgentCard(),
+        desc="leader as human",
+        role=TeamRole.HUMAN_AGENT,
+    )
 
     agent._configurator.task_manager = MagicMock()
     agent._configurator.task_manager.get = AsyncMock(side_effect=RuntimeError("db down"))
@@ -911,8 +941,8 @@ async def test_task_claimed_for_human_self_swallows_title_lookup_error():
 
     event = EventMessage.from_event(
         TaskClaimedEvent(
-            team_name="test-team",
-            member_name="leader-1",
+            team_name="human-claim-error-team",
+            member_name="human-leader-error",
             task_id="task-9",
         )
     )

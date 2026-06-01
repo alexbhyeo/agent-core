@@ -1036,7 +1036,7 @@ class UpdateTaskTool(TeamTool):
             "required": ["task_id"],
         }
 
-    def _is_cancellable_assignee(self, assignee: str | None) -> bool:
+    async def _is_cancellable_assignee(self, assignee: str | None) -> bool:
         """Whether an assignee owns an execution process the team can cancel.
 
         Human-agent members are first-class team members but run no
@@ -1044,7 +1044,7 @@ class UpdateTaskTool(TeamTool):
         otherwise the backend would try to stop something that never
         existed.
         """
-        return bool(assignee) and not self.agent_team.is_human_agent(assignee)
+        return bool(assignee) and not await self.agent_team.is_human_agent(assignee)
 
     async def _cancel_member_if_claimed(self, task_id: str) -> None:
         """Cancel the assignee if task is currently claimed.
@@ -1054,7 +1054,7 @@ class UpdateTaskTool(TeamTool):
         task = await self.task_manager.get(task_id)
         if not task or task.status != TaskStatus.CLAIMED.value:
             return
-        if self._is_cancellable_assignee(task.assignee):
+        if await self._is_cancellable_assignee(task.assignee):
             await self.agent_team.cancel_member(member_name=task.assignee)
 
     async def _cancel_claimed_members(self) -> None:
@@ -1066,12 +1066,12 @@ class UpdateTaskTool(TeamTool):
         claimed_tasks = await self.task_manager.list_tasks(status=TaskStatus.CLAIMED.value)
         cancelled: set[str] = set()
         for task in claimed_tasks:
-            if task.assignee in cancelled or not self._is_cancellable_assignee(task.assignee):
+            if task.assignee in cancelled or not await self._is_cancellable_assignee(task.assignee):
                 continue
             await self.agent_team.cancel_member(member_name=task.assignee)
             cancelled.add(task.assignee)
 
-    def _is_human_agent_locked(self, task) -> bool:
+    async def _is_human_agent_locked(self, task) -> bool:
         """Whether a task is held by a human-agent member and therefore
         leader-immutable.
 
@@ -1079,7 +1079,7 @@ class UpdateTaskTool(TeamTool):
         collaborator can release them (by completing, or by the team
         being cleaned). The leader's only recourse is send_message nudges.
         """
-        return self.agent_team.is_human_agent(task.assignee) and task.status == TaskStatus.CLAIMED.value
+        return await self.agent_team.is_human_agent(task.assignee) and task.status == TaskStatus.CLAIMED.value
 
     async def invoke(self, inputs: Dict[str, Any], **kwargs) -> ToolOutput:
         task_id = inputs.get("task_id")
@@ -1098,7 +1098,7 @@ class UpdateTaskTool(TeamTool):
             # Preserve every human-agent-claimed task in a single batch
             # cancel. Passing an empty set is fine — the backend treats
             # None and empty uniformly.
-            skip = set(self.agent_team.human_agent_names())
+            skip = set(await self.agent_team.human_agent_names())
             count = await self.agent_team.cancel_all_tasks(skip_assignees=skip or None)
             return ToolOutput(success=True, data={"cancelled_count": count})
 
@@ -1108,7 +1108,7 @@ class UpdateTaskTool(TeamTool):
 
         # Cancel single task
         if status == "cancelled":
-            if self._is_human_agent_locked(task):
+            if await self._is_human_agent_locked(task):
                 return ToolOutput(
                     success=False,
                     error=self.t(
@@ -1143,7 +1143,7 @@ class UpdateTaskTool(TeamTool):
         # PENDING, then assign to the new member. Same-member is idempotent.
         if assignee:
             if task.assignee and task.assignee != assignee:
-                if self._is_human_agent_locked(task):
+                if await self._is_human_agent_locked(task):
                     return ToolOutput(
                         success=False,
                         error=self.t(

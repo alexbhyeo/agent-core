@@ -119,8 +119,9 @@ class MessageHandler(BaseCoordinationHandler):
         """
         seen_ids: set[str] = set()
         backend = self._infra.team_backend
-        is_human_agent = backend is not None and backend.is_human_agent(member_name)
+        is_human_agent = backend is not None and await backend.is_human_agent(member_name)
         is_bridge = self._blueprint.role == TeamRole.BRIDGE_AGENT and backend is not None
+
 
         while True:
             all_unread = await self._read_all_unread(member_name)
@@ -243,7 +244,7 @@ class MessageHandler(BaseCoordinationHandler):
         backend = self._infra.team_backend
         if backend is None:
             return None
-        if backend.is_human_agent(member_name):
+        if await backend.is_human_agent(member_name):
             return TeamRole.HUMAN_AGENT
         if backend.is_bridge_agent(member_name):
             return TeamRole.BRIDGE_AGENT
@@ -297,10 +298,10 @@ class MessageHandler(BaseCoordinationHandler):
         ts = row.timestamp
 
         if is_broadcast:
-            recipients = [name for name in backend.human_agent_names() if name != sender]
+            recipients = [name for name in await backend.human_agent_names() if name != sender]
         else:
             target = payload.to_member_name
-            if not backend.is_human_agent(target):
+            if not await backend.is_human_agent(target):
                 return
             recipients = [target]
 
