@@ -157,8 +157,10 @@ async def test_init_preset_defaults(tmp_path: Path):
     # MessageSummaryOffloader tests
     off = procs.get("MessageSummaryOffloader")
     assert off is not None
-    assert off.messages_threshold is None
-    assert off.tokens_threshold == 20000
+    assert "messages_threshold" not in type(off).model_fields
+    assert "tokens_threshold" not in type(off).model_fields
+    assert "messages_to_keep" not in type(off).model_fields
+    assert "keep_last_round" not in type(off).model_fields
     assert off.large_message_threshold == 10000
     assert off.offload_message_type == ["tool"]
     assert off.protected_tool_names == ["read_file:*SKILL.md", "reload_original_context_messages"]
