@@ -65,8 +65,10 @@ class SessionModelContext(ModelContext):
         self._enable_reload = config.enable_reload
         self._context_window_tokens = config.context_window_tokens
         self._model_name = config.model_name
-        self._model_context_window_tokens = dict(
-            config.model_context_window_tokens if config.model_context_window_tokens else {}
+        self._model_context_window_tokens = ContextUtils.build_model_context_window_tokens(
+            config.model_context_window_tokens,
+            enable_openrouter_model_context_window_tokens=config.enable_openrouter_model_context_window_tokens,
+            openrouter_request_timeout=config.openrouter_request_timeout,
         )
         self._workspace = workspace
         self._sys_operation = sys_operation
