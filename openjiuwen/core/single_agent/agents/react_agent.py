@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import copy
 import asyncio
+import time
 from dataclasses import dataclass
 from typing import Any, AsyncIterator, Dict, List, Optional, Tuple, Union
 
@@ -761,6 +762,10 @@ class ReActAgent(BaseAgent):
         # Streaming path: accumulate chunks via __add__, write to session in real-time
         accumulated_chunk = None
         chunk_index = 0
+        call_start_time = time.monotonic()
+        call_first_token_time = None
+        call_last_token_time = None
+        call_chunk_count = 0
 
         async for chunk in llm.stream(
                 model=self._config.model_name,
@@ -772,6 +777,11 @@ class ReActAgent(BaseAgent):
                 accumulated_chunk = chunk
             else:
                 accumulated_chunk = accumulated_chunk + chunk
+
+            if call_first_token_time is None:
+                call_first_token_time = time.monotonic()
+            call_last_token_time = time.monotonic()
+            call_chunk_count += 1
 
             if chunk.reasoning_content:
                 await session.write_stream(OutputSchema(
@@ -802,10 +812,25 @@ class ReActAgent(BaseAgent):
             )
         ctx.inputs.response = ai_message
         if ai_message.usage_metadata:
+
+            perf_metrics = {}
+            call_latency = (time.monotonic() - call_start_time) * 1000
+            perf_metrics["total_latency_ms"] = round(call_latency, 2)
+            if call_first_token_time is not None:
+                perf_metrics["ttft_ms"] = round((call_first_token_time - call_start_time) * 1000, 2)
+            if call_first_token_time is not None and call_last_token_time is not None and call_chunk_count > 1:
+                perf_metrics["tpot_ms"] = round(
+                    (call_last_token_time - call_first_token_time) / (call_chunk_count - 1) * 1000, 2
+                )
+
             await session.write_stream(OutputSchema(
                 type="llm_usage",
                 index=0,
-                payload={"usage_metadata": ai_message.usage_metadata.model_dump(), "result_type": "answer"},
+                payload={
+                    "usage_metadata": ai_message.usage_metadata.model_dump(),
+                    "result_type": "answer",
+                    **perf_metrics,
+                },
             ))
         return ai_message
 
