@@ -1080,6 +1080,31 @@ class TestForceFinish(
         # Only one LLM call (the one that returned tool_calls)
         assert mock_llm.call_count == 1
 
+    async def test_before_tool_call_force_finish(self):
+        """before_tool_call force_finish skips tool and returns result."""
+        agent, _ = _make_agent()
+        expected = {"output": "done_before_tool", "result_type": "answer"}
+
+        class ForceRail(AgentRail):
+            async def before_tool_call(self, ctx):
+                ctx.request_force_finish(expected)
+
+        await agent.register_rail(ForceRail())
+
+        mock_llm = MockLLMModel()
+        mock_llm.set_responses([
+            create_tool_call_response("add", '{"a": 1, "b": 2}'),
+            create_text_response("should not reach"),
+        ])
+        with patch.object(
+            agent, "_get_llm", return_value=mock_llm
+        ):
+            result = await agent.invoke({"query": "test"})
+
+        assert result == expected
+        # Only one LLM call (the one that returned tool_calls)
+        assert mock_llm.call_count == 1
+
     async def test_force_finish_result_in_after_invoke(self):
         """force_finish result is visible in after_invoke via invoke_inputs."""
         agent, _ = _make_agent()

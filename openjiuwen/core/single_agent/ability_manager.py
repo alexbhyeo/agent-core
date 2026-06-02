@@ -580,6 +580,7 @@ class AbilityManager:
 
         # Process results
         final_results: List[Tuple[Any, ToolMessage]] = []
+        force_finish_requests: Dict[int, Dict[str, Any]] = {}
         for i, result in enumerate(results):
             tool_ctx = tool_contexts[i]
             if isinstance(result, BaseException):
@@ -622,6 +623,29 @@ class AbilityManager:
                 final_results.append((tool_result, tool_message))
                 continue
 
+            if result is None and tool_ctx.has_force_finish_request:
+                finish = tool_ctx.consume_force_finish()
+                force_finish_result = finish.result if finish is not None else {}
+                force_finish_requests[i] = force_finish_result
+                tool_result = None
+                tool_msg = None
+                if isinstance(tool_ctx.inputs, ToolCallInputs):
+                    tool_result = (
+                        tool_ctx.inputs.tool_result
+                        if tool_ctx.inputs.tool_result is not None
+                        else force_finish_result
+                    )
+                    tool_msg = tool_ctx.inputs.tool_msg
+
+                if tool_msg is None:
+                    tool_msg = ToolMessage(
+                        content=str(force_finish_result),
+                        tool_call_id=tool_calls[i].id,
+                    )
+
+                final_results.append((tool_result, tool_msg))
+                continue
+
             # AFTER_TOOL_CALL rails can rewrite tool_result/tool_msg in ctx.inputs.
             if isinstance(tool_ctx.inputs, ToolCallInputs):
                 tool_result = (
@@ -639,12 +663,15 @@ class AbilityManager:
 
             final_results.append(result)
 
-        # Propagate force_finish signal from any tool_ctx back to the parent ctx.
-        for tool_ctx in tool_contexts:
+        # Propagate the first force_finish signal in tool-call order.
+        for i, tool_ctx in enumerate(tool_contexts):
             ff = tool_ctx.consume_force_finish()
             if ff is not None:
-                ctx.request_force_finish(ff.result)
-                break
+                force_finish_requests[i] = ff.result
+        if force_finish_requests:
+            ctx.request_force_finish(
+                force_finish_requests[min(force_finish_requests)]
+            )
 
         return final_results
 
