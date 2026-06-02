@@ -1340,6 +1340,11 @@ class DeepAgent(BaseAgent):
                         *existing,
                     ]
                 existing_skill_rail.enable_cache = False
+                # Ensure sys_operation is set for reading SKILL.md files
+                if existing_skill_rail.sys_operation is None:
+                    existing_skill_rail.set_sys_operation(
+                        self.deep_config.sys_operation
+                    )
                 await existing_skill_rail.reload_skills()
             else:
                 mode = (

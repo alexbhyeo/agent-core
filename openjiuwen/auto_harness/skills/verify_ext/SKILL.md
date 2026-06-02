@@ -42,8 +42,10 @@ tools:
 
 ```python
 from openjiuwen.harness.deep_agent import DeepAgent
+from openjiuwen.harness.schema.config import DeepAgentConfig
 from openjiuwen.core.single_agent.schema.agent_card import AgentCard
-agent = DeepAgent(AgentCard(name="test_agent", description="test"))
+agent = DeepAgent(AgentCard(name="test_agent", description="test")).configure(
+            DeepAgentConfig(enable_task_loop=False))
 loaded = await agent.load_harness_config(config_path)
 ```
 
