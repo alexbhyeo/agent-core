@@ -613,7 +613,8 @@ def rail(
                         await ctx.fire(before)
                     # If a before hook requested force_finish, skip the method body.
                     if ctx.has_force_finish_request:
-                        return None
+                        ff = ctx.consume_force_finish()
+                        return ff.result if ff is not None else None
                     return await fn(self, ctx, *args, **kwargs)
                 except Exception as e:
                     exc_to_raise = e

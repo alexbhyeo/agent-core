@@ -654,8 +654,8 @@ class ReActAgent(BaseAgent):
 
         ai_message = await self._railed_model_call(ctx)
 
-        if ai_message is None:
-            return None
+        if not isinstance(ai_message, AssistantMessage):
+            return ai_message
 
         log_llm_response(logger, ai_message)
 
@@ -1403,6 +1403,10 @@ class ReActAgent(BaseAgent):
                         if finish:
                             await self.context_engine.save_contexts(session)
                             invoke_inputs.result = finish.result
+                            break
+
+                        if not isinstance(ai_message, AssistantMessage):
+                            invoke_inputs.result = ai_message if isinstance(ai_message, dict) else {}
                             break
 
                         await context.add_messages(

@@ -653,6 +653,23 @@ class AbilityManager:
                 final_results.append((tool_result, tool_msg))
                 continue
 
+            if isinstance(result, dict):
+                ff = tool_ctx.consume_force_finish()
+                force_finish_result = ff.result if ff is not None else result
+                force_finish_requests[i] = force_finish_result
+                tool_msg = ToolMessage(
+                    content=str(force_finish_result),
+                    tool_call_id=tool_calls[i].id,
+                )
+                tool_result = force_finish_result
+                if isinstance(tool_ctx.inputs, ToolCallInputs):
+                    if tool_ctx.inputs.tool_result is not None:
+                        tool_result = tool_ctx.inputs.tool_result
+                    if tool_ctx.inputs.tool_msg is not None:
+                        tool_msg = tool_ctx.inputs.tool_msg
+                final_results.append((tool_result, tool_msg))
+                continue
+
             # AFTER_TOOL_CALL rails can rewrite tool_result/tool_msg in ctx.inputs.
             if isinstance(tool_ctx.inputs, ToolCallInputs):
                 tool_result = (

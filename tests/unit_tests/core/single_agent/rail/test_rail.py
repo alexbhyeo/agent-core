@@ -1145,6 +1145,59 @@ class TestForceFinish(
         second = ctx.consume_force_finish()
         assert second is None
 
+    async def test_rail_decorator_returns_force_finish_payload(self):
+        """@rail decorator returns the force_finish payload instead of None."""
+        from openjiuwen.core.single_agent.rail.base import rail, AgentCallbackEvent
+
+        class Dummy:
+            def __init__(self):
+                self.call_count = 0
+
+            @rail(
+                before=AgentCallbackEvent.BEFORE_TOOL_CALL,
+                after=AgentCallbackEvent.AFTER_TOOL_CALL,
+                on_exception=AgentCallbackEvent.ON_TOOL_EXCEPTION,
+            )
+            async def do_work(self, ctx):
+                self.call_count += 1
+                return ("tool_result", "tool_msg")
+
+        agent, _ = _make_agent()
+        ctx = AgentCallbackContext(agent=agent)
+        payload = {"type": "force_finish", "content": "limit exceeded"}
+        ctx.request_force_finish(payload)
+
+        dummy = Dummy()
+        result = await dummy.do_work(ctx)
+
+        assert result == payload
+        assert dummy.call_count == 0
+
+    async def test_rail_decorator_force_finish_dict_not_subscriptable(self):
+        """force_finish payload (dict) is returned directly, not None causing subscript errors."""
+        from openjiuwen.core.single_agent.rail.base import rail, AgentCallbackEvent
+
+        class Dummy:
+            @rail(
+                before=AgentCallbackEvent.BEFORE_TOOL_CALL,
+                after=AgentCallbackEvent.AFTER_TOOL_CALL,
+                on_exception=AgentCallbackEvent.ON_TOOL_EXCEPTION,
+            )
+            async def do_work(self, ctx):
+                return ("original_result", "original_msg")
+
+        agent, _ = _make_agent()
+        ctx = AgentCallbackContext(agent=agent)
+        payload = {"output": "limited", "result_type": "answer"}
+        ctx.request_force_finish(payload)
+
+        dummy = Dummy()
+        result = await dummy.do_work(ctx)
+
+        assert isinstance(result, dict)
+        assert result["output"] == "limited"
+        assert result["result_type"] == "answer"
+
 
 class TestMemoryRailPromptAssembly(
     unittest.IsolatedAsyncioTestCase

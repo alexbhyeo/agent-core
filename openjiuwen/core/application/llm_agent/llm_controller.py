@@ -742,9 +742,10 @@ class LLMController(BaseController):
         """
         accumulated_chunk = None
         stream_index = 0
+        stream_iter = model.stream(llm_inputs, tools=tools, model=model_name)
 
         try:
-            async for chunk in model.stream(llm_inputs, tools=tools, model=model_name):
+            async for chunk in stream_iter:
                 # Accumulate chunks using AIMessageChunk's __add__ method
                 if accumulated_chunk is None:
                     accumulated_chunk = chunk
@@ -797,6 +798,11 @@ class LLMController(BaseController):
 
         except Exception as e:
             logger.error(f"Failed to stream LLM output: {e}")
+            try:
+                async for _chunk in stream_iter:
+                    logger.debug("Consuming remaining stream chunk after exception")
+            except Exception as drain_err:
+                logger.debug(f"Error while consuming remaining stream chunks: {drain_err}")
             raise
 
     async def _get_model(self, session=None):
