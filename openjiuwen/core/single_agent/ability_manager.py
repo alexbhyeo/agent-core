@@ -197,6 +197,13 @@ class AbilityManager:
             ),
         )
 
+    @staticmethod
+    def _get_stream_writer_manager(session: Session) -> Any:
+        try:
+            return session._inner.stream_writer_manager()  # pylint: disable=protected-access
+        except AttributeError:
+            return None
+
     def add(
             self,
             ability: Union[Ability, List[Ability]]
@@ -815,9 +822,19 @@ class AbilityManager:
                 child_session_id = f"{session.get_session_id()}:{tool_call.id}"
                 tool_args["conversation_id"] = child_session_id
 
+                stream_writer_manager = self._get_stream_writer_manager(session)
+                child_session_kwargs = {}
+                if stream_writer_manager is not None:
+                    child_session_kwargs = {
+                        "stream_writer_manager": stream_writer_manager,
+                        "close_stream_on_post_run": False,
+                        "source_metadata": {"source_agent_id": agent.card.id},
+                    }
+
                 child_session = create_agent_session(
                     session_id=child_session_id,
                     card=agent.card,
+                    **child_session_kwargs,
                 )
 
                 auto_confirm_config = session.get_state(INTERRUPT_AUTO_CONFIRM_KEY)
