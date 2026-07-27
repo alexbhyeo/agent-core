@@ -50,6 +50,13 @@ def delete_surface(surface_id: str) -> dict[str, Any]:
     return {"version": A2UI_VERSION, "deleteSurface": {"surfaceId": surface_id}}
 
 
+def update_data_model(surface_id: str, path: str, value: Any) -> dict[str, Any]:
+    return {
+        "version": A2UI_VERSION,
+        "updateDataModel": {"surfaceId": surface_id, "path": path, "value": value},
+    }
+
+
 # ---------------------------------------------------------------------------
 # Minimal basic-catalog component helpers (Text / Column / Divider)
 # ---------------------------------------------------------------------------
@@ -184,12 +191,22 @@ def form(
     submit_label: str,
     action_name: str,
     field_paths: dict[str, str],
+    field_defaults: Optional[dict[str, Any]] = None,
 ) -> list[dict[str, Any]]:
-    """Build a create+update pair for a titled form with a submit button.
+    """Build a create+update(+updateDataModel) sequence for a titled form.
 
     ``field_paths`` maps context keys to "<field_id>.value" data-model paths;
     the submit button reads these off the data model when pressed, so its
     resulting UserActionEvent's ``context`` carries whatever the user entered.
+
+    A field's ``value`` in its component JSON only sets its *visual* initial
+    state -- it is not written into the data model until the user interacts
+    with the widget (see e.g. ChoicePicker/Slider/TextField/CheckBox widget
+    builders: unset paths fall back to that literal for display only). A
+    field left untouched at its pre-selected default would therefore submit
+    as empty. ``field_defaults`` (field id -> default value) seeds the data
+    model directly via ``updateDataModel`` so defaults are real, submittable
+    values even if the user never touches that field.
     """
     field_ids = [f["id"] for f in fields]
     components = [
@@ -199,7 +216,12 @@ def form(
         button("submit", "submitText", action_name=action_name, context_paths=field_paths),
         text("submitText", submit_label),
     ]
-    return [
+    messages = [
         create_surface(surface_id, send_data_model=True),
         update_components(surface_id, components),
     ]
+    for field_id, default_value in (field_defaults or {}).items():
+        if default_value is None:
+            continue
+        messages.append(update_data_model(surface_id, field_paths.get(field_id, f"{field_id}.value"), default_value))
+    return messages

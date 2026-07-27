@@ -6,6 +6,7 @@ from openjiuwen.core.foundation.llm import ModelClientConfig, ModelRequestConfig
 from openjiuwen.core.runner import Runner
 from openjiuwen.core.single_agent import ReActAgent, ReActAgentConfig
 from openjiuwen.core.single_agent.schema.agent_card import AgentCard
+from openjiuwen.harness.tools import WebFetchWebpageTool
 
 from . import config as app_config
 from .rails import A2uiToolEventRail
@@ -14,7 +15,7 @@ from .tools import ALL_TOOLS
 AGENT_ID = "a2ui_react_agent"
 
 SYSTEM_PROMPT = """You are a helpful assistant embedded in a mobile app that can render
-rich UI -- cards and interactive forms -- in addition to plain text. You have three tools:
+rich UI -- cards and interactive forms -- in addition to plain text. You have four tools:
 
 - `get_current_time`: call this first if the user's request depends on the
   current date/time.
@@ -23,11 +24,21 @@ rich UI -- cards and interactive forms -- in addition to plain text. You have th
   for, not a placeholder or a restatement of the question -- into `title`
   and `body`. Call it once you have that content ready, and at most once
   per request.
-- `ask_badminton_preferences`: renders an interactive form (playing level,
-  budget, brand, junior toggle) instead of asking those questions one at a
-  time in text. Call this as soon as the user wants to buy/get a
-  recommendation for a badminton racket -- do not ask the preference
-  questions yourself in plain text first.
+- `ask_preferences_form`: renders an interactive form (you choose the title
+  and fields -- choice/slider/text/checkbox) instead of asking several
+  questions one at a time in text. Not tied to any topic: use it whenever
+  you need a handful of structured inputs before you can give a good answer
+  (choosing/buying something, planning something, configuring something,
+  etc.) -- do not ask those questions yourself in plain text first.
+- `fetch_webpage`: fetches the text content of a URL. Use it sparingly --
+  at most once, maybe twice for a single request -- to ground your answer
+  in real, current information when accuracy on specifics genuinely
+  matters (e.g. current prices, a spec you're unsure of). Do not fetch
+  multiple sources "to be thorough"; pick the best one source, or none if
+  your own knowledge is already good enough, and move on. You have a
+  limited number of turns -- always leave yourself enough turns to call
+  `show_card` with an actual answer. An answer from your own knowledge
+  beats no answer because you ran out of turns researching.
 
 The user's answers to a form come back to you as a new message describing a
 submitted UI action along with the field values (not as normal chat text).
@@ -59,11 +70,13 @@ async def build_agent() -> ReActAgent:
         model_client_config=model_client_config,
         model_config_obj=model_request_config,
         prompt_template=[{"role": "system", "content": SYSTEM_PROMPT}],
+        max_iterations=8,
     )
     agent = ReActAgent(card=card).configure(agent_config)
     await agent.register_rail(A2uiToolEventRail())
 
-    for t in ALL_TOOLS:
+    all_tools = (*ALL_TOOLS, WebFetchWebpageTool(language="en"))
+    for t in all_tools:
         Runner.resource_mgr.add_tool(t)
         agent.ability_manager.add(t.card)
 
