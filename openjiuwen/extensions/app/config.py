@@ -15,9 +15,9 @@ load_dotenv(Path(__file__).resolve().parent / ".env")
 
 _DEFAULTS: dict[str, Any] = {
     "API_KEY": os.getenv("API_KEY", ""),
-    "API_BASE": os.getenv("API_BASE", "https://api.openai.com/v1"),
-    "MODEL_NAME": os.getenv("MODEL_NAME", "gpt-4o"),
-    "MODEL_PROVIDER": os.getenv("MODEL_PROVIDER", "OpenAI"),
+    "API_BASE": os.getenv("API_BASE", "https://api.deepseek.com/v1"),
+    "MODEL_NAME": os.getenv("MODEL_NAME", "deepseek-v4-flash"),
+    "MODEL_PROVIDER": os.getenv("MODEL_PROVIDER", "DeepSeek"),
     "LLM_SSL_VERIFY": os.getenv("LLM_SSL_VERIFY", "false").lower() == "true",
     "HOST": os.getenv("A2UI_AGENT_HOST", "0.0.0.0"),
     "PORT": int(os.getenv("A2UI_AGENT_PORT", "8090")),

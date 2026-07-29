@@ -62,8 +62,11 @@ def update_data_model(surface_id: str, path: str, value: Any) -> dict[str, Any]:
 # ---------------------------------------------------------------------------
 
 
-def text(comp_id: str, value: str, variant: str = "body") -> dict[str, Any]:
-    return {"id": comp_id, "component": "Text", "text": value, "variant": variant}
+def text(comp_id: str, value: str, variant: str = "body", weight: Optional[int] = None) -> dict[str, Any]:
+    payload: dict[str, Any] = {"id": comp_id, "component": "Text", "text": value, "variant": variant}
+    if weight is not None:
+        payload["weight"] = weight
+    return payload
 
 
 def divider(comp_id: str) -> dict[str, Any]:
@@ -75,8 +78,36 @@ def column(
     children: list[str],
     justify: Optional[str] = None,
     align: Optional[str] = None,
+    weight: Optional[int] = None,
 ) -> dict[str, Any]:
+    # `weight` only matters when this Column is placed as a child of a Row
+    # (or List laid out horizontally): Row only gives a child flexible sizing
+    # -- so long text wraps instead of overflowing -- if the child component
+    # carries an explicit "weight" property (Column/Text aren't
+    # isImplicitlyFlexible like TextField/ChoicePicker are). See
+    # genui-0.10.1/lib/src/catalog/basic_catalog_widgets/row.dart.
     payload: dict[str, Any] = {"id": comp_id, "component": "Column", "children": children}
+    if justify is not None:
+        payload["justify"] = justify
+    if align is not None:
+        payload["align"] = align
+    if weight is not None:
+        payload["weight"] = weight
+    return payload
+
+
+def card(comp_id: str, child_id: str) -> dict[str, Any]:
+    """A Material card surface (elevation/shadow) wrapping a single child."""
+    return {"id": comp_id, "component": "Card", "child": child_id}
+
+
+def row(
+    comp_id: str,
+    children: list[str],
+    justify: Optional[str] = None,
+    align: Optional[str] = None,
+) -> dict[str, Any]:
+    payload: dict[str, Any] = {"id": comp_id, "component": "Row", "children": children}
     if justify is not None:
         payload["justify"] = justify
     if align is not None:
@@ -84,13 +115,154 @@ def column(
     return payload
 
 
-def summary_card(surface_id: str, title: str, body: str) -> list[dict[str, Any]]:
-    """Build a create+update pair rendering a simple title/body summary card."""
+def icon(comp_id: str, name: str) -> dict[str, Any]:
+    """An icon; ``name`` must be one of ``ICON_NAMES``."""
+    return {"id": comp_id, "component": "Icon", "name": name}
+
+
+def image(comp_id: str, url: str, variant: str = "mediumFeature", fit: Optional[str] = None) -> dict[str, Any]:
+    """An image loaded directly by the client via ``Image.network(url)``.
+
+    ``url`` must be a real, publicly reachable http(s) URL -- the client
+    fetches it directly, nothing is downloaded/served by this backend. A
+    broken/unreachable URL degrades gracefully to a broken-image icon
+    client-side, it doesn't fail the surface.
+
+    ``variant``: one of icon/avatar/smallFeature/mediumFeature/largeFeature/header.
+    """
+    payload: dict[str, Any] = {"id": comp_id, "component": "Image", "url": url, "variant": variant}
+    if fit is not None:
+        payload["fit"] = fit
+    return payload
+
+
+# Every icon name the client's Icon widget recognizes (genui basic catalog).
+# Passing anything outside this set fails client-side schema validation
+# silently (see genui-0.10.1/lib/src/catalog/basic_catalog_widgets/icon.dart).
+ICON_NAMES = [
+    "accountCircle", "add", "arrowBack", "arrowForward", "attachFile",
+    "calendarToday", "call", "camera", "check", "close", "delete",
+    "download", "edit", "error", "event", "favorite", "favoriteOff",
+    "folder", "help", "home", "info", "locationOn", "lock", "lockOpen",
+    "mail", "menu", "moreHoriz", "moreVert", "notifications",
+    "notificationsOff", "payment", "person", "phone", "photo", "print",
+    "refresh", "search", "send", "settings", "share", "shoppingCart",
+    "star", "starHalf", "starOff", "upload", "visibility", "visibilityOff",
+    "warning",
+]
+
+
+def list_view(
+    comp_id: str,
+    children: list[str],
+    direction: Optional[str] = None,
+    align: Optional[str] = None,
+) -> dict[str, Any]:
+    payload: dict[str, Any] = {"id": comp_id, "component": "List", "children": children}
+    if direction is not None:
+        payload["direction"] = direction
+    if align is not None:
+        payload["align"] = align
+    return payload
+
+
+def tabs(comp_id: str, tab_specs: list[tuple[str, str]], active_tab: int = 0) -> dict[str, Any]:
+    """``tab_specs`` is a list of (label, content_component_id) pairs."""
+    return {
+        "id": comp_id,
+        "component": "Tabs",
+        "tabs": [{"label": label, "content": content_id} for label, content_id in tab_specs],
+        "activeTab": active_tab,
+    }
+
+
+def summary_card(
+    surface_id: str,
+    title: str,
+    body: str,
+    icon_name: Optional[str] = None,
+    image_url: Optional[str] = None,
+) -> list[dict[str, Any]]:
+    """Build a create+update pair rendering a title/body card in a Material Card surface.
+
+    ``icon_name`` (one of ``ICON_NAMES``) puts a leading icon next to the title.
+    ``image_url`` puts a full-width header image above the title.
+    """
+    header_children = (["headerIcon", "title"] if icon_name else ["title"])
+    inner_children = (["image"] if image_url else []) + (["header"] if icon_name else ["title"]) + [
+        "divider",
+        "body",
+    ]
     components = [
-        column("root", ["title", "divider", "body"]),
-        text("title", title, variant="h3"),
+        card("root", "content"),
+        column("content", inner_children),
+        *([image("image", image_url, variant="header")] if image_url else []),
+        *([row("header", header_children, align="center"), icon("headerIcon", icon_name)] if icon_name else []),
+        text("title", title, variant="h3", weight=1 if icon_name else None),
         divider("divider"),
         text("body", body, variant="body"),
+    ]
+    return [
+        create_surface(surface_id),
+        update_components(surface_id, components),
+    ]
+
+
+def info_list_card(
+    surface_id: str,
+    title: str,
+    items: list[tuple[Optional[str], str, Optional[str], Optional[str]]],
+    icon_name: Optional[str] = None,
+) -> list[dict[str, Any]]:
+    """A titled heading followed by a vertical list of individually-carded items.
+
+    ``items`` is a list of (item_icon_name_or_None, item_title,
+    item_subtitle_or_None, item_image_url_or_None). If both an icon and an
+    image are given for an item, the image wins (it's shown, not the icon).
+    Each item renders in its own Material Card (its own elevated surface,
+    not one shared list inside a single outer card) -- good for itineraries,
+    step-by-step guides, medication schedules, feature lists -- anything
+    that's naturally several discrete entries rather than one paragraph.
+    """
+    card_ids = [f"item{i}Card" for i in range(len(items))]
+    item_components: list[dict[str, Any]] = []
+    for i, (item_icon, item_title, item_subtitle, item_image_url) in enumerate(items):
+        card_id = card_ids[i]
+        row_id = f"item{i}"
+        text_col_id = f"{row_id}TextCol"
+        text_id = f"{row_id}Text"
+        subtitle_id = f"{row_id}Subtitle"
+        media_id = f"{row_id}Media"
+        text_col_children = [text_id] + ([subtitle_id] if item_subtitle else [])
+        item_components.append(card(card_id, row_id))
+        item_components.append(row(row_id, [media_id, text_col_id], align="center"))
+        if item_image_url:
+            # "avatar" (32px circle) rather than "smallFeature" (50px square):
+            # the Icon component has no size property to match against, so
+            # keeping the image small keeps the icon/image fallback visually
+            # consistent across items instead of some rows having a much
+            # bigger leading element than others.
+            item_components.append(image(media_id, item_image_url, variant="avatar", fit="cover"))
+        else:
+            # tools.py's _item_icon() always supplies a fallback icon when
+            # there's no image, so every row has the same 2-child shape and
+            # all text columns line up -- a row with only a text child (no
+            # leading element) would sit flush against the card edge while
+            # its siblings are indented past the icon column.
+            item_components.append(icon(media_id, item_icon or "check"))
+        item_components.append(column(text_col_id, text_col_children, weight=1))
+        item_components.append(text(text_id, item_title, variant="body"))
+        if item_subtitle:
+            item_components.append(text(subtitle_id, item_subtitle, variant="caption"))
+
+    header_children = (["headerIcon", "title"] if icon_name else ["title"])
+    root_children = (["header"] if icon_name else ["title"]) + ["list"]
+    components = [
+        column("root", root_children),
+        *([row("header", header_children, align="center"), icon("headerIcon", icon_name)] if icon_name else []),
+        text("title", title, variant="h3", weight=1 if icon_name else None),
+        list_view("list", card_ids),
+        *item_components,
     ]
     return [
         create_surface(surface_id),
@@ -210,7 +382,14 @@ def form(
     """
     field_ids = [f["id"] for f in fields]
     components = [
-        column("root", ["title", *field_ids, "submit"]),
+        card("root", "content"),
+        # align="stretch": Row uses MainAxisSize.min (fixed client-side, not
+        # configurable from here), so justify="center" on submitRow only has
+        # room to center the button if the Row itself is stretched to the
+        # Column's full width -- otherwise it just hugs the button's own
+        # width and "centering" is a no-op.
+        column("content", ["title", *field_ids, "submitRow"], align="stretch"),
+        row("submitRow", ["submit"], justify="center"),
         text("title", title, variant="h3"),
         *fields,
         button("submit", "submitText", action_name=action_name, context_paths=field_paths),
