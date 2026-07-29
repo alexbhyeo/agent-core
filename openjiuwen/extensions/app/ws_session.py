@@ -142,19 +142,36 @@ def _translate(chunk: Any, state: dict[str, Any]) -> list[tuple[str, dict[str, A
 
     if chunk_type == "tool_call":
         tool_name = (payload or {}).get("tool_name", "")
-        events.append(("tool.started", {"tool": tool_name}))
+        call_id = (payload or {}).get("tool_call_id")
+        events.append(("tool.started", {"tool": tool_name, "callId": call_id}))
         return events
 
     if chunk_type == "tool_result":
         tool_name = (payload or {}).get("tool_name", "")
+        call_id = (payload or {}).get("tool_call_id")
         tool_result = (payload or {}).get("tool_result")
-        events.append(("tool.finished", {"tool": tool_name}))
+        events.append(("tool.finished", {"tool": tool_name, "callId": call_id}))
 
         result_text, genui_messages = _extract_result(tool_result)
-        if result_text:
-            events.append(("tool.output", {"text": result_text}))
+        if result_text.startswith("[ERROR]"):
+            # Some tools (e.g. fetch_webpage) catch their own failures and
+            # return an "[ERROR]: ..." string instead of raising -- so this
+            # never reaches on_tool_exception. Surface it the same way a
+            # real exception does.
+            events.append(("error.tool", {"tool": tool_name, "callId": call_id, "message": result_text}))
+        elif result_text:
+            events.append(("tool.output", {"tool": tool_name, "callId": call_id, "text": result_text}))
         for message in genui_messages or []:
             events.append(("genui", message))
+        return events
+
+    if chunk_type == "tool_error":
+        # A2uiToolEventRail.on_tool_exception -- the tool actually raised.
+        tool_name = (payload or {}).get("tool_name", "")
+        call_id = (payload or {}).get("tool_call_id")
+        message = (payload or {}).get("message", "Tool execution failed.")
+        events.append(("tool.finished", {"tool": tool_name, "callId": call_id}))
+        events.append(("error.tool", {"tool": tool_name, "callId": call_id, "message": message}))
         return events
 
     # llm_reasoning / llm_usage / anything else: internal, not surfaced.
