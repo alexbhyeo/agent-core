@@ -10,9 +10,16 @@ Run:
     uvicorn openjiuwen.extensions.app.server:create_app --factory --host 0.0.0.0 --port 8090
 
 Then point the Flutter app at it, e.g.:
-    flutter run --dart-define=A2UI_WS_URL=ws://10.0.2.2:8090/ws
+    flutter run --dart-define=A2UI_WS_URL=wss://10.0.2.2:8090/ws
+
+Serves over TLS (wss://) whenever certs/server.{crt,key} exist (see
+certs/generate.sh) -- generate them once and the server picks them up
+automatically. Falls back to plain ws:// with a warning if they're missing,
+so a fresh checkout without generated certs still runs for local dev.
 """
 
+import logging
+import os
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, WebSocket
@@ -61,8 +68,23 @@ def create_app() -> FastAPI:
 if __name__ == "__main__":
     import uvicorn
 
+    certfile = app_config.get("SSL_CERTFILE")
+    keyfile = app_config.get("SSL_KEYFILE")
+    ssl_kwargs: dict[str, str] = {}
+    if certfile and keyfile and os.path.exists(certfile) and os.path.exists(keyfile):
+        ssl_kwargs = {"ssl_certfile": certfile, "ssl_keyfile": keyfile}
+        logging.info("TLS enabled: serving wss:// with cert %s", certfile)
+    else:
+        logging.warning(
+            "No TLS cert/key found at %s / %s -- serving plain ws:// "
+            "(run certs/generate.sh to enable encryption)",
+            certfile,
+            keyfile,
+        )
+
     uvicorn.run(
         create_app(),
         host=app_config.get("HOST"),
         port=app_config.get("PORT"),
+        **ssl_kwargs,
     )
