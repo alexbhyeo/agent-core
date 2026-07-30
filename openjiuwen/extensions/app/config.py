@@ -13,6 +13,8 @@ from dotenv import load_dotenv
 # environment variables already set take precedence (override=False default).
 load_dotenv(Path(__file__).resolve().parent / ".env")
 
+_CERTS_DIR = Path(__file__).resolve().parent / "certs"
+
 _DEFAULTS: dict[str, Any] = {
     "API_KEY": os.getenv("API_KEY", ""),
     "API_BASE": os.getenv("API_BASE", "https://api.deepseek.com/v1"),
@@ -22,6 +24,16 @@ _DEFAULTS: dict[str, Any] = {
     "HOST": os.getenv("A2UI_AGENT_HOST", "0.0.0.0"),
     "PORT": int(os.getenv("A2UI_AGENT_PORT", "8090")),
     "CATALOG_ID": os.getenv("A2UI_CATALOG_ID", "https://a2ui.org/specification/v0_9/basic_catalog.json"),
+    # TLS for the client<->agent WebSocket, so traffic (including the API key
+    # never touching this hop, but chat content and tool output) isn't sent
+    # in cleartext. The private key stays on the server (certs/server.key,
+    # gitignored); only the certificate (public key) is ever distributed to
+    # clients, which pin it instead of relying on a CA -- see the Flutter
+    # app's WsService for the client side of this. Regenerate both with
+    # certs/generate.sh. Falls back to plain ws:// if either file is absent
+    # so a fresh checkout without generated certs still runs for local dev.
+    "SSL_CERTFILE": os.getenv("A2UI_SSL_CERTFILE", str(_CERTS_DIR / "server.crt")),
+    "SSL_KEYFILE": os.getenv("A2UI_SSL_KEYFILE", str(_CERTS_DIR / "server.key")),
 }
 
 _values: dict[str, Any] = dict(_DEFAULTS)
