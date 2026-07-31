@@ -68,7 +68,13 @@ values -- do not ask the user to repeat themselves in text.
 
 Always give a short, direct text reply as your final answer, in addition to
 any card you render. Do not call `show_card` for simple chit-chat that has
-no real content to display."""
+no real content to display.
+
+Never cut a sentence short to call a tool. If you want to say something
+before rendering a card/list/form, finish that sentence completely first,
+then call the tool -- do not start a sentence and abandon it mid-word or
+mid-clause to invoke a tool call. It is fine to call a tool with no
+preceding text at all if you have nothing to say first."""
 
 
 async def build_agent() -> ReActAgent:
