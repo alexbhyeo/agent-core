@@ -62,10 +62,18 @@ def update_data_model(surface_id: str, path: str, value: Any) -> dict[str, Any]:
 # ---------------------------------------------------------------------------
 
 
-def text(comp_id: str, value: str, variant: str = "body", weight: Optional[int] = None) -> dict[str, Any]:
+def text(
+    comp_id: str,
+    value: str,
+    variant: str = "body",
+    weight: Optional[int] = None,
+    styles: Optional[dict[str, Any]] = None,
+) -> dict[str, Any]:
     payload: dict[str, Any] = {"id": comp_id, "component": "Text", "text": value, "variant": variant}
     if weight is not None:
         payload["weight"] = weight
+    if styles is not None:
+        payload["styles"] = styles
     return payload
 
 
@@ -79,6 +87,7 @@ def column(
     justify: Optional[str] = None,
     align: Optional[str] = None,
     weight: Optional[int] = None,
+    styles: Optional[dict[str, Any]] = None,
 ) -> dict[str, Any]:
     # `weight` only matters when this Column is placed as a child of a Row
     # (or List laid out horizontally): Row only gives a child flexible sizing
@@ -93,12 +102,30 @@ def column(
         payload["align"] = align
     if weight is not None:
         payload["weight"] = weight
+    if styles is not None:
+        payload["styles"] = styles
     return payload
 
 
-def card(comp_id: str, child_id: str) -> dict[str, Any]:
+# Card's own component spec only sets border-radius (16px); it inherits
+# transparent background / 0px border from the universal style baseline.
+# Against this app's plain white page that leaves cards with no visible
+# boundary at all, so every card() call gets this light, bordered surface
+# by default instead of relying on the (invisible) built-in look.
+_DEFAULT_CARD_STYLES: dict[str, Any] = {
+    "background-color": "#FFFFFF",
+    "border-width": "1px",
+    "border-color": "#E1E4E9",
+    "filter": "drop-shadow(0px 1px 4px rgba(0, 0, 0, 0.08))",
+    "padding": "16px",
+}
+
+
+def card(comp_id: str, child_id: str, styles: Optional[dict[str, Any]] = None) -> dict[str, Any]:
     """A Material card surface (elevation/shadow) wrapping a single child."""
-    return {"id": comp_id, "component": "Card", "child": child_id}
+    payload: dict[str, Any] = {"id": comp_id, "component": "Card", "child": child_id}
+    payload["styles"] = {**_DEFAULT_CARD_STYLES, **(styles or {})}
+    return payload
 
 
 def row(
@@ -106,12 +133,15 @@ def row(
     children: list[str],
     justify: Optional[str] = None,
     align: Optional[str] = None,
+    styles: Optional[dict[str, Any]] = None,
 ) -> dict[str, Any]:
     payload: dict[str, Any] = {"id": comp_id, "component": "Row", "children": children}
     if justify is not None:
         payload["justify"] = justify
     if align is not None:
         payload["align"] = align
+    if styles is not None:
+        payload["styles"] = styles
     return payload
 
 
@@ -120,7 +150,13 @@ def icon(comp_id: str, name: str) -> dict[str, Any]:
     return {"id": comp_id, "component": "Icon", "name": name}
 
 
-def image(comp_id: str, url: str, variant: str = "mediumFeature", fit: Optional[str] = None) -> dict[str, Any]:
+def image(
+    comp_id: str,
+    url: str,
+    variant: str = "mediumFeature",
+    fit: Optional[str] = None,
+    styles: Optional[dict[str, Any]] = None,
+) -> dict[str, Any]:
     """An image loaded directly by the client via ``Image.network(url)``.
 
     ``url`` must be a real, publicly reachable http(s) URL -- the client
@@ -133,6 +169,8 @@ def image(comp_id: str, url: str, variant: str = "mediumFeature", fit: Optional[
     payload: dict[str, Any] = {"id": comp_id, "component": "Image", "url": url, "variant": variant}
     if fit is not None:
         payload["fit"] = fit
+    if styles is not None:
+        payload["styles"] = styles
     return payload
 
 
@@ -157,12 +195,15 @@ def list_view(
     children: list[str],
     direction: Optional[str] = None,
     align: Optional[str] = None,
+    styles: Optional[dict[str, Any]] = None,
 ) -> dict[str, Any]:
     payload: dict[str, Any] = {"id": comp_id, "component": "List", "children": children}
     if direction is not None:
         payload["direction"] = direction
     if align is not None:
         payload["align"] = align
+    if styles is not None:
+        payload["styles"] = styles
     return payload
 
 
@@ -200,7 +241,7 @@ def summary_card(
         *([row("header", header_children, align="center"), icon("headerIcon", icon_name)] if icon_name else []),
         text("title", title, variant="h3", weight=1 if icon_name else None),
         divider("divider"),
-        text("body", body, variant="body"),
+        text("body", body, variant="body", styles={"line-clamp": 0}),
     ]
     return [
         create_surface(surface_id),
@@ -228,40 +269,46 @@ def info_list_card(
     item_components: list[dict[str, Any]] = []
     for i, (item_icon, item_title, item_subtitle, item_image_url) in enumerate(items):
         card_id = card_ids[i]
-        row_id = f"item{i}"
-        text_col_id = f"{row_id}TextCol"
-        text_id = f"{row_id}Text"
-        subtitle_id = f"{row_id}Subtitle"
-        media_id = f"{row_id}Media"
+        outer_id = f"item{i}"
+        text_col_id = f"{outer_id}TextCol"
+        text_id = f"{outer_id}Text"
+        subtitle_id = f"{outer_id}Subtitle"
+        media_id = f"{outer_id}Media"
         text_col_children = [text_id] + ([subtitle_id] if item_subtitle else [])
-        item_components.append(card(card_id, row_id))
-        item_components.append(row(row_id, [media_id, text_col_id], align="center"))
+        # padding=0 on the card itself (overriding the default 16px): a photo
+        # is only a full-bleed "on top of the card" look if nothing insets
+        # it. The text block below gets its own padding instead, applied to
+        # textColId, so it's still comfortably inset from the card edges.
+        item_components.append(card(card_id, outer_id, styles={"padding": "0px"}))
         if item_image_url:
-            # "avatar" (32px circle) rather than "smallFeature" (50px square):
-            # the Icon component has no size property to match against, so
-            # keeping the image small keeps the icon/image fallback visually
-            # consistent across items instead of some rows having a much
-            # bigger leading element than others.
-            item_components.append(image(media_id, item_image_url, variant="avatar", fit="cover"))
+            item_components.append(column(outer_id, [media_id, text_col_id]))
+            item_components.append(image(media_id, item_image_url, variant="mediumFeature", fit="cover", styles={"border-radius": "8px"}))
+            item_components.append(column(text_col_id, text_col_children, styles={"padding": "16px", "gap": "8px"}))
         else:
+            # No photo for this item: a leading icon next to the title
+            # instead of an empty full-width photo block.
+            header_row_id = f"{outer_id}Header"
+            item_components.append(column(outer_id, [header_row_id, *([subtitle_id] if item_subtitle else [])], styles={"padding": "16px", "gap": "8px"}))
+            item_components.append(row(header_row_id, [media_id, text_id], align="center", styles={"gap": "12px"}))
             # tools.py's _item_icon() always supplies a fallback icon when
-            # there's no image, so every row has the same 2-child shape and
-            # all text columns line up -- a row with only a text child (no
-            # leading element) would sit flush against the card edge while
-            # its siblings are indented past the icon column.
+            # there's no image.
             item_components.append(icon(media_id, item_icon or "check"))
-        item_components.append(column(text_col_id, text_col_children, weight=1))
         item_components.append(text(text_id, item_title, variant="body"))
         if item_subtitle:
-            item_components.append(text(subtitle_id, item_subtitle, variant="caption"))
+            # line-clamp: the Text component's shared style baseline defaults
+            # to a single visible line with a trailing ellipsis; these
+            # subtitles are 1-2 sentence descriptions, so that was cutting
+            # nearly all of them off after a few words. 0 = unlimited, so the
+            # full description always shows regardless of length.
+            item_components.append(text(subtitle_id, item_subtitle, variant="caption", styles={"line-clamp": 0}))
 
     header_children = (["headerIcon", "title"] if icon_name else ["title"])
     root_children = (["header"] if icon_name else ["title"]) + ["list"]
     components = [
-        column("root", root_children),
+        column("root", root_children, styles={"gap": "12px"}),
         *([row("header", header_children, align="center"), icon("headerIcon", icon_name)] if icon_name else []),
         text("title", title, variant="h3", weight=1 if icon_name else None),
-        list_view("list", card_ids),
+        list_view("list", card_ids, styles={"gap": "10px"}),
         *item_components,
     ]
     return [
@@ -337,12 +384,30 @@ def check_box(comp_id: str, label: str, value: bool = False) -> dict[str, Any]:
     return {"id": comp_id, "component": "CheckBox", "label": label, "value": value}
 
 
+# The catalog's Button spec only recognizes "default"/"borderless" variants
+# ("primary" is not a real enum value there) and its "default" look is a
+# near-white background (Color_BG_L5) with a 6%-black hairline border --
+# invisible against this app's plain white page. Give every button an
+# explicit, unmistakably-visible brand-blue fill instead of relying on that.
+_DEFAULT_BUTTON_STYLES: dict[str, Any] = {
+    "background-color": "#2273F7",
+    "border-width": "0px",
+    # Button has no built-in padding at all (its spec never sets one), so
+    # the label text sat flush against the button's edges. A generous
+    # padding plus a large, fully-rounded radius gives the pill shape a
+    # real button needs instead of a bare colored rectangle.
+    "padding": "16px 32px",
+    "border-radius": "32px",
+}
+
+
 def button(
     comp_id: str,
     child_id: str,
     action_name: str,
     context_paths: Optional[dict[str, str]] = None,
-    variant: str = "primary",
+    variant: str = "default",
+    styles: Optional[dict[str, Any]] = None,
 ) -> dict[str, Any]:
     event: dict[str, Any] = {"name": action_name}
     if context_paths:
@@ -352,6 +417,7 @@ def button(
         "component": "Button",
         "child": child_id,
         "variant": variant,
+        "styles": {**_DEFAULT_BUTTON_STYLES, **(styles or {})},
         "action": {"event": event},
     }
 
@@ -382,25 +448,41 @@ def form(
     """
     field_ids = [f["id"] for f in fields]
     components = [
-        card("root", "content"),
+        # The submit button lives in its own trailing Card, as a sibling of
+        # the fields card rather than nested inside the same Column/Row
+        # subtree as every field. Splitting the button out this way keeps
+        # each card's own reconciliation small, which has proven far more
+        # reliable than one deeply-nested tree for large forms -- big single
+        # trees have intermittently dropped the button component entirely
+        # during the client's batch-flush pass.
+        column("root", ["fieldsCard", "submitCard"]),
+        card("fieldsCard", "content"),
+        column("content", ["title", *field_ids], align="stretch"),
+        text("title", title, variant="h3"),
+        *fields,
+        card("submitCard", "submitRow"),
         # align="stretch": Row uses MainAxisSize.min (fixed client-side, not
         # configurable from here), so justify="center" on submitRow only has
         # room to center the button if the Row itself is stretched to the
-        # Column's full width -- otherwise it just hugs the button's own
+        # Card's full width -- otherwise it just hugs the button's own
         # width and "centering" is a no-op.
-        column("content", ["title", *field_ids, "submitRow"], align="stretch"),
-        row("submitRow", ["submit"], justify="center"),
-        text("title", title, variant="h3"),
-        *fields,
+        row("submitRow", ["submit"], justify="center", align="stretch"),
         button("submit", "submitText", action_name=action_name, context_paths=field_paths),
-        text("submitText", submit_label),
+        text("submitText", submit_label, styles={"color": "#FFFFFF"}),
     ]
-    messages = [
-        create_surface(surface_id, send_data_model=True),
-        update_components(surface_id, components),
-    ]
+    # updateDataModel must land BEFORE updateComponents. The submit button's
+    # action.context binds one data-model path per field; the client
+    # evaluates every bound component's data-binding status at the next
+    # flush, and if the button's very first flush sees any of those paths
+    # still unresolved, it's classified "partially ready", rejected, and
+    # orphaned -- permanently, since orphans in this state are never
+    # re-attached later (confirmed against the client's virtual_dom source).
+    # So every field path must already have a value by the time the button
+    # component is first flushed, not after.
+    messages = [create_surface(surface_id, send_data_model=True)]
     for field_id, default_value in (field_defaults or {}).items():
         if default_value is None:
             continue
-        messages.append(update_data_model(surface_id, field_paths.get(field_id, f"{field_id}.value"), default_value))
+        messages.append(update_data_model(surface_id, field_paths.get(field_id, f"/{field_id}/value"), default_value))
+    messages.append(update_components(surface_id, components))
     return messages

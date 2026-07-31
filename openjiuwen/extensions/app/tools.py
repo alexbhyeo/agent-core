@@ -253,8 +253,13 @@ def ask_preferences_form(
             )
             # ChoicePicker's onChanged always writes a list, even for
             # mutually-exclusive single-select -- match that shape here.
-            if f.default_option_value:
-                field_defaults[f.id] = [f.default_option_value]
+            # Always seed the path, even with an empty list: the submit
+            # button's action.context binds to every field's path, and a
+            # path with no data-model entry at all leaves that binding
+            # PartiallyReady forever, which silently orphans the whole
+            # button component client-side (never just renders blank --
+            # it disappears and never retries).
+            field_defaults[f.id] = [f.default_option_value] if f.default_option_value else []
         elif f.type == FormFieldType.multi_choice:
             built_fields.append(
                 genui.choice_picker(
@@ -265,8 +270,8 @@ def ask_preferences_form(
                     variant="multipleSelection",
                 )
             )
-            if f.default_option_values:
-                field_defaults[f.id] = f.default_option_values
+            # Same reasoning as the choice case above: always seed the path.
+            field_defaults[f.id] = f.default_option_values if f.default_option_values else []
         elif f.type == FormFieldType.slider:
             default_value = f.default_number if f.default_number is not None else (f.min_value or 0)
             built_fields.append(
@@ -281,12 +286,12 @@ def ask_preferences_form(
             field_defaults[f.id] = default_value
         elif f.type == FormFieldType.text:
             built_fields.append(genui.text_field(f.id, label=f.label, value=f.default_text))
-            if f.default_text:
-                field_defaults[f.id] = f.default_text
+            # Always seed the path, even with "" -- see the choice case above.
+            field_defaults[f.id] = f.default_text
         elif f.type == FormFieldType.checkbox:
             built_fields.append(genui.check_box(f.id, f.label, value=f.default_checked))
             field_defaults[f.id] = f.default_checked
-        field_paths[f.id] = f"{f.id}.value"
+        field_paths[f.id] = f"/{f.id}/value"
 
     messages = genui.form(
         surface_id,
