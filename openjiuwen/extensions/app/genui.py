@@ -145,9 +145,31 @@ def row(
     return payload
 
 
+_MATERIAL_TO_LUCIDE_ICON_NAMES: dict[str, str] = {
+    "accountCircle": "circle-user-round", "add": "plus", "arrowBack": "arrow-left",
+    "arrowForward": "arrow-right", "attachFile": "paperclip", "calendarToday": "calendar-days",
+    "call": "phone", "camera": "camera", "check": "check", "close": "x",
+    "delete": "trash-2", "download": "download", "edit": "pencil", "error": "circle-alert",
+    "event": "calendar", "favorite": "heart", "favoriteOff": "heart-off", "folder": "folder",
+    "help": "circle-help", "home": "house", "info": "info", "locationOn": "map-pin",
+    "lock": "lock", "lockOpen": "lock-open", "mail": "mail", "menu": "menu",
+    "moreHoriz": "ellipsis", "moreVert": "ellipsis-vertical", "notifications": "bell",
+    "notificationsOff": "bell-off", "payment": "credit-card", "person": "user",
+    "phone": "phone", "photo": "image", "print": "printer", "refresh": "refresh-cw",
+    "search": "search", "send": "send", "settings": "settings", "share": "share-2",
+    "shoppingCart": "shopping-cart", "star": "star", "starHalf": "star-half",
+    "starOff": "star-off", "upload": "upload", "visibility": "eye",
+    "visibilityOff": "eye-off", "warning": "triangle-alert",
+}
+
+
 def icon(comp_id: str, name: str) -> dict[str, Any]:
-    """An icon; ``name`` must be one of ``ICON_NAMES``."""
-    return {"id": comp_id, "component": "Icon", "name": name}
+    """Render a supported backend icon through Harmony AGenUI's Lucide mapper."""
+    return {
+        "id": comp_id,
+        "component": "Icon",
+        "name": _MATERIAL_TO_LUCIDE_ICON_NAMES.get(name, name),
+    }
 
 
 def image(
@@ -174,9 +196,8 @@ def image(
     return payload
 
 
-# Every icon name the client's Icon widget recognizes (genui basic catalog).
-# Passing anything outside this set fails client-side schema validation
-# silently (see genui-0.10.1/lib/src/catalog/basic_catalog_widgets/icon.dart).
+# Every Material-style icon name accepted by the tool API. ``icon()`` above
+# translates them to AGenUI/Harmony's Lucide names before sending the surface.
 ICON_NAMES = [
     "accountCircle", "add", "arrowBack", "arrowForward", "attachFile",
     "calendarToday", "call", "camera", "check", "close", "delete",
@@ -282,7 +303,7 @@ def info_list_card(
         item_components.append(card(card_id, outer_id, styles={"padding": "0px"}))
         if item_image_url:
             item_components.append(column(outer_id, [media_id, text_col_id]))
-            item_components.append(image(media_id, item_image_url, variant="mediumFeature", fit="cover", styles={"border-radius": "8px"}))
+            item_components.append(image(media_id, item_image_url, variant="header", fit="cover"))
             item_components.append(column(text_col_id, text_col_children, styles={"padding": "16px", "gap": "8px"}))
         else:
             # No photo for this item: a leading icon next to the title
@@ -384,6 +405,30 @@ def check_box(comp_id: str, label: str, value: bool = False) -> dict[str, Any]:
     return {"id": comp_id, "component": "CheckBox", "label": label, "value": value}
 
 
+def date_input(
+    comp_id: str,
+    value: str,
+    label: Optional[str] = None,
+    min_date: Optional[str] = None,
+    max_date: Optional[str] = None,
+) -> dict[str, Any]:
+    """A date-only native calendar picker using YYYY-MM-DD values."""
+    payload: dict[str, Any] = {
+        "id": comp_id,
+        "component": "DateTimeInput",
+        "value": value,
+        "enableDate": True,
+        "enableTime": False,
+    }
+    if label is not None:
+        payload["label"] = label
+    if min_date is not None:
+        payload["min"] = min_date
+    if max_date is not None:
+        payload["max"] = max_date
+    return payload
+
+
 # The catalog's Button spec only recognizes "default"/"borderless" variants
 # ("primary" is not a real enum value there) and its "default" look is a
 # near-white background (Color_BG_L5) with a 6%-black hairline border --
@@ -430,6 +475,7 @@ def form(
     action_name: str,
     field_paths: dict[str, str],
     field_defaults: Optional[dict[str, Any]] = None,
+    field_groups: Optional[list[tuple[str, list[dict[str, Any]]]]] = None,
 ) -> list[dict[str, Any]]:
     """Build a create+update(+updateDataModel) sequence for a titled form.
 
@@ -446,7 +492,25 @@ def form(
     model directly via ``updateDataModel`` so defaults are real, submittable
     values even if the user never touches that field.
     """
-    field_ids = [f["id"] for f in fields]
+    groups = field_groups or [("Preferences", fields)]
+    group_card_ids = [f"group{index}Card" for index in range(len(groups))]
+    group_components: list[dict[str, Any]] = []
+    for index, (category, group_fields) in enumerate(groups):
+        content_id = f"group{index}Content"
+        category_id = f"group{index}Title"
+        group_components.extend(
+            [
+                card(group_card_ids[index], content_id),
+                column(
+                    content_id,
+                    [category_id, *[field["id"] for field in group_fields]],
+                    align="stretch",
+                    styles={"gap": "10px"},
+                ),
+                text(category_id, category, variant="h4"),
+                *group_fields,
+            ]
+        )
     components = [
         # The submit button lives in its own trailing Card, as a sibling of
         # the fields card rather than nested inside the same Column/Row
@@ -455,20 +519,35 @@ def form(
         # reliable than one deeply-nested tree for large forms -- big single
         # trees have intermittently dropped the button component entirely
         # during the client's batch-flush pass.
-        column("root", ["fieldsCard", "submitCard"]),
-        card("fieldsCard", "content"),
-        column("content", ["title", *field_ids], align="stretch"),
+        column("root", ["title", *group_card_ids, "submitCard"], styles={"gap": "12px"}),
         text("title", title, variant="h3"),
-        *fields,
-        card("submitCard", "submitRow"),
-        # align="stretch": Row uses MainAxisSize.min (fixed client-side, not
-        # configurable from here), so justify="center" on submitRow only has
-        # room to center the button if the Row itself is stretched to the
-        # Card's full width -- otherwise it just hugs the button's own
-        # width and "centering" is a no-op.
-        row("submitRow", ["submit"], justify="center", align="stretch"),
-        button("submit", "submitText", action_name=action_name, context_paths=field_paths),
-        text("submitText", submit_label, styles={"color": "#FFFFFF"}),
+        *group_components,
+        # The Card wrapper keeps the submit component reliable in the client.
+        # Give it the same blue surface as its full-width Button, so the whole
+        # visible card is a single obvious submit target rather than a white
+        # card containing a smaller button.
+        card(
+            "submitCard",
+            "submit",
+            styles={
+                "background-color": "#2273F7",
+                "border-width": "0px",
+                "border-radius": "32px",
+                "padding": "0px",
+            },
+        ),
+        button(
+            "submit",
+            "submitText",
+            action_name=action_name,
+            context_paths=field_paths,
+            styles={"width": "100%", "border-radius": "32px"},
+        ),
+        text(
+            "submitText",
+            submit_label,
+            styles={"color": "#FFFFFF", "width": "100%", "text-align": "center"},
+        ),
     ]
     # updateDataModel must land BEFORE updateComponents. The submit button's
     # action.context binds one data-model path per field; the client

@@ -83,7 +83,10 @@ class ConnectionSession:
         text = payload.get("text", "") or _describe_ui_actions(payload.get("uiActions"))
         await self.send("chat.accepted", {}, conversation_id)
 
-        state = {"streamed_token": False}
+        # ``llm_output`` is token-streamed for each model turn. ``answer``
+        # follows the run and normally repeats the most recent turn, but is
+        # also the only text source for non-streaming model calls.
+        state = {"last_llm_text": ""}
         try:
             async for chunk in Runner.run_agent_streaming(self.agent, {"query": text}, session=conversation_id):
                 for event_type, event_payload in _translate(chunk, state):
@@ -128,25 +131,31 @@ def _translate(chunk: Any, state: dict[str, Any]) -> list[tuple[str, dict[str, A
     if chunk_type == "llm_output":
         text = _as_text(payload)
         if text:
-            state["streamed_token"] = True
+            state["last_llm_text"] += text
             events.append(("chat.token", {"text": text}))
         return events
 
-    if chunk_type == "answer" and not state["streamed_token"]:
-        # Fallback for non-streaming LLM calls that only emit a single final
-        # chunk rather than incremental tokens.
+    if chunk_type == "answer":
+        # A final answer uses ``output`` (not ``content``). Emit it if the
+        # preceding model turn was non-streaming; otherwise emit only the
+        # part that was not already delivered as ``llm_output`` tokens.
         text = _as_text(payload)
-        if text:
-            events.append(("chat.token", {"text": text}))
+        unsent_text = _unsent_suffix(text, state["last_llm_text"])
+        if unsent_text:
+            events.append(("chat.token", {"text": unsent_text}))
         return events
 
     if chunk_type == "tool_call":
+        # A tool call starts a new model turn. Do not use text streamed before
+        # the tool when deduplicating the final answer after the tool result.
+        state["last_llm_text"] = ""
         tool_name = (payload or {}).get("tool_name", "")
         call_id = (payload or {}).get("tool_call_id")
         events.append(("tool.started", {"tool": tool_name, "callId": call_id}))
         return events
 
     if chunk_type == "tool_result":
+        state["last_llm_text"] = ""
         tool_name = (payload or {}).get("tool_name", "")
         call_id = (payload or {}).get("tool_call_id")
         tool_result = (payload or {}).get("tool_result")
@@ -166,6 +175,7 @@ def _translate(chunk: Any, state: dict[str, Any]) -> list[tuple[str, dict[str, A
         return events
 
     if chunk_type == "tool_error":
+        state["last_llm_text"] = ""
         # A2uiToolEventRail.on_tool_exception -- the tool actually raised.
         tool_name = (payload or {}).get("tool_name", "")
         call_id = (payload or {}).get("tool_call_id")
@@ -180,10 +190,28 @@ def _translate(chunk: Any, state: dict[str, Any]) -> list[tuple[str, dict[str, A
 
 def _as_text(payload: Any) -> str:
     if isinstance(payload, dict):
-        return str(payload.get("content", "") or "")
+        # Stream chunks use ``content``; the run's final ``answer`` chunk
+        # uses ``output``. Supporting both prevents a non-streaming final
+        # turn from silently disappearing.
+        return str(payload.get("content", payload.get("output", "")) or "")
     if payload is None:
         return ""
     return str(payload)
+
+
+def _unsent_suffix(final_text: str, streamed_text: str) -> str:
+    """Return only final-answer text that has not already been streamed.
+
+    The framework normally repeats a model turn as its terminal ``answer``.
+    If the provider supplied only part of that turn as tokens, preserve the
+    remaining suffix. A distinct final answer is intentionally returned in
+    full: it belongs after the tool result rather than being dropped.
+    """
+    if not final_text or final_text == streamed_text or streamed_text.endswith(final_text):
+        return ""
+    if final_text.startswith(streamed_text):
+        return final_text[len(streamed_text):]
+    return final_text
 
 
 def _extract_result(tool_result: Any) -> tuple[str, Optional[list[dict[str, Any]]]]:
