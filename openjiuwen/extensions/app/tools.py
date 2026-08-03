@@ -8,7 +8,7 @@ raw dict from ``AFTER_TOOL_CALL`` and ``ws_session._translate`` turns the
 ``genui`` list into one WebSocket ``genui`` event per message.
 """
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from enum import Enum
 from typing import Any, Optional
 from urllib.parse import urljoin
@@ -184,6 +184,7 @@ class FormFieldType(str, Enum):
     slider = "slider"
     text = "text"
     checkbox = "checkbox"
+    date = "date"
 
 
 class FormFieldOption(BaseModel):
@@ -193,6 +194,14 @@ class FormFieldOption(BaseModel):
 
 class FormField(BaseModel):
     id: str = Field(description="Unique field id (letters/digits/underscore only), e.g. 'budget'.")
+    category: Optional[str] = Field(
+        default=None,
+        description=(
+            "Short section heading for this field, e.g. 'Dietary needs', "
+            "'Taste preferences', or 'Trip details'. Fields in the same category "
+            "are shown together in their own card."
+        ),
+    )
     type: FormFieldType = Field(
         description=(
             "choice = single-select radio buttons (pick exactly one); "
@@ -200,9 +209,17 @@ class FormField(BaseModel):
             "whenever the user could reasonably want more than one option, e.g. "
             "'which cuisines do you like', 'which amenities matter to you'; "
             "slider = numeric range; text = free text; checkbox = a single yes/no toggle."
+            "date = date-only calendar picker (use for check-in, check-out, booking, or travel dates)."
         )
     )
     label: str = Field(description="Label shown above/next to the field.")
+    help_text: Optional[str] = Field(
+        default=None,
+        description=(
+            "Short explanation shown below the field. Required for sliders: say "
+            "what the setting controls and what low versus high values mean."
+        ),
+    )
     options: Optional[list[FormFieldOption]] = Field(
         default=None, description="Required for type=choice/multi_choice: the selectable options."
     )
@@ -217,6 +234,15 @@ class FormField(BaseModel):
     default_number: Optional[float] = Field(default=None, description="For type=slider: starting value.")
     default_text: str = Field(default="", description="For type=text: starting value.")
     default_checked: bool = Field(default=False, description="For type=checkbox: starting checked state.")
+    default_date: Optional[str] = Field(
+        default=None, description="For type=date: starting date in YYYY-MM-DD format."
+    )
+    min_date: Optional[str] = Field(
+        default=None, description="For type=date: earliest selectable date in YYYY-MM-DD format."
+    )
+    max_date: Optional[str] = Field(
+        default=None, description="For type=date: latest selectable date in YYYY-MM-DD format."
+    )
 
 
 @tool(
@@ -238,10 +264,38 @@ def ask_preferences_form(
     # Nested list items arrive as raw dicts, not coerced FormField instances
     # (LocalFunction's schema formatting doesn't recurse into list[BaseModel]).
     parsed_fields = [f if isinstance(f, FormField) else FormField(**f) for f in fields]
-    built_fields = []
+    is_hotel_form = any(term in title.lower() for term in ("hotel", "accommodation", "stay", "booking"))
+    if is_hotel_form:
+        today = datetime.now(timezone.utc).date()
+        default_check_in = today.isoformat()
+        default_check_out = (today + timedelta(days=1)).isoformat()
+        field_by_id = {field.id: field for field in parsed_fields}
+        for field_id, label, default_date in (
+            ("check_in", "Check-in date", default_check_in),
+            ("check_out", "Check-out date", default_check_out),
+        ):
+            existing = field_by_id.get(field_id)
+            if existing is None:
+                parsed_fields.insert(0, FormField(
+                    id=field_id,
+                    type=FormFieldType.date,
+                    label=label,
+                    category="Stay dates",
+                    default_date=default_date,
+                    min_date=default_check_in,
+                ))
+            else:
+                existing.type = FormFieldType.date
+                existing.category = existing.category or "Stay dates"
+                existing.label = label
+                existing.default_date = existing.default_date or default_date
+                existing.min_date = existing.min_date or default_check_in
+    built_groups: dict[str, list[dict[str, Any]]] = {}
     field_paths = {}
     field_defaults: dict[str, Any] = {}
     for f in parsed_fields:
+        category = f.category.strip() if f.category and f.category.strip() else "Preferences"
+        built_fields = built_groups.setdefault(category, [])
         if f.type == FormFieldType.choice:
             built_fields.append(
                 genui.choice_picker(
@@ -274,13 +328,27 @@ def ask_preferences_form(
             field_defaults[f.id] = f.default_option_values if f.default_option_values else []
         elif f.type == FormFieldType.slider:
             default_value = f.default_number if f.default_number is not None else (f.min_value or 0)
+            min_value = f.min_value or 0
+            max_value = f.max_value if f.max_value is not None else 100
             built_fields.append(
                 genui.slider(
                     f.id,
                     value=default_value,
-                    min_value=f.min_value or 0,
-                    max_value=f.max_value if f.max_value is not None else 100,
+                    min_value=min_value,
+                    max_value=max_value,
                     label=f.label,
+                )
+            )
+            slider_help = f.help_text or (
+                f"Choose a value from {min_value:g} to {max_value:g}. "
+                f"Current value: {default_value:g}."
+            )
+            built_fields.append(
+                genui.text(
+                    f"{f.id}_help",
+                    slider_help,
+                    variant="caption",
+                    styles={"line-clamp": 0},
                 )
             )
             field_defaults[f.id] = default_value
@@ -291,12 +359,25 @@ def ask_preferences_form(
         elif f.type == FormFieldType.checkbox:
             built_fields.append(genui.check_box(f.id, f.label, value=f.default_checked))
             field_defaults[f.id] = f.default_checked
+        elif f.type == FormFieldType.date:
+            default_value = f.default_date or datetime.now(timezone.utc).strftime("%Y-%m-%d")
+            built_fields.append(
+                genui.date_input(
+                    f.id,
+                    value=default_value,
+                    label=f.label,
+                    min_date=f.min_date,
+                    max_date=f.max_date,
+                )
+            )
+            field_defaults[f.id] = default_value
         field_paths[f.id] = f"/{f.id}/value"
 
     messages = genui.form(
         surface_id,
         title=title,
-        fields=built_fields,
+        fields=[field for group in built_groups.values() for field in group],
+        field_groups=list(built_groups.items()),
         submit_label=submit_label,
         action_name="submit_preferences_form",
         field_paths=field_paths,
