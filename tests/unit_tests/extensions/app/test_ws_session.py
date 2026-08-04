@@ -12,11 +12,16 @@ from openjiuwen.extensions.app.ws_session import (
     _describe_ui_actions,
     _extract_result,
     _translate,
+    _unsent_suffix,
 )
 
 
 def _chunk(chunk_type, payload=None):
     return SimpleNamespace(type=chunk_type, payload=payload)
+
+
+def _new_state():
+    return {"last_llm_text": ""}
 
 
 class TestDescribeUiActions:
@@ -44,42 +49,91 @@ class TestExtractResult:
         assert _extract_result(42) == ("42", None)
 
 
+class TestUnsentSuffix:
+    def test_empty_final_text_returns_empty(self):
+        assert _unsent_suffix("", "anything") == ""
+
+    def test_identical_text_returns_empty(self):
+        assert _unsent_suffix("hello", "hello") == ""
+
+    def test_streamed_text_already_contains_final_returns_empty(self):
+        assert _unsent_suffix("world", "hello wonderful world") == ""
+
+    def test_returns_unsent_suffix_when_final_extends_streamed(self):
+        assert _unsent_suffix("hello world", "hello ") == "world"
+
+    def test_returns_full_text_when_unrelated_to_streamed(self):
+        assert _unsent_suffix("a distinct final answer", "hello ") == "a distinct final answer"
+
+
 class TestTranslate:
-    def test_llm_output_emits_chat_token(self):
-        state = {"streamed_token": False}
+    def test_llm_output_emits_chat_token_and_accumulates_state(self):
+        state = _new_state()
         events = _translate(_chunk("llm_output", {"content": "hello"}), state)
         assert events == [("chat.token", {"text": "hello"})]
-        assert state["streamed_token"] is True
+        assert state["last_llm_text"] == "hello"
 
-    def test_answer_is_fallback_only_when_nothing_streamed(self):
-        state = {"streamed_token": True}
-        events = _translate(_chunk("answer", {"content": "hello"}), state)
+        events = _translate(_chunk("llm_output", {"content": " world"}), state)
+        assert events == [("chat.token", {"text": " world"})]
+        assert state["last_llm_text"] == "hello world"
+
+    def test_answer_emits_only_unsent_suffix(self):
+        state = _new_state()
+        _translate(_chunk("llm_output", {"content": "hello "}), state)
+        events = _translate(_chunk("answer", {"output": "hello world"}), state)
+        assert events == [("chat.token", {"text": "world"})]
+
+    def test_answer_emits_nothing_when_fully_streamed(self):
+        state = _new_state()
+        _translate(_chunk("llm_output", {"content": "hello"}), state)
+        events = _translate(_chunk("answer", {"output": "hello"}), state)
         assert events == []
 
-        state = {"streamed_token": False}
-        events = _translate(_chunk("answer", {"content": "hello"}), state)
-        assert events == [("chat.token", {"text": "hello"})]
-
-    def test_tool_call_emits_tool_started(self):
-        state = {"streamed_token": False}
-        events = _translate(_chunk("tool_call", {"tool_name": "show_card"}), state)
-        assert events == [("tool.started", {"tool": "show_card"})]
+    def test_tool_call_emits_tool_started_and_resets_streamed_text(self):
+        state = _new_state()
+        state["last_llm_text"] = "some preceding text"
+        events = _translate(_chunk("tool_call", {"tool_name": "show_card", "tool_call_id": "c1"}), state)
+        assert events == [("tool.started", {"tool": "show_card", "callId": "c1"})]
+        assert state["last_llm_text"] == ""
 
     def test_tool_result_emits_finished_output_and_genui(self):
-        state = {"streamed_token": False}
+        state = _new_state()
         payload = {
             "tool_name": "show_card",
+            "tool_call_id": "c1",
             "tool_result": {"text": "answer", "genui": [{"createSurface": {}}]},
         }
         events = _translate(_chunk("tool_result", payload), state)
         assert events == [
-            ("tool.finished", {"tool": "show_card"}),
-            ("tool.output", {"text": "answer"}),
+            ("tool.finished", {"tool": "show_card", "callId": "c1"}),
+            ("tool.output", {"tool": "show_card", "callId": "c1", "text": "answer"}),
             ("genui", {"createSurface": {}}),
         ]
 
+    def test_tool_result_with_error_prefix_emits_error_tool_instead_of_output(self):
+        state = _new_state()
+        payload = {
+            "tool_name": "fetch_webpage",
+            "tool_call_id": "c2",
+            "tool_result": "[ERROR] could not reach host",
+        }
+        events = _translate(_chunk("tool_result", payload), state)
+        assert events == [
+            ("tool.finished", {"tool": "fetch_webpage", "callId": "c2"}),
+            ("error.tool", {"tool": "fetch_webpage", "callId": "c2", "message": "[ERROR] could not reach host"}),
+        ]
+
+    def test_tool_error_emits_finished_then_error_tool(self):
+        state = _new_state()
+        payload = {"tool_name": "browser_inspect_page", "tool_call_id": "c3", "message": "nav timeout"}
+        events = _translate(_chunk("tool_error", payload), state)
+        assert events == [
+            ("tool.finished", {"tool": "browser_inspect_page", "callId": "c3"}),
+            ("error.tool", {"tool": "browser_inspect_page", "callId": "c3", "message": "nav timeout"}),
+        ]
+
     def test_unhandled_chunk_type_emits_nothing(self):
-        state = {"streamed_token": False}
+        state = _new_state()
         assert _translate(_chunk("llm_usage", {}), state) == []
 
 

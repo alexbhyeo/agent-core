@@ -51,3 +51,22 @@ class TestBuildAgent:
         manager = agent.agent_callback_manager
         assert manager.has_hooks(AgentCallbackEvent.BEFORE_TOOL_CALL)
         assert manager.has_hooks(AgentCallbackEvent.AFTER_TOOL_CALL)
+
+    @pytest.mark.asyncio
+    async def test_registers_search_and_browser_tools_beyond_all_tools(self):
+        agent = await build_agent()
+        tool_names = {info.name for info in await agent.ability_manager.list_tool_info()}
+        assert {"free_search", "fetch_webpage", "browser_inspect_page"} <= tool_names
+
+    @pytest.mark.asyncio
+    async def test_applies_configured_temperature_and_seed(self):
+        config.set_value("LLM_TEMPERATURE", 0.42)
+        config.set_value("LLM_SEED", 7)
+        try:
+            agent = await build_agent()
+        finally:
+            config.set_value("LLM_TEMPERATURE", 1.0)
+            config.set_value("LLM_SEED", 42)
+        model_request_config = agent.config.model_config_obj
+        assert model_request_config.temperature == 0.42
+        assert model_request_config.seed == 7

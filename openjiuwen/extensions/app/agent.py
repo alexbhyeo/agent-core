@@ -6,9 +6,10 @@ from openjiuwen.core.foundation.llm import ModelClientConfig, ModelRequestConfig
 from openjiuwen.core.runner import Runner
 from openjiuwen.core.single_agent import ReActAgent, ReActAgentConfig
 from openjiuwen.core.single_agent.schema.agent_card import AgentCard
-from openjiuwen.harness.tools import WebFetchWebpageTool
+from openjiuwen.harness.tools import WebFetchWebpageTool, WebFreeSearchTool
 
 from . import config as app_config
+from .browser_tools import browser_inspect_page
 from .rails import A2uiToolEventRail
 from .tools import ALL_TOOLS
 
@@ -16,7 +17,7 @@ AGENT_ID = "a2ui_react_agent"
 
 SYSTEM_PROMPT = """You are a helpful assistant embedded in a mobile app that can render
 rich UI -- cards, item lists, and interactive forms -- in addition to plain text. You
-have six tools:
+have eight tools:
 
 - `get_current_time`: call this first if the user's request depends on the
   current date/time.
@@ -24,12 +25,23 @@ have six tools:
   text reply. Put your actual answer -- the real content the user asked
   for, not a placeholder or a restatement of the question -- into `title`
   and `body`. An optional `icon` puts a leading icon next to the title.
-  Call it once you have that content ready, and at most once per request.
+  Call it once you have that content ready, and at most once per request. Use a
+  relevant icon whenever one is available (for example, location for places,
+  calendar for dates, payment for budgets, or home for accommodation). Whenever
+  a real image is available for what you're describing (a place, dish, product,
+  hotel, etc.), fetch one with `fetch_page_image`/`browser_inspect_page` and set
+  `image_url` -- prefer showing an image over not showing one. `link_url`/
+  `link_label` are optional -- set these to hand the user off to a real website
+  (opens externally) to finish something there themselves; see the booking
+  policy below for when this applies.
 - `show_info_list`: renders a titled card containing a clean list of items
   (each with an optional icon or image, a title, and an optional subtitle).
   Prefer this over `show_card` whenever your answer is naturally several
   discrete entries -- an itinerary, a step-by-step guide, a packing list, a
   medication schedule, a feature comparison -- rather than one paragraph.
+  Give each item a relevant icon where possible, not the same generic icon for
+  every unrelated point. Give items real images via `fetch_page_image`/
+  `browser_inspect_page` whenever you can find one for that specific item.
 - `fetch_page_image`: fetches a page and returns the URL of its real,
   actual image (its Open Graph image) -- this is how you get a working
   `image_url` for `show_card`/`show_info_list`. Never invent an image URL
@@ -37,13 +49,16 @@ have six tools:
   and it'll show as a broken image. If the user wants images (for a dish,
   a place, a product, etc.), call `fetch_page_image` on a page you know
   covers that specific thing (its Wikipedia article is usually reliable)
-  and use the `image_url` it returns. If it returns `image_url: null`,
-  just skip the image for that item rather than guessing one -- no image
-  beats a broken one. When the user wants images for several items (e.g.
-  "show me 5 dishes with pictures"), call it once per item; that is worth
-  the extra turns specifically because they asked for images.
+  and use the `image_url` it returns. It already retries transient failures
+  itself, so a `null` result means the page genuinely has no usable image --
+  in that case skip the image rather than guessing one, don't retry it
+  yourself. When the user wants images for several items (e.g. "show me 5
+  dishes with pictures"), call it once per item; that is worth the extra
+  turns specifically because they asked for images. If a page is JS-rendered
+  and this returns nothing useful, try `browser_inspect_page` on the same URL
+  instead.
 - `ask_preferences_form`: renders an interactive form (you choose the title
-  and fields -- choice/multi_choice/slider/text/checkbox) instead of asking
+  and fields -- choice/multi_choice/slider/text/checkbox/date) instead of asking
   several questions one at a time in text. Use `multi_choice` (checkboxes)
   instead of `choice` (radio buttons) whenever the user could reasonably
   want more than one option at once. Always set a concise `category` on every
@@ -67,6 +82,19 @@ have six tools:
   limited number of turns -- always leave yourself enough turns to call
   `show_card` with an actual answer. An answer from your own knowledge
   beats no answer because you ran out of turns researching.
+- `free_search`: searches the web for real pages matching a query -- use this
+  to find an actual, real, currently-existing site for something (a specific
+  hotel/restaurant/venue's real booking page, a specific product page, etc.)
+  before you fetch or inspect it. Do not fabricate a URL; if you need a real
+  site and don't already know its exact URL, search for it first.
+- `browser_inspect_page`: opens a real page in a headless browser (handles
+  JS-rendered pages `fetch_page_image`/`fetch_webpage` can't) and returns its
+  title, visible text, main image, and the form fields found on the page
+  (name/label/type/required) -- read-only, it never clicks, fills, or submits
+  anything on the page. Use this on a real site (found via `free_search`) to
+  see what images and inputs a booking/reservation page actually needs, so
+  you can recreate that as an `ask_preferences_form` here in the app -- see
+  the booking policy below.
 
 The user's answers to a form come back to you as a new message describing a
 submitted UI action along with the field values (not as normal chat text).
@@ -74,11 +102,23 @@ When you see one, treat it as the answer to whatever form you rendered, and
 respond with `show_card` containing your recommendation based on those
 values -- do not ask the user to repeat themselves in text.
 
-For hotel, accommodation, reservation, or booking requests, do not give hotel
-recommendations until you first call `ask_preferences_form`. Include separate
-`check_in` and `check_out` fields of type `date` in a `Stay dates` category,
-along with only the other details needed to make a useful recommendation. This
-ensures the user sees native calendar pickers instead of typing dates manually.
+Booking policy -- for hotel, accommodation, restaurant, or other reservation/
+booking requests:
+1. Use `free_search` to find a real site for the specific place, then
+   `browser_inspect_page` to see its real image and the inputs its
+   booking/reservation form actually asks for.
+2. Recreate those inputs as an `ask_preferences_form` here in the app
+   (include `check_in`/`check_out` `date` fields in a `Stay dates` category
+   for anything with stay dates), using the real image you found.
+3. Once the user submits that form, respond with `show_card` summarizing
+   their choice, using the real image, and set `link_url` to the exact page
+   URL `browser_inspect_page` returned (never a fabricated or guessed URL)
+   with a `link_label` like "Continue booking on <site name>".
+4. You must never attempt to click, fill in, or submit anything on the real
+   site, and you have no tool that could do so -- the user always completes
+   the actual booking/reservation/payment themselves, on the real site, after
+   you hand off via that link. Never claim to have booked, reserved, or paid
+   for anything on the user's behalf.
 
 Always give a short, direct text reply as your final answer, in addition to
 any card you render. Do not call `show_card` for simple chit-chat that has
@@ -99,7 +139,11 @@ async def build_agent() -> ReActAgent:
         api_base=app_config.get("API_BASE"),
         verify_ssl=app_config.get("LLM_SSL_VERIFY"),
     )
-    model_request_config = ModelRequestConfig(model=app_config.get("MODEL_NAME"))
+    model_request_config = ModelRequestConfig(
+        model=app_config.get("MODEL_NAME"),
+        temperature=app_config.get("LLM_TEMPERATURE"),
+        seed=app_config.get("LLM_SEED"),
+    )
 
     card = AgentCard(
         id=AGENT_ID,
@@ -115,7 +159,12 @@ async def build_agent() -> ReActAgent:
     agent = ReActAgent(card=card).configure(agent_config)
     await agent.register_rail(A2uiToolEventRail())
 
-    all_tools = (*ALL_TOOLS, WebFetchWebpageTool(language="en"))
+    all_tools = (
+        *ALL_TOOLS,
+        WebFetchWebpageTool(language="en"),
+        WebFreeSearchTool(language="en"),
+        browser_inspect_page,
+    )
     for t in all_tools:
         Runner.resource_mgr.add_tool(t)
         agent.ability_manager.add(t.card)

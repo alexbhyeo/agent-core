@@ -146,20 +146,54 @@ def row(
 
 
 _MATERIAL_TO_LUCIDE_ICON_NAMES: dict[str, str] = {
-    "accountCircle": "circle-user-round", "add": "plus", "arrowBack": "arrow-left",
-    "arrowForward": "arrow-right", "attachFile": "paperclip", "calendarToday": "calendar-days",
-    "call": "phone", "camera": "camera", "check": "check", "close": "x",
-    "delete": "trash-2", "download": "download", "edit": "pencil", "error": "circle-alert",
-    "event": "calendar", "favorite": "heart", "favoriteOff": "heart-off", "folder": "folder",
-    "help": "circle-help", "home": "house", "info": "info", "locationOn": "map-pin",
-    "lock": "lock", "lockOpen": "lock-open", "mail": "mail", "menu": "menu",
-    "moreHoriz": "ellipsis", "moreVert": "ellipsis-vertical", "notifications": "bell",
-    "notificationsOff": "bell-off", "payment": "credit-card", "person": "user",
-    "phone": "phone", "photo": "image", "print": "printer", "refresh": "refresh-cw",
-    "search": "search", "send": "send", "settings": "settings", "share": "share-2",
-    "shoppingCart": "shopping-cart", "star": "star", "starHalf": "star-half",
-    "starOff": "star-off", "upload": "upload", "visibility": "eye",
-    "visibilityOff": "eye-off", "warning": "triangle-alert",
+    "accountCircle": "circle-user-round",
+    "add": "plus",
+    "arrowBack": "arrow-left",
+    "arrowForward": "arrow-right",
+    "attachFile": "paperclip",
+    "calendarToday": "calendar-days",
+    "call": "phone",
+    "camera": "camera",
+    "check": "check",
+    "close": "x",
+    "delete": "trash-2",
+    "download": "download",
+    "edit": "pencil",
+    "error": "circle-alert",
+    "event": "calendar",
+    "favorite": "heart",
+    "favoriteOff": "heart-off",
+    "folder": "folder",
+    "help": "circle-help",
+    "home": "house",
+    "info": "info",
+    "locationOn": "map-pin",
+    "lock": "lock",
+    "lockOpen": "lock-open",
+    "mail": "mail",
+    "menu": "menu",
+    "moreHoriz": "ellipsis",
+    "moreVert": "ellipsis-vertical",
+    "notifications": "bell",
+    "notificationsOff": "bell-off",
+    "payment": "credit-card",
+    "person": "user",
+    "phone": "phone",
+    "photo": "image",
+    "print": "printer",
+    "refresh": "refresh-cw",
+    "search": "search",
+    "send": "send",
+    "settings": "settings",
+    "share": "share-2",
+    "shoppingCart": "shopping-cart",
+    "star": "star",
+    "starHalf": "star-half",
+    "starOff": "star-off",
+    "upload": "upload",
+    "visibility": "eye",
+    "visibilityOff": "eye-off",
+    "warning": "triangle-alert",
 }
 
 
@@ -199,14 +233,53 @@ def image(
 # Every Material-style icon name accepted by the tool API. ``icon()`` above
 # translates them to AGenUI/Harmony's Lucide names before sending the surface.
 ICON_NAMES = [
-    "accountCircle", "add", "arrowBack", "arrowForward", "attachFile",
-    "calendarToday", "call", "camera", "check", "close", "delete",
-    "download", "edit", "error", "event", "favorite", "favoriteOff",
-    "folder", "help", "home", "info", "locationOn", "lock", "lockOpen",
-    "mail", "menu", "moreHoriz", "moreVert", "notifications",
-    "notificationsOff", "payment", "person", "phone", "photo", "print",
-    "refresh", "search", "send", "settings", "share", "shoppingCart",
-    "star", "starHalf", "starOff", "upload", "visibility", "visibilityOff",
+    "accountCircle",
+    "add",
+    "arrowBack",
+    "arrowForward",
+    "attachFile",
+    "calendarToday",
+    "call",
+    "camera",
+    "check",
+    "close",
+    "delete",
+    "download",
+    "edit",
+    "error",
+    "event",
+    "favorite",
+    "favoriteOff",
+    "folder",
+    "help",
+    "home",
+    "info",
+    "locationOn",
+    "lock",
+    "lockOpen",
+    "mail",
+    "menu",
+    "moreHoriz",
+    "moreVert",
+    "notifications",
+    "notificationsOff",
+    "payment",
+    "person",
+    "phone",
+    "photo",
+    "print",
+    "refresh",
+    "search",
+    "send",
+    "settings",
+    "share",
+    "shoppingCart",
+    "star",
+    "starHalf",
+    "starOff",
+    "upload",
+    "visibility",
+    "visibilityOff",
     "warning",
 ]
 
@@ -244,17 +317,24 @@ def summary_card(
     body: str,
     icon_name: Optional[str] = None,
     image_url: Optional[str] = None,
+    link_url: Optional[str] = None,
+    link_label: Optional[str] = None,
 ) -> list[dict[str, Any]]:
     """Build a create+update pair rendering a title/body card in a Material Card surface.
 
     ``icon_name`` (one of ``ICON_NAMES``) puts a leading icon next to the title.
     ``image_url`` puts a full-width header image above the title.
+    ``link_url`` adds a button below the body that opens that URL externally
+    (via ``open_url_button``) -- e.g. handing off to a real website for the
+    user to finish something (like a booking) there themselves.
     """
-    header_children = (["headerIcon", "title"] if icon_name else ["title"])
-    inner_children = (["image"] if image_url else []) + (["header"] if icon_name else ["title"]) + [
-        "divider",
-        "body",
-    ]
+    header_children = ["headerIcon", "title"] if icon_name else ["title"]
+    inner_children = (
+        (["image"] if image_url else [])
+        + (["header"] if icon_name else ["title"])
+        + ["divider", "body"]
+        + (["linkButton"] if link_url else [])
+    )
     components = [
         card("root", "content"),
         column("content", inner_children),
@@ -263,6 +343,18 @@ def summary_card(
         text("title", title, variant="h3", weight=1 if icon_name else None),
         divider("divider"),
         text("body", body, variant="body", styles={"line-clamp": 0}),
+        *(
+            [
+                open_url_button("linkButton", "linkText", link_url, styles={"width": "100%"}),
+                text(
+                    "linkText",
+                    link_label or "Continue on site",
+                    styles={"color": "#FFFFFF", "width": "100%", "text-align": "center"},
+                ),
+            ]
+            if link_url
+            else []
+        ),
     ]
     return [
         create_surface(surface_id),
@@ -309,7 +401,13 @@ def info_list_card(
             # No photo for this item: a leading icon next to the title
             # instead of an empty full-width photo block.
             header_row_id = f"{outer_id}Header"
-            item_components.append(column(outer_id, [header_row_id, *([subtitle_id] if item_subtitle else [])], styles={"padding": "16px", "gap": "8px"}))
+            item_components.append(
+                column(
+                    outer_id,
+                    [header_row_id, *([subtitle_id] if item_subtitle else [])],
+                    styles={"padding": "16px", "gap": "8px"},
+                )
+            )
             item_components.append(row(header_row_id, [media_id, text_id], align="center", styles={"gap": "12px"}))
             # tools.py's _item_icon() always supplies a fallback icon when
             # there's no image.
@@ -323,7 +421,7 @@ def info_list_card(
             # full description always shows regardless of length.
             item_components.append(text(subtitle_id, item_subtitle, variant="caption", styles={"line-clamp": 0}))
 
-    header_children = (["headerIcon", "title"] if icon_name else ["title"])
+    header_children = ["headerIcon", "title"] if icon_name else ["title"]
     root_children = (["header"] if icon_name else ["title"]) + ["list"]
     components = [
         column("root", root_children, styles={"gap": "12px"}),
@@ -355,6 +453,7 @@ def choice_picker(
     label: Optional[str] = None,
     value: Optional[list[str]] = None,
     variant: str = "mutuallyExclusive",
+    styles: Optional[dict[str, Any]] = None,
 ) -> dict[str, Any]:
     payload: dict[str, Any] = {
         "id": comp_id,
@@ -365,6 +464,8 @@ def choice_picker(
     }
     if label is not None:
         payload["label"] = label
+    if styles is not None:
+        payload["styles"] = styles
     return payload
 
 
@@ -464,6 +565,30 @@ def button(
         "variant": variant,
         "styles": {**_DEFAULT_BUTTON_STYLES, **(styles or {})},
         "action": {"event": event},
+    }
+
+
+def open_url_button(
+    comp_id: str,
+    child_id: str,
+    url: str,
+    variant: str = "default",
+    styles: Optional[dict[str, Any]] = None,
+) -> dict[str, Any]:
+    """A button that opens ``url`` externally via the client's built-in ``openUrl``
+    function, instead of ``button()``'s in-app ``UserActionEvent``.
+
+    Use this to hand off to a real website (e.g. so the user can finish a
+    booking/reservation there themselves) -- pressing it never sends anything
+    back to this agent, it only opens the URL in the user's browser/handler.
+    """
+    return {
+        "id": comp_id,
+        "component": "Button",
+        "child": child_id,
+        "variant": variant,
+        "styles": {**_DEFAULT_BUTTON_STYLES, **(styles or {})},
+        "action": {"functionCall": {"call": "openUrl", "args": {"url": url}}},
     }
 
 
