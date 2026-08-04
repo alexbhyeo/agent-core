@@ -2,6 +2,8 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2025. All rights reserved.
 """Unit tests for openjiuwen.extensions.app.config."""
 
+import os
+
 from openjiuwen.extensions.app import config
 
 
@@ -20,3 +22,13 @@ class TestConfig:
             assert config.get("API_KEY") == "mock-api-key-for-tests"
         finally:
             config.set_value("API_KEY", "")
+
+    def test_llm_temperature_and_seed_have_numeric_defaults(self):
+        assert isinstance(config.get("LLM_TEMPERATURE"), float)
+        assert isinstance(config.get("LLM_SEED"), int)
+
+    def test_free_search_ddg_enabled_by_default(self):
+        # config.py sets this env var (via os.environ.setdefault) on import so
+        # WebFreeSearchTool works out of the box; importing the module already
+        # ran that, so just assert the process-wide effect took hold.
+        assert os.environ.get("FREE_SEARCH_DDG_ENABLED", "").lower() in {"1", "true", "yes", "on", "enabled"}

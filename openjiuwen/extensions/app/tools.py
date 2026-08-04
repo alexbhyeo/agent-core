@@ -8,6 +8,7 @@ raw dict from ``AFTER_TOOL_CALL`` and ``ws_session._translate`` turns the
 ``genui`` list into one WebSocket ``genui`` event per message.
 """
 
+import asyncio
 from datetime import datetime, timedelta, timezone
 from enum import Enum
 from typing import Any, Optional
@@ -21,6 +22,8 @@ from openjiuwen.harness.tools.web._common import _REQUEST_HEADERS, _parse_html
 from openjiuwen.harness.tools.web._decode import _decode_response_text
 
 from . import genui
+
+MAX_IMAGE_FETCH_ATTEMPTS = 3
 
 
 @tool(
@@ -36,19 +39,28 @@ def get_current_time() -> str:
 _BAD_IMAGE_SRC_HINTS = ("logo", "icon", "sprite", "avatar", "pixel", "spacer", "1x1", "blank.gif")
 
 
-async def _extract_page_image(url: str) -> Optional[str]:
-    """Fetch ``url`` and pull out its Open Graph image, or failing that the
-    first plausible content <img> -- reuses the same HTTP transport and HTML
-    parser as ``fetch_webpage`` rather than duplicating that logic, but keeps
-    the raw markup (fetch_webpage strips it entirely for text extraction, so
-    it can never recover a real image URL).
+class _RetryableFetchError(Exception):
+    """A page fetch that may succeed on a fresh attempt (network hiccup, 5xx, timeout)."""
+
+
+async def _fetch_page_once(url: str) -> Optional[str]:
+    """One fetch+parse attempt. Raises ``_RetryableFetchError`` for failures worth
+    retrying; returns ``None`` (not an error) when the page loaded fine but simply
+    has no usable image -- retrying an identical successful fetch would not change
+    that, so callers should not retry in that case.
     """
-    async with _http.new_session() as session:
-        status, headers, body, final_url, _truncated = await _http.request(
-            session, "GET", url, headers=_REQUEST_HEADERS, timeout_seconds=15, max_bytes=3_000_000
-        )
+    try:
+        async with _http.new_session() as session:
+            status, headers, body, final_url, _truncated = await _http.request(
+                session, "GET", url, headers=_REQUEST_HEADERS, timeout_seconds=15, max_bytes=3_000_000
+            )
+    except Exception as exc:  # noqa: BLE001 -- network/timeout errors are retryable
+        raise _RetryableFetchError(str(exc)) from exc
+    if status >= 500:
+        raise _RetryableFetchError(f"HTTP {status}")
     if status >= 400:
         return None
+
     html = _decode_response_text(body, content_type=headers.get("Content-Type", ""))
     soup = _parse_html(html)
 
@@ -66,6 +78,28 @@ async def _extract_page_image(url: str) -> Optional[str]:
             continue
         return urljoin(final_url, src)
     return None
+
+
+async def _extract_page_image(url: str) -> Optional[str]:
+    """Fetch ``url`` and pull out its Open Graph image, or failing that the
+    first plausible content <img> -- reuses the same HTTP transport and HTML
+    parser as ``fetch_webpage`` rather than duplicating that logic, but keeps
+    the raw markup (fetch_webpage strips it entirely for text extraction, so
+    it can never recover a real image URL).
+
+    Retries transient failures (network errors, timeouts, 5xx) up to
+    ``MAX_IMAGE_FETCH_ATTEMPTS`` times with a short backoff between attempts,
+    so one flaky request doesn't cost the user an image they could have had.
+    """
+    last_error: Optional[_RetryableFetchError] = None
+    for attempt in range(1, MAX_IMAGE_FETCH_ATTEMPTS + 1):
+        try:
+            return await _fetch_page_once(url)
+        except _RetryableFetchError as exc:
+            last_error = exc
+            if attempt < MAX_IMAGE_FETCH_ATTEMPTS:
+                await asyncio.sleep(0.5 * attempt)
+    raise last_error  # exhausted all attempts
 
 
 @tool(
@@ -102,6 +136,28 @@ def _safe_icon(name: Optional[str]) -> Optional[str]:
     return None
 
 
+_ICON_HINTS: tuple[tuple[tuple[str, ...], str], ...] = (
+    (("hotel", "room", "accommodation", "stay", "guesthouse", "resort"), "home"),
+    (("restaurant", "food", "dish", "meal", "cuisine", "cafe", "hawker"), "favorite"),
+    (("location", "place", "address", "area", "near", "distance", "map"), "locationOn"),
+    (("date", "day", "time", "schedule", "check-in", "check-out", "booking"), "calendarToday"),
+    (("price", "budget", "cost", "payment", "fee", "rm"), "payment"),
+    (("warning", "caution", "risk", "alert"), "warning"),
+    (("phone", "call", "contact"), "phone"),
+    (("photo", "image", "picture"), "photo"),
+    (("step", "tip", "recommend", "highlight", "must-see"), "star"),
+)
+
+
+def _suggest_icon(*texts: Optional[str]) -> Optional[str]:
+    """Choose a supported visual cue from the content when the model omits one."""
+    searchable = " ".join(text for text in texts if text).lower()
+    for keywords, icon_name in _ICON_HINTS:
+        if any(keyword in searchable for keyword in keywords):
+            return icon_name
+    return None
+
+
 @tool(
     description=(
         "Render a small titled card of information as an A2UI surface on the "
@@ -112,16 +168,34 @@ def _safe_icon(name: Optional[str]) -> Optional[str]:
         "your text reply, it does not replace it. Do not call this more than "
         "once per user request. `icon` is optional -- one of: " + ", ".join(genui.ICON_NAMES) + ". "
         "`image_url` is optional -- a real, publicly reachable http(s) image URL "
-        "to show as a header image above the title. Get one from `fetch_page_image`; "
-        "do not type one from memory, it will almost always be wrong."
+        "to show as a header image above the title. Get one from `fetch_page_image` or "
+        "`browser_inspect_page`; do not type one from memory, it will almost always be wrong. "
+        "`link_url`/`link_label` are optional -- add these to hand the user off to a real "
+        "website (opens externally, in their own browser) to finish something there "
+        "themselves, e.g. completing a booking on the real site you inspected with "
+        "`browser_inspect_page`. Never fabricate a `link_url`; only use a URL you actually "
+        "navigated to."
     )
 )
-def show_card(title: str, body: str, icon: Optional[str] = None, image_url: Optional[str] = None) -> dict[str, Any]:
+def show_card(
+    title: str,
+    body: str,
+    icon: Optional[str] = None,
+    image_url: Optional[str] = None,
+    link_url: Optional[str] = None,
+    link_label: Optional[str] = None,
+) -> dict[str, Any]:
     surface_id = genui.new_surface_id("card")
     return {
         "text": body,
         "genui": genui.summary_card(
-            surface_id, title=title, body=body, icon_name=_safe_icon(icon), image_url=image_url
+            surface_id,
+            title=title,
+            body=body,
+            icon_name=_safe_icon(icon) or _suggest_icon(title, body),
+            image_url=image_url,
+            link_url=link_url,
+            link_label=link_label,
         ),
     }
 
@@ -129,7 +203,9 @@ def show_card(title: str, body: str, icon: Optional[str] = None, image_url: Opti
 class InfoListItem(BaseModel):
     title: str = Field(description="The item's main text.")
     subtitle: Optional[str] = Field(default=None, description="Optional smaller secondary text below the title.")
-    icon: Optional[str] = Field(default=None, description=f"Optional leading icon, one of: {', '.join(genui.ICON_NAMES)}")
+    icon: Optional[str] = Field(
+        default=None, description=f"Optional leading icon, one of: {', '.join(genui.ICON_NAMES)}"
+    )
     image_url: Optional[str] = Field(
         default=None,
         description=(
@@ -150,7 +226,7 @@ def _item_icon(item: InfoListItem) -> Optional[str]:
     # child than its siblings and its text starts flush against the card
     # edge instead of aligned with the icon column -- a hallucinated or
     # omitted icon must still fall back to something, not disappear.
-    return _safe_icon(item.icon) or _DEFAULT_ITEM_ICON
+    return _safe_icon(item.icon) or _suggest_icon(item.title, item.subtitle) or _DEFAULT_ITEM_ICON
 
 
 @tool(
@@ -166,14 +242,12 @@ def _item_icon(item: InfoListItem) -> Optional[str]:
 def show_info_list(title: str, items: list[InfoListItem], icon: Optional[str] = None) -> dict[str, Any]:
     surface_id = genui.new_surface_id("list")
     parsed_items = [i if isinstance(i, InfoListItem) else InfoListItem(**i) for i in items]
-    summary = "\n".join(
-        f"- {i.title}" + (f" — {i.subtitle}" if i.subtitle else "") for i in parsed_items
-    )
+    summary = "\n".join(f"- {i.title}" + (f" — {i.subtitle}" if i.subtitle else "") for i in parsed_items)
     genui_messages = genui.info_list_card(
         surface_id,
         title=title,
         items=[(_item_icon(i), i.title, i.subtitle, i.image_url) for i in parsed_items],
-        icon_name=_safe_icon(icon),
+        icon_name=_safe_icon(icon) or _suggest_icon(title),
     )
     return {"text": f"{title}\n{summary}", "genui": genui_messages}
 
@@ -234,9 +308,7 @@ class FormField(BaseModel):
     default_number: Optional[float] = Field(default=None, description="For type=slider: starting value.")
     default_text: str = Field(default="", description="For type=text: starting value.")
     default_checked: bool = Field(default=False, description="For type=checkbox: starting checked state.")
-    default_date: Optional[str] = Field(
-        default=None, description="For type=date: starting date in YYYY-MM-DD format."
-    )
+    default_date: Optional[str] = Field(default=None, description="For type=date: starting date in YYYY-MM-DD format.")
     min_date: Optional[str] = Field(
         default=None, description="For type=date: earliest selectable date in YYYY-MM-DD format."
     )
@@ -257,9 +329,7 @@ class FormField(BaseModel):
         "`show_card` with an answer that references their actual submitted values."
     )
 )
-def ask_preferences_form(
-    title: str, fields: list[FormField], submit_label: str = "Submit"
-) -> dict[str, Any]:
+def ask_preferences_form(title: str, fields: list[FormField], submit_label: str = "Submit") -> dict[str, Any]:
     surface_id = genui.new_surface_id("form")
     # Nested list items arrive as raw dicts, not coerced FormField instances
     # (LocalFunction's schema formatting doesn't recurse into list[BaseModel]).
@@ -276,14 +346,17 @@ def ask_preferences_form(
         ):
             existing = field_by_id.get(field_id)
             if existing is None:
-                parsed_fields.insert(0, FormField(
-                    id=field_id,
-                    type=FormFieldType.date,
-                    label=label,
-                    category="Stay dates",
-                    default_date=default_date,
-                    min_date=default_check_in,
-                ))
+                parsed_fields.insert(
+                    0,
+                    FormField(
+                        id=field_id,
+                        type=FormFieldType.date,
+                        label=label,
+                        category="Stay dates",
+                        default_date=default_date,
+                        min_date=default_check_in,
+                    ),
+                )
             else:
                 existing.type = FormFieldType.date
                 existing.category = existing.category or "Stay dates"
@@ -297,35 +370,33 @@ def ask_preferences_form(
         category = f.category.strip() if f.category and f.category.strip() else "Preferences"
         built_fields = built_groups.setdefault(category, [])
         if f.type == FormFieldType.choice:
+            options = [(opt.label, opt.value) for opt in (f.options or [])]
+            default_value = [f.default_option_value] if f.default_option_value else []
             built_fields.append(
                 genui.choice_picker(
                     f.id,
-                    [(opt.label, opt.value) for opt in (f.options or [])],
+                    options,
                     label=f.label,
-                    value=[f.default_option_value] if f.default_option_value else None,
+                    value=default_value,
+                    variant="mutuallyExclusive",
                 )
             )
-            # ChoicePicker's onChanged always writes a list, even for
-            # mutually-exclusive single-select -- match that shape here.
-            # Always seed the path, even with an empty list: the submit
-            # button's action.context binds to every field's path, and a
-            # path with no data-model entry at all leaves that binding
-            # PartiallyReady forever, which silently orphans the whole
-            # button component client-side (never just renders blank --
-            # it disappears and never retries).
-            field_defaults[f.id] = [f.default_option_value] if f.default_option_value else []
+            field_defaults[f.id] = default_value
+            field_paths[f.id] = f"/{f.id}/value"
         elif f.type == FormFieldType.multi_choice:
+            options = [(opt.label, opt.value) for opt in (f.options or [])]
+            default_values = f.default_option_values if f.default_option_values else []
             built_fields.append(
                 genui.choice_picker(
                     f.id,
-                    [(opt.label, opt.value) for opt in (f.options or [])],
+                    options,
                     label=f.label,
-                    value=f.default_option_values,
+                    value=default_values,
                     variant="multipleSelection",
                 )
             )
-            # Same reasoning as the choice case above: always seed the path.
-            field_defaults[f.id] = f.default_option_values if f.default_option_values else []
+            field_defaults[f.id] = default_values
+            field_paths[f.id] = f"/{f.id}/value"
         elif f.type == FormFieldType.slider:
             default_value = f.default_number if f.default_number is not None else (f.min_value or 0)
             min_value = f.min_value or 0
@@ -340,8 +411,7 @@ def ask_preferences_form(
                 )
             )
             slider_help = f.help_text or (
-                f"Choose a value from {min_value:g} to {max_value:g}. "
-                f"Current value: {default_value:g}."
+                f"Choose a value from {min_value:g} to {max_value:g}. Current value: {default_value:g}."
             )
             built_fields.append(
                 genui.text(
@@ -352,13 +422,15 @@ def ask_preferences_form(
                 )
             )
             field_defaults[f.id] = default_value
+            field_paths[f.id] = f"/{f.id}/value"
         elif f.type == FormFieldType.text:
             built_fields.append(genui.text_field(f.id, label=f.label, value=f.default_text))
-            # Always seed the path, even with "" -- see the choice case above.
             field_defaults[f.id] = f.default_text
+            field_paths[f.id] = f"/{f.id}/value"
         elif f.type == FormFieldType.checkbox:
             built_fields.append(genui.check_box(f.id, f.label, value=f.default_checked))
             field_defaults[f.id] = f.default_checked
+            field_paths[f.id] = f"/{f.id}/value"
         elif f.type == FormFieldType.date:
             default_value = f.default_date or datetime.now(timezone.utc).strftime("%Y-%m-%d")
             built_fields.append(
@@ -371,7 +443,7 @@ def ask_preferences_form(
                 )
             )
             field_defaults[f.id] = default_value
-        field_paths[f.id] = f"/{f.id}/value"
+            field_paths[f.id] = f"/{f.id}/value"
 
     messages = genui.form(
         surface_id,

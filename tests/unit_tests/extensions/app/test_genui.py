@@ -59,7 +59,20 @@ class TestBasicCatalogHelpers:
         assert "createSurface" in messages[0]
         update = messages[1]["updateComponents"]
         ids = {c["id"] for c in update["components"]}
-        assert ids == {"root", "title", "divider", "body"}
+        assert ids == {"root", "content", "title", "divider", "body"}
+        assert "linkButton" not in ids
+
+    def test_summary_card_with_link_url_adds_open_url_button(self):
+        messages = genui.summary_card(
+            "surface-1", title="Title", body="Body", link_url="https://example.com/book", link_label="Continue"
+        )
+        components = {c["id"]: c for c in messages[1]["updateComponents"]["components"]}
+        assert "linkButton" in components
+        assert components["linkButton"]["action"]["functionCall"] == {
+            "call": "openUrl",
+            "args": {"url": "https://example.com/book"},
+        }
+        assert components["linkText"]["text"] == "Continue"
 
 
 class TestFormHelpers:
@@ -72,6 +85,11 @@ class TestFormHelpers:
         btn = genui.button("submit", "label", "submit_action", context_paths={"level": "level.value"})
         assert btn["action"]["event"]["name"] == "submit_action"
         assert btn["action"]["event"]["context"] == {"level": {"path": "level.value"}}
+
+    def test_open_url_button_uses_function_call_not_event(self):
+        btn = genui.open_url_button("openBtn", "openText", "https://example.com")
+        assert btn["action"] == {"functionCall": {"call": "openUrl", "args": {"url": "https://example.com"}}}
+        assert "event" not in btn["action"]
 
     def test_form_builds_create_and_update_with_submit_button(self):
         fields = [genui.text_field("brand", label="Brand")]
@@ -86,4 +104,51 @@ class TestFormHelpers:
         assert len(messages) == 2
         assert messages[0]["createSurface"]["sendDataModel"] is True
         component_ids = [c["id"] for c in messages[1]["updateComponents"]["components"]]
-        assert component_ids == ["root", "title", "brand", "submit", "submitText"]
+        # Single unnamed group ("Preferences") still wraps fields in a group card.
+        assert component_ids == [
+            "root",
+            "title",
+            "group0Card",
+            "group0Content",
+            "group0Title",
+            "brand",
+            "submitCard",
+            "submit",
+            "submitText",
+        ]
+
+    def test_form_groups_fields_by_category(self):
+        fields = [
+            genui.text_field("brand", label="Brand"),
+            genui.slider("budget", value=100, min_value=0, max_value=500, label="Budget"),
+        ]
+        messages = genui.form(
+            "surface-1",
+            title="Preferences",
+            fields=fields,
+            field_groups=[("Details", [fields[0]]), ("Budget", [fields[1]])],
+            submit_label="Submit",
+            action_name="submit_prefs",
+            field_paths={"brand": "/brand/value", "budget": "/budget/value"},
+        )
+        component_ids = [c["id"] for c in messages[1]["updateComponents"]["components"]]
+        assert "group0Card" in component_ids
+        assert "group1Card" in component_ids
+        titles = [c for c in messages[1]["updateComponents"]["components"] if c["id"] in ("group0Title", "group1Title")]
+        assert {c["text"] for c in titles} == {"Details", "Budget"}
+
+    def test_form_seeds_data_model_with_field_defaults(self):
+        fields = [genui.text_field("brand", label="Brand")]
+        messages = genui.form(
+            "surface-1",
+            title="Preferences",
+            fields=fields,
+            submit_label="Submit",
+            action_name="submit_prefs",
+            field_paths={"brand": "/brand/value"},
+            field_defaults={"brand": "Yonex"},
+        )
+        # updateDataModel messages land between createSurface and updateComponents.
+        assert messages[0]["createSurface"]
+        assert messages[1]["updateDataModel"] == {"surfaceId": "surface-1", "path": "/brand/value", "value": "Yonex"}
+        assert "updateComponents" in messages[-1]
