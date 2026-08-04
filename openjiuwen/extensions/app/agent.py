@@ -139,10 +139,13 @@ async def build_agent() -> ReActAgent:
         api_base=app_config.get("API_BASE"),
         verify_ssl=app_config.get("LLM_SSL_VERIFY"),
     )
+    # `seed` isn't a declared ModelRequestConfig field, but the model allows extras
+    # (model_config = {"extra": "allow"}) and several model clients (e.g. deepseek)
+    # read it back off the instance at call time.
     model_request_config = ModelRequestConfig(
         model=app_config.get("MODEL_NAME"),
         temperature=app_config.get("LLM_TEMPERATURE"),
-        seed=app_config.get("LLM_SEED"),
+        seed=app_config.get("LLM_SEED"),  # type: ignore[call-arg]
     )
 
     card = AgentCard(
