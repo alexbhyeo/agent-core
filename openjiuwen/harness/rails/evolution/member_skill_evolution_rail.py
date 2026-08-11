@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from pathlib import Path
 from typing import Any
 
@@ -36,7 +37,7 @@ class MemberSkillEvolutionRail(SkillEvolutionRail):
         **kwargs: Any,
     ) -> Any:
         """Detach the target before external-signal evolution can mutate it."""
-        self._ensure_private_skill(skill_name)
+        await self._ensure_private_skill(skill_name)
         return await super()._handle_evolution_from_signals(
             skill_name=skill_name,
             **kwargs,
@@ -49,14 +50,15 @@ class MemberSkillEvolutionRail(SkillEvolutionRail):
         **kwargs: Any,
     ) -> bool:
         """Detach the target before automatic/shared evolution can mutate it."""
-        self._ensure_private_skill(skill_name)
+        await self._ensure_private_skill(skill_name)
         return await super()._evolve_skill_with_sharing(
             skill_name=skill_name,
             **kwargs,
         )
 
-    def _ensure_private_skill(self, skill_name: str) -> Path:
-        return ensure_member_skill_copy(
+    async def _ensure_private_skill(self, skill_name: str) -> Path:
+        return await asyncio.to_thread(
+            ensure_member_skill_copy,
             member_skills_dir=self._member_skills_dir,
             global_skills_dir=self._global_skills_dir,
             skill_name=skill_name,

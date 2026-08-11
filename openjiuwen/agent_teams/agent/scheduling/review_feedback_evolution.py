@@ -490,14 +490,12 @@ class ReviewFeedbackEvolutionCoordinator:
 
     @staticmethod
     def _task_objective(payload: dict[str, Any]) -> str:
-        return "\n".join(
-            value
-            for value in (
-                str(payload.get("task_title") or "").strip(),
-                str(payload.get("task_content") or "").strip(),
-            )
-            if value
-        )
+        objective_parts = []
+        for field_name in ("task_title", "task_content"):
+            value = str(payload.get(field_name) or "").strip()
+            if value:
+                objective_parts.append(value)
+        return "\n".join(objective_parts)
 
     @staticmethod
     def _is_safe_member_name(member_name: str) -> bool:
@@ -541,12 +539,14 @@ class ReviewFeedbackEvolutionCoordinator:
         pattern_key = self._new_skill_proposal_key(reusable_guidance)
         if not pattern_key:
             return []
-        return [
-            item
-            for item in self._new_skill_patterns
-            if item.task_id != exclude_task_id
-            and self._new_skill_proposal_key(item.reusable_guidance) == pattern_key
-        ]
+        matches = []
+        for item in self._new_skill_patterns:
+            if item.task_id == exclude_task_id:
+                continue
+            item_key = self._new_skill_proposal_key(item.reusable_guidance)
+            if item_key == pattern_key:
+                matches.append(item)
+        return matches
 
     def _get_member_trajectory(self, assignee: str) -> Any | None:
         registry = self._trajectory_registry
