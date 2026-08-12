@@ -153,6 +153,21 @@ params 全部可序列化（声明路径以字符串传递），成员在另一�
 在选择为空时跳过写入，rail 无条件写），那条"省一次文件锁"的优化因此从来没有生效。
 现在 toolkit 只读路径用于日志，seed allow 只经 rail 的 `bootstrap_allow` 进入。
 
+**团队声明的播种同样只有一个写者**：`team_workspace/manager.py::initialize` 里的
+`_seed_team_skill_visibility()`。它跟着 team workspace 的初始化跑，每个有 workspace
+的团队启动时必到一次；没有 workspace 的团队本来也没地方放这份文件，而**缺文件读回来
+就是"团队不施加约束"**，所以不需要别处补写。
+
+曾经还有两处写同一份文件（claw 侧 `agents/swarm/assembly.py` 的
+`_bootstrap_team_skill_visibility`、`agents/harness/team/team_manager.py` 的
+`ensure_team_skill_visibility_initialized`），三处语义碰巧一致——都是 allow 为空 +
+`AUTHORITY_SEED` + 永不覆盖已存文件——所以没出过事。这种"碰巧"不是设计：任何一处
+将来改成播非空 allow，结果就变成按调用顺序决定，而调用顺序（装配先还是 workspace
+初始化先）从来不是稳定契约。两处已删除，`tests/unit_tests/agentserver/test_team_shared_skills.py`
+（claw 仓）钉住"平台侧不得再出现第二个团队播种者"。**嵌入方不得再加写者**：要预置
+授权就改 workspace 初始化那一处，或走 `skills.visibility.set/update` 的显式授权路径
+（`AUTHORITY_EXPLICIT`，任何 seed 都动不了它）。
+
 ### D4：合成规则与"空 allow"语义
 
 `visibility.py::compose_skill_visibility`：

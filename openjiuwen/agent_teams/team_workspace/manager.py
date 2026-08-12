@@ -177,6 +177,15 @@ class TeamWorkspaceManager:
         never overwrites an existing one, so an operator's grants survive every
         restart.
 
+        This is the *only* seeder of the team-scope declaration. An embedder
+        (team assembly, a team lifecycle manager, a channel adapter) may resolve
+        this path and read it, but must not add a second writer: several writers
+        stay harmless only while every one of them seeds an empty allow-list,
+        and the moment one seeds a real grant the outcome starts depending on
+        call order, which is not a contract anywhere. Pre-granting belongs
+        either here or on the explicit authorization path
+        (``AUTHORITY_EXPLICIT``), which no seed can override.
+
         A seeding failure is logged and swallowed: a missing declaration reads
         back as "no restriction", which beats refusing to start the workspace.
         """
