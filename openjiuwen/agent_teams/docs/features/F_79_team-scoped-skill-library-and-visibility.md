@@ -178,14 +178,22 @@ disabled = member.deny  ∪ team.deny ∪ global_disabled
 ```
 
 `global_disabled` 来自库根的 `skills_state.json`，经
-`team_skill_use_rail.global_disabled_skills()` 读取，实现落在 team 包自己的
-`skill/library_state.py::collect_disabled_skills`。最初这里直接 import 了
-`harness/factory.py` 的私有函数 `_collect_disabled_skills_from_state`：省了一个
-解析器，代价是 team 包吊在另一层的私有符号上——factory 那边改名，团队成员的
-Skill 过滤会静默失效且没有任何测试变红。这段逻辑一共十几行、只认
-`skill_configs[*].enabled is False` 一个字段，复制它的成本远低于跨层私有依赖，
-所以改为 team 包自持，并由 `tests/unit_tests/agent_teams/test_skill_library_state.py`
-钉住"不再出现 `openjiuwen.harness`"。
+`team_skill_use_rail.global_disabled_skills()` 读取，实现落在
+`harness/skills/library_state.py::collect_disabled_skills`。
+
+这里前后换过两次落位，值得记下来。最初 team 侧直接 import 了 `harness/factory.py`
+的私有函数 `_collect_disabled_skills_from_state`：省了一个解析器，代价是 team 包
+吊在另一层的私有符号上——factory 那边改名，团队成员的 Skill 过滤会静默失效且没有
+任何测试变红。为解开这个依赖，team 包一度自持了一份拷贝，于是同一个文件格式有了
+两个解析器：加字段要同步改两处，改漏一处就让单 agent 与团队对同一个库得出不同的
+可见集。
+
+两个方案都有明显缺陷，真正的成因是这段逻辑**放错了层**：它读的是 Skill 库的状态，
+既不属于「构造 agent」（factory 的职责），也不属于团队。现在它独立成
+`harness/skills/library_state.py` 这个公开模块，factory 与 team rail 都从这里取，
+库格式变更只需改一处。`tests/unit_tests/harness/test_skill_library_state.py` 里的
+`test_skill_library_state_has_a_single_parser` 用 AST 剥掉 docstring 后检查两个
+消费方都没有再自己拼状态文件路径——散文里提文件名不算违规，在代码里拼路径才算。
 
 **空 `enabled` 原样返回，绝不在这里展开成全量 Skill 名集合。** 这个短路语义是从父类
 `SkillUseRail._filter_skills` 继承来的——`if self.enabled_skills and skill.name not
