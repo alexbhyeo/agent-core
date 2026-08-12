@@ -450,7 +450,8 @@ class ReviewFeedbackEvolutionCoordinator:
             self._member_rails[assignee] = rail
         return rail
 
-    def _build_default_member_rail(self, assignee: str, global_rail: Any) -> Any:
+    @staticmethod
+    def _build_default_member_rail(assignee: str, global_rail: Any) -> Any:
         """Build the standard auto-save Rail used for one assignee's evolution.
 
         Skills live in exactly one physical library, so the Rail is rooted at

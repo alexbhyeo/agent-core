@@ -1,9 +1,9 @@
 # coding: utf-8
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 
-"""Reader for the shared Skill library's on/off state file.
+"""Reader for the Skill library's on/off state file.
 
-The Skill library keeps a library-wide kill switch in ``skills_state.json``,
+A Skill library keeps a library-wide kill switch in ``skills_state.json``,
 written next to the Skills themselves by the install / marketplace flow::
 
     {
@@ -12,17 +12,15 @@ written next to the Skills themselves by the install / marketplace flow::
       }
     }
 
-A Skill switched off there is unavailable to *every* agent, whatever any
-visibility declaration says, so the team composition folds those names into its
-``disabled`` set (see
-:func:`openjiuwen.agent_teams.skill.visibility.compose_skill_visibility`).
+A Skill switched off there is unavailable to *every* agent that reads the
+library, whatever any other configuration says. Both the single-agent rail
+assembly and the team Skill rail fold those names into the Skill rail's
+``disabled_skills``, so the reader lives here rather than in either caller: one
+parser means a format change lands in one place.
 
-The file belongs to the library, not to the harness that happens to also read
-it: this module is the team package's own reader so that the team side does not
-reach into another layer's private helper for it. The format is deliberately
-read defensively — a missing, unreadable or malformed file means "nothing is
-switched off", which keeps a corrupted state file from silently blanking a
-member's Skill view.
+The format is read defensively on purpose. A missing, unreadable or malformed
+state file means "nothing is switched off", because a corrupted file must not
+silently blank out an agent's whole Skill view.
 """
 
 from __future__ import annotations

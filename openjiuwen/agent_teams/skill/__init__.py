@@ -7,7 +7,7 @@
 entities live in exactly one directory (``paths.global_skills_dir()``) and each
 member / team workspace only carries a ``skills-visibility.json`` declaring
 what it may see. ``file_lock.py`` is the cross-process lock every writer of
-that declaration takes. ``library_state.py`` reads the library-wide on/off
+that declaration takes. The library-wide on/off
 switch (``skills_state.json``) that a composition folds into its disabled set.
 
 ``cli.py`` is a non-interactive command-line wrapper over
@@ -26,7 +26,7 @@ from openjiuwen.agent_teams.skill.file_lock import (
     cross_process_file_lock,
     lock_path_for,
 )
-from openjiuwen.agent_teams.skill.library_state import (
+from openjiuwen.harness.skills.library_state import (
     SKILLS_STATE_FILENAME,
     collect_disabled_skills,
 )

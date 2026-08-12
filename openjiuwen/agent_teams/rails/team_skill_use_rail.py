@@ -27,7 +27,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-from openjiuwen.agent_teams.skill.library_state import collect_disabled_skills
+from openjiuwen.harness.skills.library_state import collect_disabled_skills
 from openjiuwen.agent_teams.skill.visibility import (
     SCOPE_MEMBER,
     SkillVisibilityProvider,
@@ -170,7 +170,7 @@ def global_disabled_skills(skills_dir: list[str]) -> list[str]:
     The library-wide on/off switch lives in ``skills_state.json`` next to the
     Skills themselves and is written by the marketplace / install flow, not by
     any team. It is read through the team package's own reader
-    (:func:`openjiuwen.agent_teams.skill.library_state.collect_disabled_skills`)
+    (:func:`openjiuwen.harness.skills.library_state.collect_disabled_skills`)
     rather than through another layer's private helper, so a refactor there
     cannot break the team rail silently.
 
@@ -236,7 +236,7 @@ def create_team_skill_use_rail(
             allow=bootstrap_allow,
             bootstrapped_from=MEMBER_BOOTSTRAP_SOURCE,
         )
-    except (OSError, TimeoutError) as exc:
+    except OSError as exc:
         team_logger.warning(
             "Failed to seed Skill visibility declaration for member {} at {}: {}",
             member_name,

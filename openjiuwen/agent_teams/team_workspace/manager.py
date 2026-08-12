@@ -198,7 +198,7 @@ class TeamWorkspaceManager:
                 allow=None,
                 bootstrapped_from="team_workspace:initialize",
             )
-        except (OSError, TimeoutError) as exc:
+        except OSError as exc:
             team_logger.warning(
                 "Failed to seed team Skill visibility declaration at %s: %s",
                 visibility_path,

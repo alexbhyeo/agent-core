@@ -655,7 +655,8 @@ class StaticSkillVisibilityProvider:
         self._enabled = frozenset(normalize_skill_names(enabled))
         self._disabled = frozenset(normalize_skill_names(disabled))
 
-    def metadata_signature(self) -> tuple[tuple[str, float], ...]:
+    @staticmethod
+    def metadata_signature() -> tuple[tuple[str, float], ...]:
         """Return an empty signature: nothing on disk backs this provider."""
         return ()
 
@@ -728,15 +729,19 @@ def _write_atomic(path: Path, visibility: SkillVisibility) -> None:
         dir=str(path.parent),
     )
     temporary = Path(temporary_name)
+    fd_handed_off = False
     try:
-        with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
+        handle = os.fdopen(descriptor, "w", encoding="utf-8")
+        fd_handed_off = True
+        with handle:
             handle.write(payload)
             handle.flush()
             os.fsync(handle.fileno())
         os.replace(temporary, path)
-    except BaseException:
+    finally:
+        if not fd_handed_off:
+            os.close(descriptor)
         temporary.unlink(missing_ok=True)
-        raise
 
 
 __all__ = [
