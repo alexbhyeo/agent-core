@@ -32,6 +32,13 @@ _DEFAULTS: dict[str, Any] = {
     "HOST": os.getenv("A2UI_AGENT_HOST", "0.0.0.0"),
     "PORT": int(os.getenv("A2UI_AGENT_PORT", "8090")),
     "CATALOG_ID": os.getenv("A2UI_CATALOG_ID", "https://a2ui.org/specification/v0_9/basic_catalog.json"),
+    # YouTube Data API v3 key for `tools.search_youtube_videos` -- a real
+    # search API instead of scraping YouTube's JS-rendered results page (which
+    # `free_search`/`fetch_page_image` can't parse) or routing video discovery
+    # through DuckDuckGo scraping (rate-limited/CAPTCHA'd under load). Empty
+    # means `search_youtube_videos` reports an error instead of silently
+    # returning nothing.
+    "YOUTUBE_API_KEY": os.getenv("YOUTUBE_API_KEY", ""),
     # TLS for the client<->agent WebSocket, so traffic (including the API key
     # never touching this hop, but chat content and tool output) isn't sent
     # in cleartext. The private key stays on the server (certs/server.key,

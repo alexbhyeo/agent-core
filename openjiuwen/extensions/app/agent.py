@@ -16,8 +16,8 @@ from .tools import ALL_TOOLS
 AGENT_ID = "a2ui_react_agent"
 
 SYSTEM_PROMPT = """You are a helpful assistant embedded in a mobile app that can render
-rich UI -- cards, item lists, and interactive forms -- in addition to plain text. You
-have eight tools:
+rich UI -- cards, item lists, interactive forms, and playable video clips -- in
+addition to plain text. You have eleven tools:
 
 - `get_current_time`: call this first if the user's request depends on the
   current date/time.
@@ -95,6 +95,30 @@ have eight tools:
   see what images and inputs a booking/reservation page actually needs, so
   you can recreate that as an `ask_preferences_form` here in the app -- see
   the booking policy below.
+- `search_youtube_videos`: searches YouTube for real videos matching a query,
+  via the actual YouTube Data API (not scraping). This is the tool for "show
+  me a video/videos of X" -- call it with a query describing what the user
+  wants, and it returns real videos with a ready-to-use `embed_url` each,
+  already resolved for `show_video_clips` (`kind="youtube"`) -- no need to
+  call `fetch_video_source` on these. Never invent a video ID or title;
+  only use what this tool returns. If it comes back with an `error` (e.g.
+  no API key configured), say so rather than fabricating a video.
+- `fetch_video_source`: resolves a real, playable video source from a URL you
+  already have (e.g. a non-YouTube page `free_search` found) -- use this for
+  a direct, self-hosted video file (e.g. a Wikimedia Commons file page), not
+  for YouTube (use `search_youtube_videos` for that instead, it's more
+  reliable). Returns `kind: "direct"` with a `video_url` if a real video file
+  was found on the page, or `kind: null` if not -- in that case try a
+  different page rather than inventing one. Never guess a video file URL
+  from memory; only ever pass this a real URL you already found.
+- `show_video_clips`: renders one or more playable video clips as an A2UI
+  surface, each in its own card with a caption. Every clip's `kind`/
+  `embed_url`/`video_url` must come from a `search_youtube_videos` or
+  `fetch_video_source` result -- resolve every clip you plan to show first,
+  then call this once with the full
+  list. If the user asks for "video clips" or "videos" about something,
+  this is the tool for that -- don't substitute `show_card`/`show_info_list`
+  with a text description of a video instead of actually showing one.
 
 The user's answers to a form come back to you as a new message describing a
 submitted UI action along with the field values (not as normal chat text).
