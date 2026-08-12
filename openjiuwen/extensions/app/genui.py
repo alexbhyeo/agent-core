@@ -230,6 +230,119 @@ def image(
     return payload
 
 
+def video(comp_id: str, url: str, styles: Optional[dict[str, Any]] = None) -> dict[str, Any]:
+    """A native video player (client-side AVPlayer or equivalent) loaded directly
+    from ``url``.
+
+    ``url`` must be a real, direct, playable video file or stream (e.g. an
+    .mp4/.webm/.m3u8 URL) -- NOT a YouTube/Vimeo watch page, which the native
+    player cannot open (it has no HTML/JS engine, just a media decoder). For
+    YouTube/Vimeo content use ``web()`` instead, pointed at that site's own
+    embed URL.
+    """
+    payload: dict[str, Any] = {"id": comp_id, "component": "Video", "url": url}
+    if styles is not None:
+        payload["styles"] = styles
+    return payload
+
+
+def web(comp_id: str, url: str, styles: Optional[dict[str, Any]] = None) -> dict[str, Any]:
+    """An embedded WebView loading ``url`` (adaptive height, JavaScript enabled).
+
+    For general third-party pages. For YouTube embeds specifically, use
+    ``youtube_embed()`` instead -- YouTube's player rejects a WebView that
+    navigates straight to its embed URL as a top-level page (no parent
+    frame), so that needs the client's dedicated YouTube component, which
+    wraps the URL in a real ``<iframe>`` first.
+    """
+    payload: dict[str, Any] = {"id": comp_id, "component": "Web", "url": url}
+    if styles is not None:
+        payload["styles"] = styles
+    return payload
+
+
+def youtube_embed(comp_id: str, url: str, styles: Optional[dict[str, Any]] = None) -> dict[str, Any]:
+    """A YouTube video embed, rendered via the client's ``YouTubeWeb`` custom
+    component (registered through AGenUI's custom-component API).
+
+    ``url`` should be a ``youtube.com/embed/<id>`` (or ``youtube-nocookie.com``)
+    URL. Unlike the generic ``web()``/``Web`` component, this wraps the URL in
+    a real ``<iframe>`` client-side before loading it -- YouTube's embedded
+    player checks whether it's genuinely inside an iframe as part of its
+    validation, and a WebView navigated directly to the embed URL (no parent
+    frame at all) fails that check for most real videos ("Error 153: Video
+    player configuration error"), even though the URL itself is valid.
+    """
+    payload: dict[str, Any] = {"id": comp_id, "component": "YouTubeWeb", "url": url}
+    if styles is not None:
+        payload["styles"] = styles
+    return payload
+
+
+def video_gallery_card(
+    surface_id: str,
+    title: str,
+    items: list[tuple[str, str, str]],
+) -> list[dict[str, Any]]:
+    """A titled vertical list of playable video clips, each in its own Card.
+
+    ``items`` is a list of (kind, url, caption):
+      - kind="youtube": ``url`` is a ``youtube.com/embed/<id>`` URL, rendered
+        via ``youtube_embed()`` -- playback goes through YouTube's own
+        embedded player.
+      - kind="direct": ``url`` is a real, direct video file/stream, rendered
+        via ``video()`` -- the client's native player downloads/decodes it
+        itself.
+    """
+    card_ids = [f"clip{i}Card" for i in range(len(items))]
+    item_components: list[dict[str, Any]] = []
+    for i, (kind, url, caption) in enumerate(items):
+        card_id = card_ids[i]
+        outer_id = f"clip{i}"
+        media_id = f"{outer_id}Media"
+        caption_id = f"{outer_id}Caption"
+        # padding=0 on the card (overriding the default 16px), same reasoning
+        # as info_list_card's photo items: the video should sit flush against
+        # the card edges, with the caption text getting its own inset padding
+        # below it rather than the whole card being inset.
+        item_components.append(card(card_id, outer_id, styles={"padding": "0px"}))
+        # align="stretch": Web/Video have no `variant` like Image does to pick
+        # a full-width preset, so without an explicit stretch the column only
+        # gives them wrap-content width -- they loaded but had ~0px to paint
+        # into. width:100% on the media component itself backs that up.
+        item_components.append(column(outer_id, [media_id, caption_id], align="stretch"))
+        # aspect-ratio: "height is computed from the width" per the A2UI
+        # style schema -- yoga can size this synchronously during the list's
+        # very first layout pass, before the WebView/player has loaded
+        # anything. Without it, height only exists once the embedded content
+        # asynchronously reports its own size back (YouTubeWebComponent's
+        # reportContentHeight / the native Video player's metadata callback),
+        # which arrives well after the list has already laid out every card
+        # at its collapsed zero-height -- and nothing in the client's custom-
+        # component update path was forcing AGenUIContainer to re-measure
+        # once that late size showed up, so every card stayed collapsed and
+        # visually stacked on top of its neighbors.
+        media_styles: dict[str, Any] = {"width": "100%", "aspect-ratio": "16/9"}
+        if kind == "youtube":
+            item_components.append(youtube_embed(media_id, url, styles=media_styles))
+        else:
+            item_components.append(video(media_id, url, styles=media_styles))
+        item_components.append(
+            text(caption_id, caption, variant="body", styles={"padding": "12px 16px", "line-clamp": 0})
+        )
+
+    components = [
+        column("root", ["title", "list"], styles={"gap": "12px"}),
+        text("title", title, variant="h3"),
+        list_view("list", card_ids, styles={"gap": "12px"}),
+        *item_components,
+    ]
+    return [
+        create_surface(surface_id),
+        update_components(surface_id, components),
+    ]
+
+
 # Every Material-style icon name accepted by the tool API. ``icon()`` above
 # translates them to AGenUI/Harmony's Lucide names before sending the surface.
 ICON_NAMES = [
