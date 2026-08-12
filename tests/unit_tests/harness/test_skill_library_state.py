@@ -1,12 +1,13 @@
 # coding: utf-8
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
-"""Team-owned reader for the shared Skill library's ``skills_state.json``.
+"""Shared reader for the Skill library's ``skills_state.json``.
 
-The library-wide kill switch is read by the team package itself instead of
-through another layer's private helper. These tests pin the contract that
-reader has to keep: only ``enabled: false`` entries count, the result is sorted
-and de-duplicated across roots, and every unreadable shape degrades to "nothing
-is switched off" rather than blanking a member's Skill view.
+The library-wide kill switch is read in one place and consumed by both the
+single-agent rail assembly and the team Skill rail. These tests pin the
+contract that reader has to keep: only ``enabled: false`` entries count, the
+result is sorted and de-duplicated across roots, and every unreadable shape
+degrades to "nothing is switched off" rather than blanking an agent's Skill
+view. A guard pins that neither consumer grows a second parser.
 """
 
 from __future__ import annotations
@@ -16,8 +17,8 @@ from pathlib import Path
 
 import pytest
 
-from openjiuwen.agent_teams.skill import collect_disabled_skills
-from openjiuwen.agent_teams.skill.library_state import SKILLS_STATE_FILENAME
+from openjiuwen.harness.skills import collect_disabled_skills
+from openjiuwen.harness.skills.library_state import SKILLS_STATE_FILENAME
 from tests.test_logger import logger as test_logger
 
 
@@ -95,19 +96,49 @@ def test_collect_disabled_skills_tolerates_missing_and_corrupt_state(tmp_path: P
     assert disabled == []
 
 
-@pytest.mark.level1
-def test_collect_disabled_skills_has_no_harness_dependency() -> None:
-    """The team reader stands alone: importing it pulls in no harness factory.
+def _names_state_file_in_code(module: object) -> bool:
+    """Return whether *module* mentions the state file outside its docs.
 
-    The previous implementation delegated to a private harness helper, so a
-    rename there would have broken every team member's Skill filtering with no
-    test turning red. This pins the decoupling itself.
+    Prose is free to name the file; building a path from it is what marks a
+    second parser, so docstrings are stripped before looking.
+    """
+    import ast
+    import inspect
+
+    tree = ast.parse(inspect.getsource(module))
+    docstrings = set()
+    for node in ast.walk(tree):
+        if not isinstance(node, (ast.Module, ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)):
+            continue
+        doc = ast.get_docstring(node, clean=False)
+        if doc is not None:
+            docstrings.add(doc)
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Constant) or not isinstance(node.value, str):
+            continue
+        if node.value in docstrings:
+            continue
+        if SKILLS_STATE_FILENAME in node.value:
+            return True
+    return False
+
+
+@pytest.mark.level1
+def test_skill_library_state_has_a_single_parser() -> None:
+    """Both consumers route through this reader instead of parsing it again.
+
+    The state file was parsed twice for a while — once privately inside the
+    rail factory and once in the team package — so a format change had to be
+    applied in two places or the two views of the library would drift. This
+    pins that neither consumer rebuilds the path itself; naming the file in
+    prose stays fine.
     """
     import inspect
 
     from openjiuwen.agent_teams.rails import team_skill_use_rail
-    from openjiuwen.agent_teams.skill import library_state
+    from openjiuwen.harness import factory
 
-    assert "openjiuwen.harness" not in inspect.getsource(library_state)
-    rail_source = inspect.getsource(team_skill_use_rail)
-    assert "_collect_disabled_skills_from_state" not in rail_source
+    assert not _names_state_file_in_code(factory)
+    assert not _names_state_file_in_code(team_skill_use_rail)
+    assert "collect_disabled_skills" in inspect.getsource(factory)
+    assert "collect_disabled_skills" in inspect.getsource(team_skill_use_rail)
