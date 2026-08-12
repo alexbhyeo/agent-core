@@ -6,8 +6,8 @@
 |---|---|
 | 类型 | spec |
 | 关联模块 | `openjiuwen/agent_teams/spawn/`、`openjiuwen/agent_teams/agent/spawn_manager.py`、`openjiuwen/agent_teams/agent/stream_controller.py`、`openjiuwen/agent_teams/agent/payload.py`、`openjiuwen/agent_teams/agent/agent_configurator.py`、`openjiuwen/agent_teams/worktree/`、`openjiuwen/agent_teams/context.py` |
-| 最近一次修订日期 | 2026-08-10 |
-| 关联 feature | F_38_team-teammate-worktree-isolation-agenttool.md、F_28_native-harness-team-adoption.md、F_60_native-harness-pause-abort-resume.md、F_69_cwd-workspace-project-root-separation.md、F_74_leader-member-activity-and-team-idle.md、F_77_team-idle-requires-a-settled-task-board.md |
+| 最近一次修订日期 | 2026-08-12 |
+| 关联 feature | F_38_team-teammate-worktree-isolation-agenttool.md、F_28_native-harness-team-adoption.md、F_60_native-harness-pause-abort-resume.md、F_69_cwd-workspace-project-root-separation.md、F_74_leader-member-activity-and-team-idle.md、F_77_team-idle-requires-a-settled-task-board.md、F_79_team-scoped-skill-library-and-visibility.md |
 
 ## 范围 / 边界
 
@@ -120,7 +120,8 @@
    看到 `ctx.worktree_path` 时把它写进成员的 **cwd**（`DeepAgentSpec.cwd`），
    `WorkspaceSpec.root_path` **始终**是成员自己的稳定目录
    （`ensure_team_member_workspace_link`，即 stable_base 语义）。理由：workspace 装
-   成员产物 / memory / skills 视图 / `.team` 挂载点，若它跟着 worktree 走，worktree
+   成员产物 / memory / Skill 可见性声明（`skills-visibility.json`，成员没有自己的
+   `skills/` 目录，见 [[F_79]]）/ `.team` 挂载点，若它跟着 worktree 走，worktree
    一删这些就没了。由此 workspace 恒为团队自己的目录，**无条件**注册进
    `TeamBackend.cleanup_path`；worktree 本身不在 cleanup_path 里，`clean_team` 仍
    只经 `git worktree remove` 拆它。成员没有 workspace spec 时兜底
