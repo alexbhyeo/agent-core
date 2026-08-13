@@ -21,7 +21,7 @@ from pydantic import BaseModel, Field
 from openjiuwen.core.foundation.tool import tool
 
 from . import genui
-from .image_tools import fetch_page_image
+from .image_tools import search_images, fetch_page_image
 from .video_tools import fetch_video_source, search_youtube_videos, show_video_clips
 
 
@@ -81,8 +81,9 @@ def _suggest_icon(*texts: Optional[str]) -> Optional[str]:
         "your text reply, it does not replace it. Do not call this more than "
         "once per user request. `icon` is optional -- one of: " + ", ".join(genui.ICON_NAMES) + ". "
         "`image_url` is optional -- a real, publicly reachable http(s) image URL "
-        "to show as a header image above the title. Get one from `fetch_page_image` or "
-        "`browser_inspect_page`; do not type one from memory, it will almost always be wrong. "
+        "to show as a header image above the title. Get one from `search_images` "
+        "(preferred), `fetch_page_image`, or `browser_inspect_page`; do not type one "
+        "from memory, it will almost always be wrong. "
         "`link_url`/`link_label` are optional -- add these to hand the user off to a real "
         "website (opens externally, in their own browser) to finish something there "
         "themselves, e.g. completing a booking on the real site you inspected with "
@@ -123,8 +124,9 @@ class InfoListItem(BaseModel):
         default=None,
         description=(
             "Optional real, publicly reachable http(s) image URL shown instead of "
-            "the icon for this item. Get one from `fetch_page_image`; do not type "
-            "one from memory, it will almost always be wrong."
+            "the icon for this item. Get one from `search_images` (preferred) or "
+            "`fetch_page_image`; do not type one from memory, it will almost always "
+            "be wrong."
         ),
     )
 
@@ -379,6 +381,7 @@ ALL_TOOLS = (
     show_card,
     show_info_list,
     ask_preferences_form,
+    search_images,
     fetch_page_image,
     search_youtube_videos,
     fetch_video_source,

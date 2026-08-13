@@ -87,6 +87,7 @@ class TestAllTools:
             "show_info_list",
             "ask_preferences_form",
             "fetch_page_image",
+            "search_images",
             "search_youtube_videos",
             "fetch_video_source",
             "show_video_clips",

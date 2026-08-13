@@ -21,7 +21,7 @@ def _chunk(chunk_type, payload=None):
 
 
 def _new_state():
-    return {"last_llm_text": ""}
+    return {"last_llm_text": "", "any_text_sent": False, "last_presentation_text": ""}
 
 
 class TestDescribeUiActions:
@@ -72,6 +72,7 @@ class TestTranslate:
         events = _translate(_chunk("llm_output", {"content": "hello"}), state)
         assert events == [("chat.token", {"text": "hello"})]
         assert state["last_llm_text"] == "hello"
+        assert state["any_text_sent"] is True
 
         events = _translate(_chunk("llm_output", {"content": " world"}), state)
         assert events == [("chat.token", {"text": " world"})]
@@ -82,6 +83,7 @@ class TestTranslate:
         _translate(_chunk("llm_output", {"content": "hello "}), state)
         events = _translate(_chunk("answer", {"output": "hello world"}), state)
         assert events == [("chat.token", {"text": "world"})]
+        assert state["any_text_sent"] is True
 
     def test_answer_emits_nothing_when_fully_streamed(self):
         state = _new_state()
@@ -109,6 +111,46 @@ class TestTranslate:
             ("tool.output", {"tool": "show_card", "callId": "c1", "text": "answer"}),
             ("genui", {"createSurface": {}}),
         ]
+
+    def test_tool_result_with_genui_records_presentation_text(self):
+        state = _new_state()
+        payload = {
+            "tool_name": "show_info_list",
+            "tool_call_id": "c1",
+            "tool_result": {"text": "Top places\n- The Bund", "genui": [{"createSurface": {}}]},
+        }
+        _translate(_chunk("tool_result", payload), state)
+        assert state["last_presentation_text"] == "Top places\n- The Bund"
+
+    def test_tool_result_without_genui_does_not_record_presentation_text(self):
+        # A data tool (e.g. search_images) has no genui -- its "text" (there
+        # isn't one) must never masquerade as the reply.
+        state = _new_state()
+        payload = {
+            "tool_name": "search_images",
+            "tool_call_id": "c1",
+            "tool_result": {"query": "Shanghai", "images": [{"image_url": "https://example.com/a.jpg"}]},
+        }
+        _translate(_chunk("tool_result", payload), state)
+        assert state["last_presentation_text"] == ""
+
+    def test_tool_result_presentation_text_keeps_the_latest(self):
+        state = _new_state()
+        _translate(
+            _chunk(
+                "tool_result",
+                {"tool_name": "show_card", "tool_call_id": "c1", "tool_result": {"text": "first", "genui": [{}]}},
+            ),
+            state,
+        )
+        _translate(
+            _chunk(
+                "tool_result",
+                {"tool_name": "show_card", "tool_call_id": "c2", "tool_result": {"text": "second", "genui": [{}]}},
+            ),
+            state,
+        )
+        assert state["last_presentation_text"] == "second"
 
     def test_tool_result_with_error_prefix_emits_error_tool_instead_of_output(self):
         state = _new_state()
@@ -179,6 +221,66 @@ class TestConnectionSessionDispatch:
 
         sent_types = [call.args[0]["type"] for call in websocket.send_json.await_args_list]
         assert sent_types == ["chat.accepted", "chat.token", "chat.completed"]
+
+    @pytest.mark.asyncio
+    async def test_falls_back_to_presentation_text_when_model_says_nothing(self):
+        websocket = SimpleNamespace(send_json=AsyncMock())
+        session = ConnectionSession(websocket, agent=object(), user_id="u1")
+
+        async def fake_stream(*args, **kwargs):
+            yield _chunk("tool_call", {"tool_name": "show_info_list", "tool_call_id": "c1"})
+            yield _chunk(
+                "tool_result",
+                {
+                    "tool_name": "show_info_list",
+                    "tool_call_id": "c1",
+                    "tool_result": {"text": "Top places\n- The Bund", "genui": [{"createSurface": {}}]},
+                },
+            )
+
+        with patch(
+            "openjiuwen.extensions.app.ws_session.Runner.run_agent_streaming",
+            side_effect=fake_stream,
+        ):
+            await session._dispatch({"type": "chat.start", "conversationId": "c1", "payload": {"text": "hi"}})
+            await session._active_task
+
+        sent = [(call.args[0]["type"], call.args[0]["payload"]) for call in websocket.send_json.await_args_list]
+        assert ("chat.token", {"text": "Top places\n- The Bund"}) in sent
+        # The fallback must come after the card's genui, and before chat.completed.
+        types = [t for t, _ in sent]
+        assert types.index("genui") < types.index("chat.token") < types.index("chat.completed")
+
+    @pytest.mark.asyncio
+    async def test_no_fallback_when_model_already_said_something(self):
+        websocket = SimpleNamespace(send_json=AsyncMock())
+        session = ConnectionSession(websocket, agent=object(), user_id="u1")
+
+        async def fake_stream(*args, **kwargs):
+            yield _chunk("tool_call", {"tool_name": "show_card", "tool_call_id": "c1"})
+            yield _chunk(
+                "tool_result",
+                {
+                    "tool_name": "show_card",
+                    "tool_call_id": "c1",
+                    "tool_result": {"text": "card text", "genui": [{"createSurface": {}}]},
+                },
+            )
+            yield _chunk("llm_output", {"content": "Here's what I found."})
+
+        with patch(
+            "openjiuwen.extensions.app.ws_session.Runner.run_agent_streaming",
+            side_effect=fake_stream,
+        ):
+            await session._dispatch({"type": "chat.start", "conversationId": "c1", "payload": {"text": "hi"}})
+            await session._active_task
+
+        sent_texts = [
+            call.args[0]["payload"]["text"]
+            for call in websocket.send_json.await_args_list
+            if call.args[0]["type"] == "chat.token"
+        ]
+        assert sent_texts == ["Here's what I found."]
 
     @pytest.mark.asyncio
     async def test_second_chat_start_while_running_is_rejected(self):
