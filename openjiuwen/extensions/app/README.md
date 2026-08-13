@@ -58,7 +58,7 @@ agent should reply with text and a rendered card.
 - `uiux_tools.py` -- the agent's general tools (`show_card`, `show_info_list`, `ask_preferences_form`, ...) and `ALL_TOOLS`, which assembles every tool (including from `image_tools.py`/`video_tools.py`/`map_tools.py`) for `agent.py` to register.
 - `image_tools.py` -- `search_images` (SerpApi Google Images Light, keyword search) and `fetch_page_image` (og:image scrape of a known page), for getting a real image URL.
 - `video_tools.py` -- `search_youtube_videos`/`fetch_video_source`/`show_video_clips`, for finding and rendering playable video clips.
-- `map_tools.py` -- `geocode_place`/`show_map`, for resolving real places (Google Geocoding API) and rendering them as an interactive map (Google Maps JavaScript API, via `/map-embed`) with tappable gold star pins.
+- `map_tools.py` -- `geocode_place`/`show_map`, for resolving real places (Google Places API, incl. rating/photo when available) and rendering them as an interactive map (Google Maps JavaScript API, via `/map-embed`) with tappable gold star pins whose info window shows the place's name, photo, and rating.
 - `browser_tools.py` -- `browser_inspect_page`, a read-only headless-browser fallback for JS-rendered pages.
 - `rails.py` -- `A2uiToolEventRail`, captures raw tool results for the WS layer.
 - `agent.py` -- builds and configures the `ReActAgent`.

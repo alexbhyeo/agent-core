@@ -53,9 +53,9 @@ _DEFAULTS: dict[str, Any] = {
     "SERPAPI_GL": os.getenv("SERPAPI_GL", ""),
     "SERPAPI_HL": os.getenv("SERPAPI_HL", ""),
     # Google Maps Platform key for `map_tools.geocode_place`/`show_map`
-    # (Geocoding API + Maps Static API must both be enabled on the project
-    # this key belongs to). Empty means those tools report an error instead
-    # of silently returning nothing.
+    # (Places API (New) + Maps JavaScript API must both be enabled on the
+    # project this key belongs to). Empty means those tools report an error
+    # instead of silently returning nothing.
     "GOOGLE_MAPS_API_KEY": os.getenv("GOOGLE_MAPS_API_KEY", ""),
     # Public https:// base URL the client's WebView can reach directly --
     # used to build fully-qualified embed URLs like `/map-embed`
