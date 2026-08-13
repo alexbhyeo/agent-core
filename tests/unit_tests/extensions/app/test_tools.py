@@ -1,8 +1,12 @@
 # -*- coding: UTF-8 -*-
 # Copyright (c) Huawei Technologies Co., Ltd. 2025. All rights reserved.
-"""Unit tests for openjiuwen.extensions.app.tools."""
+"""Unit tests for openjiuwen.extensions.app.tools.
 
-from unittest.mock import AsyncMock, patch
+Image/video-specific tools have their own test modules (test_image_tools.py,
+test_video_tools.py) alongside their own source modules (image_tools.py,
+video_tools.py) -- this file covers only the tools that stay directly in
+tools.py.
+"""
 
 import pytest
 
@@ -74,45 +78,6 @@ class TestAskPreferencesForm:
         assert {"check_in", "check_out"} <= component_ids
 
 
-class TestFetchPageImage:
-    @pytest.mark.asyncio
-    async def test_returns_image_url_on_first_success(self):
-        with patch.object(tools, "_fetch_page_once", AsyncMock(return_value="https://example.com/img.jpg")):
-            result = await tools.fetch_page_image.invoke({"url": "https://example.com"})
-        assert result == {"url": "https://example.com", "image_url": "https://example.com/img.jpg"}
-
-    @pytest.mark.asyncio
-    async def test_returns_none_image_without_retry_when_page_has_no_image(self):
-        mock_fetch = AsyncMock(return_value=None)
-        with patch.object(tools, "_fetch_page_once", mock_fetch):
-            result = await tools.fetch_page_image.invoke({"url": "https://example.com"})
-        assert result["image_url"] is None
-        mock_fetch.assert_awaited_once()  # a clean "no image" result is not retried
-
-    @pytest.mark.asyncio
-    async def test_retries_transient_failures_up_to_the_cap(self):
-        mock_fetch = AsyncMock(
-            side_effect=[
-                tools._RetryableFetchError("timeout"),
-                tools._RetryableFetchError("timeout"),
-                "https://example.com/img.jpg",
-            ]
-        )
-        with patch.object(tools, "_fetch_page_once", mock_fetch), patch("asyncio.sleep", AsyncMock()):
-            result = await tools.fetch_page_image.invoke({"url": "https://example.com"})
-        assert result["image_url"] == "https://example.com/img.jpg"
-        assert mock_fetch.await_count == 3
-
-    @pytest.mark.asyncio
-    async def test_gives_up_after_max_attempts_and_reports_error(self):
-        mock_fetch = AsyncMock(side_effect=tools._RetryableFetchError("still down"))
-        with patch.object(tools, "_fetch_page_once", mock_fetch), patch("asyncio.sleep", AsyncMock()):
-            result = await tools.fetch_page_image.invoke({"url": "https://example.com"})
-        assert result["image_url"] is None
-        assert "still down" in result["error"]
-        assert mock_fetch.await_count == tools.MAX_IMAGE_FETCH_ATTEMPTS
-
-
 class TestAllTools:
     def test_all_tools_exposes_expected_names(self):
         names = {t.card.name for t in tools.ALL_TOOLS}
@@ -122,4 +87,7 @@ class TestAllTools:
             "show_info_list",
             "ask_preferences_form",
             "fetch_page_image",
+            "search_youtube_videos",
+            "fetch_video_source",
+            "show_video_clips",
         }
