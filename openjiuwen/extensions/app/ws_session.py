@@ -86,7 +86,14 @@ class ConnectionSession:
         # ``llm_output`` is token-streamed for each model turn. ``answer``
         # follows the run and normally repeats the most recent turn, but is
         # also the only text source for non-streaming model calls.
-        state = {"last_llm_text": ""}
+        # ``any_text_sent``/``last_presentation_text`` (unlike ``last_llm_text``,
+        # never reset mid-run) track whether the model said *anything* of its
+        # own across the whole run, so a fallback bubble can be synthesized
+        # from the last presentation tool's own text (see ``_translate``) if
+        # not -- the model usually adds a trailing turn of its own after a
+        # `show_card`/`show_info_list`/etc. call, but occasionally doesn't,
+        # which otherwise leaves the user with a card and no reply bubble.
+        state = {"last_llm_text": "", "any_text_sent": False, "last_presentation_text": ""}
         try:
             async for chunk in Runner.run_agent_streaming(self.agent, {"query": text}, session=conversation_id):
                 for event_type, event_payload in _translate(chunk, state):
@@ -98,6 +105,9 @@ class ConnectionSession:
             logger.exception("[a2ui-react-agent] agent run failed")
             await self.send("error.agent", {"message": str(exc)}, conversation_id)
             return
+
+        if not state["any_text_sent"] and state["last_presentation_text"]:
+            await self.send("chat.token", {"text": state["last_presentation_text"]}, conversation_id)
 
         await self.send("chat.completed", {}, conversation_id)
 
@@ -132,6 +142,7 @@ def _translate(chunk: Any, state: dict[str, Any]) -> list[tuple[str, dict[str, A
         text = _as_text(payload)
         if text:
             state["last_llm_text"] += text
+            state["any_text_sent"] = True
             events.append(("chat.token", {"text": text}))
         return events
 
@@ -142,6 +153,7 @@ def _translate(chunk: Any, state: dict[str, Any]) -> list[tuple[str, dict[str, A
         text = _as_text(payload)
         unsent_text = _unsent_suffix(text, state["last_llm_text"])
         if unsent_text:
+            state["any_text_sent"] = True
             events.append(("chat.token", {"text": unsent_text}))
         return events
 
@@ -162,6 +174,12 @@ def _translate(chunk: Any, state: dict[str, Any]) -> list[tuple[str, dict[str, A
         events.append(("tool.finished", {"tool": tool_name, "callId": call_id}))
 
         result_text, genui_messages = _extract_result(tool_result)
+        if genui_messages and result_text:
+            # Only "presentation" tools (show_card/show_info_list/etc.) return
+            # both -- a data tool like search_images has no genui, so it never
+            # overwrites this. Keeps the *last* one, matching whichever card
+            # actually ended up on screen.
+            state["last_presentation_text"] = result_text
         if result_text.startswith("[ERROR]"):
             # Some tools (e.g. fetch_webpage) catch their own failures and
             # return an "[ERROR]: ..." string instead of raising -- so this

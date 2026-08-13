@@ -39,6 +39,19 @@ _DEFAULTS: dict[str, Any] = {
     # means `search_youtube_videos` reports an error instead of silently
     # returning nothing.
     "YOUTUBE_API_KEY": os.getenv("YOUTUBE_API_KEY", ""),
+    # SerpApi (Google Images Light engine) for `image_tools.search_images` --
+    # a real image search API, keyed by a natural-language query, instead of
+    # relying on already knowing a specific page to scrape an og:image from
+    # (see `fetch_page_image`). Empty API key means `search_images` reports
+    # an error instead of silently returning nothing.
+    "SERPAPI_API_KEY": os.getenv("SERPAPI_API_KEY", ""),
+    "SERPAPI_ENGINE": os.getenv("SERPAPI_ENGINE", "google_images_light"),
+    "SERPAPI_LICENSES": os.getenv("SERPAPI_LICENSES", ""),
+    # Optional locale defaults applied to every `search_images` call (country/
+    # language bias for results) -- left empty (omitted from the request,
+    # SerpApi/Google falls back to its own default) unless set.
+    "SERPAPI_GL": os.getenv("SERPAPI_GL", ""),
+    "SERPAPI_HL": os.getenv("SERPAPI_HL", ""),
     # TLS for the client<->agent WebSocket, so traffic (including the API key
     # never touching this hop, but chat content and tool output) isn't sent
     # in cleartext. The private key stays on the server (certs/server.key,
