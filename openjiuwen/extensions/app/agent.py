@@ -11,7 +11,7 @@ from openjiuwen.harness.tools import WebFetchWebpageTool, WebFreeSearchTool
 from . import config as app_config
 from .browser_tools import browser_inspect_page
 from .rails import A2uiToolEventRail
-from .tools import ALL_TOOLS
+from .uiux_tools import ALL_TOOLS
 
 AGENT_ID = "a2ui_react_agent"
 
