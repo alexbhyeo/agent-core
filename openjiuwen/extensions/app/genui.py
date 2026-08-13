@@ -279,6 +279,26 @@ def youtube_embed(comp_id: str, url: str, styles: Optional[dict[str, Any]] = Non
     return payload
 
 
+def map_web(comp_id: str, url: str, styles: Optional[dict[str, Any]] = None) -> dict[str, Any]:
+    """An interactive map embed, rendered via the client's ``MapWeb`` custom
+    component (registered through AGenUI's custom-component API, mirroring
+    ``YouTubeWeb``/``youtube_embed()`` above).
+
+    ``url`` must be this app's own ``/map-embed`` route (see
+    ``map_tools.show_map``) -- a self-contained page embedding the real
+    Google Maps JavaScript API with every place's gold star marker already
+    placed. A generic ``web()``/``Web`` load would fail here: that route is
+    served over this backend's own self-signed cert, which the client's
+    custom ``MapWeb`` component explicitly trusts (like ``YouTubeWeb`` does
+    for ``/youtube-embed``) but the generic ``Web`` component's WebView does
+    not, and would silently reject.
+    """
+    payload: dict[str, Any] = {"id": comp_id, "component": "MapWeb", "url": url}
+    if styles is not None:
+        payload["styles"] = styles
+    return payload
+
+
 def video_gallery_card(
     surface_id: str,
     title: str,
@@ -336,6 +356,36 @@ def video_gallery_card(
         text("title", title, variant="h3"),
         list_view("list", card_ids, styles={"gap": "12px"}),
         *item_components,
+    ]
+    return [
+        create_surface(surface_id),
+        update_components(surface_id, components),
+    ]
+
+
+def map_card(
+    surface_id: str,
+    title: str,
+    map_embed_url: str,
+    caption: Optional[str] = None,
+) -> list[dict[str, Any]]:
+    """A titled card showing an interactive map (see ``map_web()`` -- real,
+    tappable gold star markers via a live Google Maps JavaScript API page,
+    not a static image) -- ``map_embed_url`` must be this app's own
+    ``/map-embed`` route, see ``map_tools.show_map``.
+    """
+    inner_children = ["title", "divider", "map"] + (["caption"] if caption else [])
+    components = [
+        card("root", "content", styles={"padding": "0px"}),
+        column("content", inner_children),
+        text("title", title, variant="h3", styles={"padding": "16px 16px 12px 16px"}),
+        divider("divider"),
+        map_web("map", map_embed_url, styles={"width": "100%", "aspect-ratio": "4/3"}),
+        *(
+            [text("caption", caption, variant="body", styles={"padding": "12px 16px", "line-clamp": 0})]
+            if caption
+            else []
+        ),
     ]
     return [
         create_surface(surface_id),

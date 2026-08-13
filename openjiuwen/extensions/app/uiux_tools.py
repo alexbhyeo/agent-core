@@ -22,6 +22,7 @@ from openjiuwen.core.foundation.tool import tool
 
 from . import genui
 from .image_tools import search_images, fetch_page_image
+from .map_tools import geocode_place, show_map
 from .video_tools import fetch_video_source, search_youtube_videos, show_video_clips
 
 
@@ -386,4 +387,6 @@ ALL_TOOLS = (
     search_youtube_videos,
     fetch_video_source,
     show_video_clips,
+    geocode_place,
+    show_map,
 )

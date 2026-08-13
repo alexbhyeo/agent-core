@@ -52,6 +52,19 @@ _DEFAULTS: dict[str, Any] = {
     # SerpApi/Google falls back to its own default) unless set.
     "SERPAPI_GL": os.getenv("SERPAPI_GL", ""),
     "SERPAPI_HL": os.getenv("SERPAPI_HL", ""),
+    # Google Maps Platform key for `map_tools.geocode_place`/`show_map`
+    # (Geocoding API + Maps Static API must both be enabled on the project
+    # this key belongs to). Empty means those tools report an error instead
+    # of silently returning nothing.
+    "GOOGLE_MAPS_API_KEY": os.getenv("GOOGLE_MAPS_API_KEY", ""),
+    # Public https:// base URL the client's WebView can reach directly --
+    # used to build fully-qualified embed URLs like `/map-embed`
+    # (map_tools.show_map). Unlike `/ws`, which the client already has
+    # hardcoded separately in its own Config.ets, embed URLs are built
+    # server-side and handed to the client as ordinary component data, so
+    # this needs to be configured to match wherever this server is actually
+    # reachable from the device.
+    "PUBLIC_BASE_URL": os.getenv("A2UI_PUBLIC_BASE_URL", ""),
     # TLS for the client<->agent WebSocket, so traffic (including the API key
     # never touching this hop, but chat content and tool output) isn't sent
     # in cleartext. The private key stays on the server (certs/server.key,

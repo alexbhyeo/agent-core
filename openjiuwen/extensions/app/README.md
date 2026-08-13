@@ -55,14 +55,15 @@ agent should reply with text and a rendered card.
 - `config.py` -- env-driven config (model creds, host/port, catalog id).
 - `models.py` -- the `Envelope` wire schema (`id`/`type`/`conversationId`/`timestamp`/`payload`).
 - `genui.py` -- A2UI v0.9 message builders (`createSurface`, `updateComponents`, `summary_card`, ...).
-- `uiux_tools.py` -- the agent's general tools (`show_card`, `show_info_list`, `ask_preferences_form`, ...) and `ALL_TOOLS`, which assembles every tool (including from `image_tools.py`/`video_tools.py`) for `agent.py` to register.
+- `uiux_tools.py` -- the agent's general tools (`show_card`, `show_info_list`, `ask_preferences_form`, ...) and `ALL_TOOLS`, which assembles every tool (including from `image_tools.py`/`video_tools.py`/`map_tools.py`) for `agent.py` to register.
 - `image_tools.py` -- `search_images` (SerpApi Google Images Light, keyword search) and `fetch_page_image` (og:image scrape of a known page), for getting a real image URL.
 - `video_tools.py` -- `search_youtube_videos`/`fetch_video_source`/`show_video_clips`, for finding and rendering playable video clips.
+- `map_tools.py` -- `geocode_place`/`show_map`, for resolving real places (Google Geocoding API) and rendering them as an interactive map (Google Maps JavaScript API, via `/map-embed`) with tappable gold star pins.
 - `browser_tools.py` -- `browser_inspect_page`, a read-only headless-browser fallback for JS-rendered pages.
 - `rails.py` -- `A2uiToolEventRail`, captures raw tool results for the WS layer.
 - `agent.py` -- builds and configures the `ReActAgent`.
 - `ws_session.py` -- `ConnectionSession` + the OutputSchema-chunk-to-wire-event translator.
-- `server.py` -- FastAPI app factory + `/ws` endpoint + entrypoint.
+- `server.py` -- FastAPI app factory + `/ws` endpoint + entrypoint. Also serves two small HTML pages the client's custom WebView components load directly: `/youtube-embed` (wraps a YouTube URL in a real `<iframe>`) and `/map-embed` (an interactive Google Maps JavaScript API page with gold star markers, see `map_tools.py`).
 
 ## Extending
 
