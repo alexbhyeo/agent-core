@@ -91,4 +91,6 @@ class TestAllTools:
             "search_youtube_videos",
             "fetch_video_source",
             "show_video_clips",
+            "geocode_place",
+            "show_map",
         }

@@ -18,16 +18,19 @@ automatically. Falls back to plain ws:// with a warning if they're missing,
 so a fresh checkout without generated certs still runs for local dev.
 """
 
+import json
 import logging
 import os
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, WebSocket
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import HTMLResponse
 
 from openjiuwen.core.runner import Runner
 from openjiuwen.extensions.app import config as app_config
 from openjiuwen.extensions.app.agent import build_agent
+from openjiuwen.extensions.app.map_tools import MAP_EMBED_ROUTE_PATH, MapPlace, render_map_embed_html
 from openjiuwen.extensions.app.ws_session import ConnectionSession
 
 
@@ -61,6 +64,38 @@ def create_app() -> FastAPI:
         user_id = token or "dev-user"
         session = ConnectionSession(websocket, app.state.agent, user_id)
         await session.run()
+
+    @app.get("/youtube-embed")
+    async def youtube_embed_page(url: str = "") -> HTMLResponse:
+        # Wraps a YouTube embed URL in a real page with a real <iframe> --
+        # see YouTubeWebComponent.ets's own comment for why: YouTube's player
+        # rejects a WebView navigated straight to the embed URL (no parent
+        # frame at all) as part of its embed validation.
+        safe = url.replace('&', '&amp;').replace('"', '&quot;').replace('<', '&lt;').replace('>', '&gt;')
+        html = (
+            '<!DOCTYPE html><html><head>'
+            '<meta name="viewport" content="width=device-width,initial-scale=1">'
+            '<style>html,body{margin:0;padding:0;height:100%;overflow:hidden;background:#000}'
+            'iframe{width:100%;height:100%;border:0;display:block}</style>'
+            '</head><body>'
+            '<iframe src="' + safe + '" allow="autoplay;encrypted-media;picture-in-picture" allowfullscreen></iframe>'
+            '</body></html>'
+        )
+        return HTMLResponse(content=html)
+
+    @app.get(MAP_EMBED_ROUTE_PATH)
+    async def map_embed_page(data: str = "") -> HTMLResponse:
+        # See map_tools.show_map: `data` is a URL-encoded JSON array of
+        # {"label", "lat", "lng"} places, built server-side from real
+        # `geocode_place` results (FastAPI already URL-decodes query params).
+        try:
+            places = [MapPlace(**p) for p in json.loads(data)]
+        except Exception:  # noqa: BLE001 -- malformed/missing data, not a server error
+            return HTMLResponse(content="Invalid map data.", status_code=400)
+        if not places:
+            return HTMLResponse(content="No places to show.", status_code=400)
+        html = render_map_embed_html(places, app_config.get("GOOGLE_MAPS_API_KEY"))
+        return HTMLResponse(content=html)
 
     return app
 

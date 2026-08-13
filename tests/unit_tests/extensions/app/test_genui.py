@@ -74,6 +74,24 @@ class TestBasicCatalogHelpers:
         }
         assert components["linkText"]["text"] == "Continue"
 
+    def test_map_card_builds_create_and_update_pair(self):
+        messages = genui.map_card("surface-1", "Bangkok", "https://example.com/map-embed?data=...")
+        assert len(messages) == 2
+        assert "createSurface" in messages[0]
+        components = {c["id"]: c for c in messages[1]["updateComponents"]["components"]}
+        assert components["map"]["component"] == "MapWeb"
+        assert components["map"]["url"] == "https://example.com/map-embed?data=..."
+        assert "caption" not in components
+
+    def test_map_card_with_caption_adds_caption_text(self):
+        messages = genui.map_card("surface-1", "Bangkok", "https://example.com/map-embed?data=...", caption="- Grand Palace")
+        components = {c["id"]: c for c in messages[1]["updateComponents"]["components"]}
+        assert components["caption"]["text"] == "- Grand Palace"
+
+    def test_map_web_builds_component_payload(self):
+        component = genui.map_web("map", "https://example.com/map-embed?data=...")
+        assert component == {"id": "map", "component": "MapWeb", "url": "https://example.com/map-embed?data=..."}
+
 
 class TestFormHelpers:
     def test_choice_picker_defaults(self):
