@@ -55,7 +55,10 @@ agent should reply with text and a rendered card.
 - `config.py` -- env-driven config (model creds, host/port, catalog id).
 - `models.py` -- the `Envelope` wire schema (`id`/`type`/`conversationId`/`timestamp`/`payload`).
 - `genui.py` -- A2UI v0.9 message builders (`createSurface`, `updateComponents`, `summary_card`, ...).
-- `tools.py` -- the agent's tools; `show_card` is the one that emits A2UI JSON.
+- `tools.py` -- the agent's general tools (`show_card`, `show_info_list`, `ask_preferences_form`, ...) and `ALL_TOOLS`, which assembles every tool (including from `image_tools.py`/`video_tools.py`) for `agent.py` to register.
+- `image_tools.py` -- `fetch_page_image`, for pulling a real image URL off a webpage.
+- `video_tools.py` -- `search_youtube_videos`/`fetch_video_source`/`show_video_clips`, for finding and rendering playable video clips.
+- `browser_tools.py` -- `browser_inspect_page`, a read-only headless-browser fallback for JS-rendered pages.
 - `rails.py` -- `A2uiToolEventRail`, captures raw tool results for the WS layer.
 - `agent.py` -- builds and configures the `ReActAgent`.
 - `ws_session.py` -- `ConnectionSession` + the OutputSchema-chunk-to-wire-event translator.
