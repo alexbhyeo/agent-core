@@ -23,16 +23,18 @@ class TestGeocodePlace:
         assert "GOOGLE_MAPS_API_KEY" in result["error"]
 
     @pytest.mark.asyncio
-    async def test_returns_coordinates_on_success(self):
+    async def test_returns_coordinates_rating_and_photo_on_success(self):
         body = json.dumps(
             {
-                "status": "OK",
-                "results": [
+                "places": [
                     {
-                        "formatted_address": "Na Phra Lan Rd, Bangkok, Thailand",
-                        "geometry": {"location": {"lat": 13.75, "lng": 100.4913}},
+                        "formattedAddress": "Na Phra Lan Rd, Bangkok, Thailand",
+                        "location": {"latitude": 13.75, "longitude": 100.4913},
+                        "rating": 4.6,
+                        "userRatingCount": 12345,
+                        "photos": [{"name": "places/abc123/photos/xyz789", "widthPx": 4032, "heightPx": 3024}],
                     }
-                ],
+                ]
             }
         ).encode("utf-8")
         mock_request = AsyncMock(return_value=(200, {"Content-Type": "application/json"}, body, "url", False))
@@ -41,16 +43,58 @@ class TestGeocodePlace:
             patch.object(map_tools._http, "request", mock_request),
         ):
             result = await map_tools.geocode_place.invoke({"query": "Grand Palace, Bangkok"})
-        assert result == {
-            "query": "Grand Palace, Bangkok",
-            "lat": 13.75,
-            "lng": 100.4913,
-            "formatted_address": "Na Phra Lan Rd, Bangkok, Thailand",
-        }
+        assert result["lat"] == 13.75
+        assert result["lng"] == 100.4913
+        assert result["formatted_address"] == "Na Phra Lan Rd, Bangkok, Thailand"
+        assert result["rating"] == 4.6
+        assert result["user_ratings_total"] == 12345
+        assert result["image_url"] == (
+            "https://places.googleapis.com/v1/places/abc123/photos/xyz789/media?maxWidthPx=640&key=test-key"
+        )
 
     @pytest.mark.asyncio
-    async def test_returns_error_when_status_not_ok(self):
-        body = json.dumps({"status": "ZERO_RESULTS", "results": []}).encode("utf-8")
+    async def test_returns_null_rating_and_photo_when_place_has_neither(self):
+        body = json.dumps(
+            {
+                "places": [
+                    {
+                        "formattedAddress": "somewhere, Thailand",
+                        "location": {"latitude": 13.75, "longitude": 100.4913},
+                    }
+                ]
+            }
+        ).encode("utf-8")
+        mock_request = AsyncMock(return_value=(200, {"Content-Type": "application/json"}, body, "url", False))
+        with (
+            patch.object(map_tools.config, "get", side_effect=_config_get({"GOOGLE_MAPS_API_KEY": "test-key"})),
+            patch.object(map_tools._http, "request", mock_request),
+        ):
+            result = await map_tools.geocode_place.invoke({"query": "somewhere"})
+        assert result["rating"] is None
+        assert result["user_ratings_total"] is None
+        assert result["image_url"] is None
+        assert "error" not in result
+
+    @pytest.mark.asyncio
+    async def test_sends_field_mask_and_text_query(self):
+        body = json.dumps({"places": [{"location": {"latitude": 1.0, "longitude": 2.0}}]}).encode("utf-8")
+        mock_request = AsyncMock(return_value=(200, {"Content-Type": "application/json"}, body, "url", False))
+        with (
+            patch.object(map_tools.config, "get", side_effect=_config_get({"GOOGLE_MAPS_API_KEY": "test-key"})),
+            patch.object(map_tools._http, "request", mock_request),
+        ):
+            await map_tools.geocode_place.invoke({"query": "Grand Palace, Bangkok"})
+        _session, method, url = mock_request.await_args.args
+        kwargs = mock_request.await_args.kwargs
+        assert method == "POST"
+        assert url == map_tools._PLACES_SEARCH_ENDPOINT
+        assert kwargs["headers"]["X-Goog-Api-Key"] == "test-key"
+        assert kwargs["headers"]["X-Goog-FieldMask"] == map_tools._PLACES_FIELD_MASK
+        assert kwargs["json_body"] == {"textQuery": "Grand Palace, Bangkok"}
+
+    @pytest.mark.asyncio
+    async def test_returns_error_when_no_places_found(self):
+        body = json.dumps({"places": []}).encode("utf-8")
         mock_request = AsyncMock(return_value=(200, {"Content-Type": "application/json"}, body, "url", False))
         with (
             patch.object(map_tools.config, "get", side_effect=_config_get({"GOOGLE_MAPS_API_KEY": "test-key"})),
@@ -58,7 +102,7 @@ class TestGeocodePlace:
         ):
             result = await map_tools.geocode_place.invoke({"query": "somewhere that doesn't exist"})
         assert result["lat"] is None
-        assert "ZERO_RESULTS" in result["error"]
+        assert "error" in result
 
     @pytest.mark.asyncio
     async def test_http_error_returns_error_field(self):
@@ -109,6 +153,35 @@ class TestRenderMapEmbedHtml:
         assert "textContent" in html
         assert ".innerHTML" not in html
 
+    def test_embeds_image_url_and_rating_when_present(self):
+        places = [
+            map_tools.MapPlace(
+                label="Grand Palace",
+                lat=13.75,
+                lng=100.4913,
+                image_url="https://places.googleapis.com/v1/places/abc/photos/xyz/media?key=test-key",
+                rating=4.6,
+                user_ratings_total=12345,
+            )
+        ]
+        html = map_tools.render_map_embed_html(places, "test-key")
+        assert '"image_url": "https://places.googleapis.com/v1/places/abc/photos/xyz/media?key=test-key"' in html
+        assert '"rating": 4.6' in html
+        assert '"user_ratings_total": 12345' in html
+
+    def test_omits_image_url_and_rating_when_absent(self):
+        places = [map_tools.MapPlace(label="Grand Palace", lat=13.75, lng=100.4913)]
+        html = map_tools.render_map_embed_html(places, "test-key")
+        assert '"image_url": null' in html
+        assert '"rating": null' in html
+
+    def test_sets_image_src_as_property_not_string_concat(self):
+        # Confirms the info window builds its <img> via a safe property
+        # assignment, not by concatenating place data into an HTML string.
+        places = [map_tools.MapPlace(label="Grand Palace", lat=13.75, lng=100.4913)]
+        html = map_tools.render_map_embed_html(places, "test-key")
+        assert "img.src = place.image_url" in html
+
 
 class TestShowMap:
     @pytest.mark.asyncio
@@ -152,6 +225,42 @@ class TestShowMap:
         components = {c["id"]: c for c in result["genui"][1]["updateComponents"]["components"]}
         assert components["map"]["component"] == "MapWeb"
         assert components["map"]["url"].startswith(f"https://example.com:8090{map_tools.MAP_EMBED_ROUTE_PATH}?data=")
+
+    @pytest.mark.asyncio
+    async def test_passes_image_url_and_rating_through_to_embed_url_data(self):
+        from urllib.parse import parse_qs, urlparse
+
+        config_values = {"GOOGLE_MAPS_API_KEY": "test-key", "PUBLIC_BASE_URL": "https://example.com:8090"}
+        with patch.object(map_tools.config, "get", side_effect=_config_get(config_values)):
+            result = await map_tools.show_map.invoke(
+                {
+                    "title": "Bangkok",
+                    "places": [
+                        {
+                            "label": "Grand Palace",
+                            "lat": 13.75,
+                            "lng": 100.4913,
+                            "image_url": "https://places.googleapis.com/v1/places/abc/photos/xyz/media",
+                            "rating": 4.6,
+                            "user_ratings_total": 12345,
+                        }
+                    ],
+                }
+            )
+        components = {c["id"]: c for c in result["genui"][1]["updateComponents"]["components"]}
+        embed_url = components["map"]["url"]
+        data_json = parse_qs(urlparse(embed_url).query)["data"][0]
+        places_data = json.loads(data_json)
+        assert places_data == [
+            {
+                "label": "Grand Palace",
+                "lat": 13.75,
+                "lng": 100.4913,
+                "image_url": "https://places.googleapis.com/v1/places/abc/photos/xyz/media",
+                "rating": 4.6,
+                "user_ratings_total": 12345,
+            }
+        ]
 
     @pytest.mark.asyncio
     async def test_embed_url_strips_trailing_slash_on_base_url(self):
