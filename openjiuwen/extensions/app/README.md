@@ -55,7 +55,7 @@ agent should reply with text and a rendered card.
 - `config.py` -- env-driven config (model creds, host/port, catalog id).
 - `models.py` -- the `Envelope` wire schema (`id`/`type`/`conversationId`/`timestamp`/`payload`).
 - `genui.py` -- A2UI v0.9 message builders (`createSurface`, `updateComponents`, `summary_card`, ...).
-- `tools.py` -- the agent's general tools (`show_card`, `show_info_list`, `ask_preferences_form`, ...) and `ALL_TOOLS`, which assembles every tool (including from `image_tools.py`/`video_tools.py`) for `agent.py` to register.
+- `uiux_tools.py` -- the agent's general tools (`show_card`, `show_info_list`, `ask_preferences_form`, ...) and `ALL_TOOLS`, which assembles every tool (including from `image_tools.py`/`video_tools.py`) for `agent.py` to register.
 - `image_tools.py` -- `fetch_page_image`, for pulling a real image URL off a webpage.
 - `video_tools.py` -- `search_youtube_videos`/`fetch_video_source`/`show_video_clips`, for finding and rendering playable video clips.
 - `browser_tools.py` -- `browser_inspect_page`, a read-only headless-browser fallback for JS-rendered pages.
@@ -66,7 +66,7 @@ agent should reply with text and a rendered card.
 
 ## Extending
 
-- Add more tools in `tools.py`; any tool that returns
+- Add more tools in `uiux_tools.py`; any tool that returns
   `{"text": ..., "genui": [...]}` will have its `genui` messages streamed to
   the client automatically -- no changes needed elsewhere.
 - Swap `show_card`'s single title/body card for richer basic-catalog
