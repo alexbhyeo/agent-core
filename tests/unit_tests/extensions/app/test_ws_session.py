@@ -21,7 +21,7 @@ def _chunk(chunk_type, payload=None):
 
 
 def _new_state():
-    return {"last_llm_text": "", "any_text_sent": False, "last_presentation_text": ""}
+    return {"last_llm_text": "", "any_text_sent": False, "last_presentation_text": "", "bubble_open": False}
 
 
 class TestDescribeUiActions:
@@ -77,6 +77,55 @@ class TestTranslate:
         events = _translate(_chunk("llm_output", {"content": " world"}), state)
         assert events == [("chat.token", {"text": " world"})]
         assert state["last_llm_text"] == "hello world"
+
+    def test_llm_output_inserts_separator_between_turns_with_text(self):
+        state = _new_state()
+        # First turn streams a lead-in sentence.
+        _translate(_chunk("llm_output", {"content": "Let me find some photos."}), state)
+        # A tool call/result boundary resets the per-turn accumulator.
+        _translate(_chunk("tool_call", {"tool_name": "search_images", "tool_call_id": "c1"}), state)
+        _translate(
+            _chunk(
+                "tool_result",
+                {"tool_name": "search_images", "tool_call_id": "c1", "tool_result": {"query": "q", "images": []}},
+            ),
+            state,
+        )
+        # A second turn streams its own text -- must not run into the first.
+        events = _translate(_chunk("llm_output", {"content": "Here are some places."}), state)
+        assert events == [
+            ("chat.token", {"text": "\n\n"}),
+            ("chat.token", {"text": "Here are some places."}),
+        ]
+        assert state["last_llm_text"] == "Here are some places."
+
+    def test_llm_output_no_separator_for_first_turn(self):
+        state = _new_state()
+        events = _translate(_chunk("llm_output", {"content": "Let me find some photos."}), state)
+        assert events == [("chat.token", {"text": "Let me find some photos."})]
+
+    def test_llm_output_no_separator_after_a_card_already_rendered(self):
+        # A genui-bearing tool_result (show_card/show_info_list/etc.) breaks
+        # the client's text bubble on its own (a new `createSurface` starts a
+        # fresh transcript row) -- so trailing "closing remarks" text after
+        # the card must NOT get a leading separator, or that new bubble would
+        # visibly start with two blank lines.
+        state = _new_state()
+        _translate(_chunk("llm_output", {"content": "Let me find some photos."}), state)
+        _translate(_chunk("tool_call", {"tool_name": "show_info_list", "tool_call_id": "c1"}), state)
+        _translate(
+            _chunk(
+                "tool_result",
+                {
+                    "tool_name": "show_info_list",
+                    "tool_call_id": "c1",
+                    "tool_result": {"text": "Top places\n- The Bund", "genui": [{"createSurface": {}}]},
+                },
+            ),
+            state,
+        )
+        events = _translate(_chunk("llm_output", {"content": "Enjoy your trip!"}), state)
+        assert events == [("chat.token", {"text": "Enjoy your trip!"})]
 
     def test_answer_emits_only_unsent_suffix(self):
         state = _new_state()

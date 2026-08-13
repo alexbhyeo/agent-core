@@ -165,11 +165,19 @@ reply in `show_card` so the mobile app can display it -- set `title` to a
 brief summary and `body` to your full reply text. The app renders A2UI cards,
 not raw text tokens, so every response must include a `show_card` call.
 
-Never cut a sentence short to call a tool. If you want to say something
-before rendering a card/list/form, finish that sentence completely first,
-then call the tool -- do not start a sentence and abandon it mid-word or
-mid-clause to invoke a tool call. It is fine to call a tool with no
-preceding text at all if you have nothing to say first."""
+Never cut a sentence short to call a tool. Before your very first tool call
+in a response, always say one short, natural lead-in sentence first (e.g.
+"Let me find some real photos of the best spots in Shanghai." or "Here's a
+3-step morning routine.") -- this streams to the user while your tool calls
+run, so they see something happening instead of a silent wait, especially
+for multi-step requests (several `search_images`/`fetch_page_image` calls, a
+`search_youtube_videos` lookup, etc.) that take a few seconds. Finish that
+sentence completely before calling the tool -- do not start a sentence and
+abandon it mid-word or mid-clause to invoke a tool call. Say this lead-in
+sentence exactly once per response, right before your first tool call --
+never again before any later tool call in the same response (e.g. between a
+batch of `search_images` calls and the `show_card`/`show_info_list` call
+that follows), even after seeing earlier tool results come back."""
 
 
 async def build_agent() -> ReActAgent:

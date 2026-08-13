@@ -93,7 +93,15 @@ class ConnectionSession:
         # not -- the model usually adds a trailing turn of its own after a
         # `show_card`/`show_info_list`/etc. call, but occasionally doesn't,
         # which otherwise leaves the user with a card and no reply bubble.
-        state = {"last_llm_text": "", "any_text_sent": False, "last_presentation_text": ""}
+        # ``bubble_open`` tracks whether the client's current text bubble is
+        # still appendable (no genui card has broken it yet), to decide
+        # whether a new model turn's text needs a separator before it.
+        state = {
+            "last_llm_text": "",
+            "any_text_sent": False,
+            "last_presentation_text": "",
+            "bubble_open": False,
+        }
         try:
             async for chunk in Runner.run_agent_streaming(self.agent, {"query": text}, session=conversation_id):
                 for event_type, event_payload in _translate(chunk, state):
@@ -141,8 +149,28 @@ def _translate(chunk: Any, state: dict[str, Any]) -> list[tuple[str, dict[str, A
     if chunk_type == "llm_output":
         text = _as_text(payload)
         if text:
+            if not state["last_llm_text"] and state["bubble_open"]:
+                # First chunk of a new model turn, and the client's current
+                # text bubble is still open (no genui surface has appeared
+                # since text last flowed into it -- see the tool_result
+                # branch) -- e.g. a lead-in sentence before an earlier batch
+                # of data-only tool calls like `search_images`, followed by
+                # a closing sentence once they return. Without a separator
+                # this would run straight into that prior text mid-sentence,
+                # since the client appends same-turn-or-not chat.token text
+                # into one transcript entry as long as it's stayed a text
+                # bubble (see Index.ets's appendAssistantText). Sent as its
+                # own event so ``last_llm_text`` keeps accumulating only the
+                # model's actual raw output, not this injected separator --
+                # that raw text is what ``_unsent_suffix`` diffs the final
+                # ``answer`` chunk against. Once a presentation tool's genui
+                # actually renders a card, the client starts a fresh bubble
+                # on its own (a `createSurface` message breaks the "append to
+                # last text row" chain there) -- see ``bubble_open`` below.
+                events.append(("chat.token", {"text": "\n\n"}))
             state["last_llm_text"] += text
             state["any_text_sent"] = True
+            state["bubble_open"] = True
             events.append(("chat.token", {"text": text}))
         return events
 
@@ -154,6 +182,7 @@ def _translate(chunk: Any, state: dict[str, Any]) -> list[tuple[str, dict[str, A
         unsent_text = _unsent_suffix(text, state["last_llm_text"])
         if unsent_text:
             state["any_text_sent"] = True
+            state["bubble_open"] = True
             events.append(("chat.token", {"text": unsent_text}))
         return events
 
@@ -190,6 +219,13 @@ def _translate(chunk: Any, state: dict[str, Any]) -> list[tuple[str, dict[str, A
             events.append(("tool.output", {"tool": tool_name, "callId": call_id, "text": result_text}))
         for message in genui_messages or []:
             events.append(("genui", message))
+        if genui_messages:
+            # A rendered card breaks the client's current text bubble (a
+            # `createSurface` message ends the "append to last text row"
+            # chain -- see Index.ets's appendAssistantText/onCreateSurface).
+            # Whatever text comes next starts a brand new bubble there on its
+            # own, so no leading separator is needed for it.
+            state["bubble_open"] = False
         return events
 
     if chunk_type == "tool_error":
