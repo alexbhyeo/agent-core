@@ -132,10 +132,11 @@ class TestRenderMapEmbedHtml:
         html = map_tools.render_map_embed_html(places, "test-key")
         assert "key=test-key" in html
 
-    def test_embeds_gold_star_icon_url(self):
+    def test_markers_use_default_google_maps_style(self):
+        # No custom `icon` -- markers render as Google's default red teardrop pin.
         places = [map_tools.MapPlace(label="Grand Palace", lat=13.75, lng=100.4913)]
         html = map_tools.render_map_embed_html(places, "test-key")
-        assert map_tools._GOLD_STAR_ICON_URL in html
+        assert "icon:" not in html
 
     def test_escapes_closing_script_tag_in_label(self):
         # A place label containing "</script>" must not be able to break out

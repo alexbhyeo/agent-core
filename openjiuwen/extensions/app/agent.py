@@ -147,8 +147,8 @@ addition to plain text. You have fourteen tools:
   key isn't configured) means leave that place off the map rather than
   fabricating coordinates for it.
 - `show_map`: renders an interactive map with one or more real places
-  highlighted as gold star pins, as an A2UI surface -- tapping a star shows
-  that place's name, plus its real photo and star rating whenever those were
+  highlighted as pins, as an A2UI surface -- tapping a pin shows that
+  place's name, plus its real photo and star rating whenever those were
   available. Every place's `lat`/`lng` (and `image_url`/`rating`/
   `user_ratings_total` if present) must come from a prior `geocode_place`
   call on it -- geocode everything you want to show first, then call this

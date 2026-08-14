@@ -1,7 +1,7 @@
 # -*- coding: UTF-8 -*-
 # Copyright (c) Huawei Technologies Co., Ltd. 2025. All rights reserved.
 """Map tools for the ReAct agent: geocoding real places and rendering them as
-an interactive map with gold star markers.
+an interactive map with default Google Maps markers.
 
 Unlike a static map image, real tap-to-see-info markers need a live Google
 Maps JavaScript API page, not a server-rendered PNG (see the Static Maps API
@@ -34,11 +34,6 @@ _PLACES_PHOTO_ENDPOINT_PREFIX = "https://places.googleapis.com/v1/"
 _PLACES_FIELD_MASK = "places.location,places.formattedAddress,places.rating,places.userRatingCount,places.photos"
 _PLACE_PHOTO_MAX_WIDTH_PX = 640
 
-# Google's own hosted gold star pin -- used instead of the default red
-# teardrop marker per the "highlight places with golden stars" requirement.
-_GOLD_STAR_ICON_URL = "https://maps.google.com/mapfiles/kml/paddle/ylw-stars.png"
-_STAR_MARKER_SIZE_PX = 32
-
 MAP_EMBED_ROUTE_PATH = "/map-embed"
 
 
@@ -46,7 +41,7 @@ MAP_EMBED_ROUTE_PATH = "/map-embed"
     description=(
         "Resolve a real place name or address into map coordinates, via the "
         "actual Google Places API (not guessed from memory) -- call this "
-        "once per place before calling `show_map`, so its star lands on the "
+        "once per place before calling `show_map`, so its pin lands on the "
         "correct real-world location. Pass a specific, unambiguous query "
         "(e.g. 'Grand Palace, Bangkok, Thailand' rather than just 'the "
         "palace'). Returns `lat`/`lng` and `formatted_address` on success, "
@@ -165,10 +160,6 @@ _MAP_EMBED_TEMPLATE = """<!DOCTYPE html>
         position: position,
         map: map,
         title: place.label,
-        icon: {
-          url: __STAR_ICON_JSON__,
-          scaledSize: new google.maps.Size(__MARKER_SIZE__, __MARKER_SIZE__),
-        },
       });
       marker.addListener("click", function () {
         // textContent/property assignment (never innerHTML/string concat) so
@@ -232,8 +223,8 @@ def _place_payload(p: MapPlace) -> dict[str, Any]:
 def render_map_embed_html(places: list[MapPlace], api_key: str) -> str:
     """Render a small self-contained HTML page embedding the real Google Maps
     JavaScript API -- unlike a static map image, this gives real interactive
-    markers: tapping a gold star opens an info window with that place's
-    label, photo, and star rating (whichever of those it has). Served by
+    markers: tapping a pin opens an info window with that place's label,
+    photo, and star rating (whichever of those it has). Served by
     ``server.py`` at ``MAP_EMBED_ROUTE_PATH``.
     """
     places_payload = [_place_payload(p) for p in places]
@@ -242,8 +233,6 @@ def render_map_embed_html(places: list[MapPlace], api_key: str) -> str:
     places_json = json.dumps(places_payload).replace("</", "<\\/")
     html = _MAP_EMBED_TEMPLATE
     html = html.replace("__PLACES_JSON__", places_json)
-    html = html.replace("__STAR_ICON_JSON__", json.dumps(_GOLD_STAR_ICON_URL))
-    html = html.replace("__MARKER_SIZE__", str(_STAR_MARKER_SIZE_PX))
     html = html.replace("__API_KEY__", quote(api_key, safe=""))
     return html
 
@@ -251,8 +240,8 @@ def render_map_embed_html(places: list[MapPlace], api_key: str) -> str:
 @tool(
     description=(
         "Render an interactive map with one or more real places highlighted "
-        "as gold star pins, as an A2UI surface -- tapping a star shows that "
-        "place's name, plus its real photo and star rating whenever those "
+        "as pins, as an A2UI surface -- tapping a pin shows that place's "
+        "name, plus its real photo and star rating whenever those "
         "were available from `geocode_place`. Every place's `lat`/`lng` must "
         "come from a prior `geocode_place` call on that place -- never "
         "invent coordinates, ratings, or image URLs; pass through exactly "
