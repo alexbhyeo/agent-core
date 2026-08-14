@@ -286,8 +286,8 @@ def map_web(comp_id: str, url: str, styles: Optional[dict[str, Any]] = None) -> 
 
     ``url`` must be this app's own ``/map-embed`` route (see
     ``map_tools.show_map``) -- a self-contained page embedding the real
-    Google Maps JavaScript API with every place's gold star marker already
-    placed. A generic ``web()``/``Web`` load would fail here: that route is
+    Google Maps JavaScript API with every place's marker already placed.
+    A generic ``web()``/``Web`` load would fail here: that route is
     served over this backend's own self-signed cert, which the client's
     custom ``MapWeb`` component explicitly trusts (like ``YouTubeWeb`` does
     for ``/youtube-embed``) but the generic ``Web`` component's WebView does
@@ -370,9 +370,9 @@ def map_card(
     caption: Optional[str] = None,
 ) -> list[dict[str, Any]]:
     """A titled card showing an interactive map (see ``map_web()`` -- real,
-    tappable gold star markers via a live Google Maps JavaScript API page,
-    not a static image) -- ``map_embed_url`` must be this app's own
-    ``/map-embed`` route, see ``map_tools.show_map``.
+    tappable markers via a live Google Maps JavaScript API page, not a
+    static image) -- ``map_embed_url`` must be this app's own ``/map-embed``
+    route, see ``map_tools.show_map``.
     """
     inner_children = ["title", "divider", "map"] + (["caption"] if caption else [])
     components = [
@@ -380,7 +380,7 @@ def map_card(
         column("content", inner_children),
         text("title", title, variant="h3", styles={"padding": "16px 16px 12px 16px"}),
         divider("divider"),
-        map_web("map", map_embed_url, styles={"width": "100%", "aspect-ratio": "4/3"}),
+        map_web("map", map_embed_url, styles={"width": "100%", "aspect-ratio": "3/4"}),
         *(
             [text("caption", caption, variant="body", styles={"padding": "12px 16px", "line-clamp": 0})]
             if caption
