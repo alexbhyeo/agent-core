@@ -245,3 +245,19 @@ class TestShowHotelResults:
         )
         components = {c["id"]: c for c in result["genui"][1]["updateComponents"]["components"]}
         assert "hotel0Button" not in components
+
+    @pytest.mark.asyncio
+    async def test_more_count_adds_show_more_button_and_summary_line(self):
+        result = await hotel_tools.show_hotel_results.invoke(
+            {"title": "Bali hotels", "hotels": [{"name": "Hotel A"}], "more_count": 5}
+        )
+        components = {c["id"]: c for c in result["genui"][1]["updateComponents"]["components"]}
+        assert components["moreButtonText"]["text"] == "Show more"
+        assert "...and 5 more" in result["text"]
+
+    @pytest.mark.asyncio
+    async def test_no_more_count_omits_show_more_button(self):
+        result = await hotel_tools.show_hotel_results.invoke({"title": "Bali hotels", "hotels": [{"name": "Hotel A"}]})
+        components = {c["id"]: c for c in result["genui"][1]["updateComponents"]["components"]}
+        assert "moreButton" not in components
+        assert "more" not in result["text"]

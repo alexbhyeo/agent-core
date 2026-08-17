@@ -177,10 +177,22 @@ class HotelResult(BaseModel):
         "must come from a prior `search_hotels` call -- never invent a "
         "hotel, price, rating, or link. Pass through exactly what "
         "`search_hotels` returned, including missing/null fields (just "
-        "leave those out of the hotel, don't invent a replacement value)."
+        "leave those out of the hotel, don't invent a replacement value). "
+        "To keep each response fast, show hotels 3 at a time: pass only the "
+        "next 3 hotels from a `search_hotels` result and set `more_count` to "
+        "how many are left after this batch (e.g. showing hotels 1-3 of 10 "
+        "-> `more_count=7`) -- this renders a 'Show more' button. Each time "
+        "the user taps it, you'll see a `show_more_hotels` UI action -- "
+        "respond by calling this again with just the *next* 3 hotels from "
+        "that same earlier `search_hotels` result (don't search again, and "
+        "don't dump all the remaining hotels at once), updating `more_count` "
+        "to whatever is left after that batch. Repeat this one-batch-per-tap "
+        "pattern until every hotel has been shown, at which point the final "
+        "batch's `more_count` is 0 and no button renders. If there were 3 or "
+        "fewer hotels to begin with, just show all of them with `more_count=0`."
     )
 )
-def show_hotel_results(title: str, hotels: list[HotelResult]) -> dict[str, Any]:
+def show_hotel_results(title: str, hotels: list[HotelResult], more_count: int = 0) -> dict[str, Any]:
     parsed_hotels = [h if isinstance(h, HotelResult) else HotelResult(**h) for h in hotels]
     if not parsed_hotels:
         return {"text": "I couldn't find any hotels for that search.", "genui": []}
@@ -192,9 +204,11 @@ def show_hotel_results(title: str, hotels: list[HotelResult]) -> dict[str, Any]:
         if h.price_per_night:
             line += f" ({h.price_per_night}/night)"
         summary_lines.append(line)
+    if more_count > 0:
+        summary_lines.append(f"...and {more_count} more")
     summary = "\n".join(summary_lines)
     hotel_dicts = [h.model_dump(exclude_none=True) for h in parsed_hotels]
     return {
         "text": f"{title}\n{summary}",
-        "genui": genui.hotel_gallery_card(surface_id, title, hotel_dicts),
+        "genui": genui.hotel_gallery_card(surface_id, title, hotel_dicts, more_count=more_count),
     }

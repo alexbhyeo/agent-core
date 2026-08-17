@@ -882,6 +882,7 @@ def hotel_gallery_card(
     surface_id: str,
     title: str,
     hotels: list[dict[str, Any]],
+    more_count: int = 0,
 ) -> list[dict[str, Any]]:
     """A titled vertical list of hotel results, each in its own Card with a
     photo, name, price/rating/class subtitle, and a "View Hotel" button that
@@ -895,6 +896,13 @@ def hotel_gallery_card(
     ``rating``, ``reviews``, ``hotel_class``, ``description``, ``link``. Any
     field besides ``name`` is optional -- only what's actually present is
     rendered.
+
+    ``more_count`` > 0 adds a "Show more" button below the list
+    (a real in-app ``button()``, not ``open_url_button`` -- pressing it
+    sends a ``show_more_hotels`` UI action back to the agent, see
+    ``hotel_tools.show_hotel_results`` and the booking policy in
+    ``agent.py``) -- lets the caller render only the first batch of results
+    up front instead of every image in a long list all at once.
     """
     card_ids = [f"hotel{i}Card" for i in range(len(hotels))]
     item_components: list[dict[str, Any]] = []
@@ -958,10 +966,26 @@ def hotel_gallery_card(
                 )
             )
 
+    root_children = ["title", "list"]
+    more_components: list[dict[str, Any]] = []
+    if more_count > 0:
+        root_children.append("moreButton")
+        more_components.append(
+            button("moreButton", "moreButtonText", "show_more_hotels", styles={"width": "100%"})
+        )
+        more_components.append(
+            text(
+                "moreButtonText",
+                "Show more",
+                styles={"color": "#FFFFFF", "width": "100%", "text-align": "center"},
+            )
+        )
+
     components = [
-        column("root", ["title", "list"], styles={"gap": "12px"}),
+        column("root", root_children, styles={"gap": "12px"}),
         text("title", title, variant="h3"),
         list_view("list", card_ids, styles={"gap": "12px"}),
+        *more_components,
         *item_components,
     ]
     return [
