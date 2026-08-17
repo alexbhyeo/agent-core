@@ -55,10 +55,11 @@ agent should reply with text and a rendered card.
 - `config.py` -- env-driven config (model creds, host/port, catalog id).
 - `models.py` -- the `Envelope` wire schema (`id`/`type`/`conversationId`/`timestamp`/`payload`).
 - `genui.py` -- A2UI v0.9 message builders (`createSurface`, `updateComponents`, `summary_card`, ...).
-- `tools/uiux_tools.py` -- the agent's general tools (`show_card`, `show_info_list`, `ask_preferences_form`, ...) and `ALL_TOOLS`, which assembles every tool (including from `tools/image_tools.py`/`tools/video_tools.py`/`tools/map_tools.py`) for `agent.py` to register.
+- `tools/uiux_tools.py` -- the agent's general tools (`show_card`, `show_info_list`, `ask_preferences_form`, ...) and `ALL_TOOLS`, which assembles every tool (including from `tools/image_tools.py`/`tools/video_tools.py`/`tools/map_tools.py`/`tools/hotel_tools.py`) for `agent.py` to register.
 - `tools/image_tools.py` -- `search_images` (SerpApi Google Images Light, keyword search) and `fetch_page_image` (og:image scrape of a known page), for getting a real image URL.
 - `tools/video_tools.py` -- `search_youtube_videos`/`fetch_video_source`/`show_video_clips`, for finding and rendering playable video clips.
 - `tools/map_tools.py` -- `geocode_place`/`show_map`, for resolving real places (Google Places API, incl. rating/photo when available) and rendering them as an interactive map (Google Maps JavaScript API, via `/map-embed`) with tappable pins whose info window shows the place's name, photo, and rating.
+- `tools/hotel_tools.py` -- `search_hotels`/`show_hotel_results`, for finding real, bookable hotels (SerpApi Google Hotels engine) and rendering them as a gallery of cards, each handing off to the hotel's real page via a "View Hotel" button. Falls back to the general `free_search`/`browser_inspect_page` booking flow when unavailable or no results (see `agent.py`'s booking policy).
 - `tools/browser_tools.py` -- `browser_inspect_page`, a read-only headless-browser fallback for JS-rendered pages.
 - `rails.py` -- `A2uiToolEventRail`, captures raw tool results for the WS layer.
 - `agent.py` -- builds and configures the `ReActAgent`.
