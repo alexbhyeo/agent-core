@@ -39,17 +39,20 @@ _DEFAULTS: dict[str, Any] = {
     # means `search_youtube_videos` reports an error instead of silently
     # returning nothing.
     "YOUTUBE_API_KEY": os.getenv("YOUTUBE_API_KEY", ""),
-    # SerpApi (Google Images Light engine) for `image_tools.search_images` --
-    # a real image search API, keyed by a natural-language query, instead of
-    # relying on already knowing a specific page to scrape an og:image from
-    # (see `fetch_page_image`). Empty API key means `search_images` reports
-    # an error instead of silently returning nothing.
+    # SerpApi key, shared by every SerpApi-backed tool: `image_tools.
+    # search_images` (Google Images Light engine, a real image search API
+    # keyed by a natural-language query, instead of relying on already
+    # knowing a specific page to scrape an og:image from -- see
+    # `fetch_page_image`) and `hotel_tools.search_hotels` (Google Hotels
+    # engine, real hotel availability/pricing). Empty API key means those
+    # tools report an error instead of silently returning nothing.
     "SERPAPI_API_KEY": os.getenv("SERPAPI_API_KEY", ""),
     "SERPAPI_ENGINE": os.getenv("SERPAPI_ENGINE", "google_images_light"),
     "SERPAPI_LICENSES": os.getenv("SERPAPI_LICENSES", ""),
-    # Optional locale defaults applied to every `search_images` call (country/
-    # language bias for results) -- left empty (omitted from the request,
-    # SerpApi/Google falls back to its own default) unless set.
+    # Optional locale defaults applied to every `search_images`/
+    # `search_hotels` call (country/language bias for results) -- left empty
+    # (omitted from the request, SerpApi/Google falls back to its own
+    # default) unless set.
     "SERPAPI_GL": os.getenv("SERPAPI_GL", ""),
     "SERPAPI_HL": os.getenv("SERPAPI_HL", ""),
     # Google Maps Platform key for `map_tools.geocode_place`/`show_map`

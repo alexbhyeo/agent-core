@@ -853,3 +853,89 @@ def form(
         messages.append(update_data_model(surface_id, field_paths.get(field_id, f"/{field_id}/value"), default_value))
     messages.append(update_components(surface_id, components))
     return messages
+
+
+def hotel_gallery_card(
+    surface_id: str,
+    title: str,
+    hotels: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """A titled vertical list of hotel results, each in its own Card with a
+    photo, name, price/rating/class subtitle, and a "View Hotel" button that
+    opens the hotel's real page externally (via ``open_url_button``) -- the
+    user always finishes the actual booking there themselves, same handoff
+    pattern as ``summary_card``'s ``link_url``.
+
+    Each dict in ``hotels`` may have: ``name`` (required), ``image_url``,
+    ``price_per_night``, ``rating``, ``reviews``, ``hotel_class``,
+    ``description``, ``link``. Any field besides ``name`` is optional --
+    only what's actually present is rendered.
+    """
+    card_ids = [f"hotel{i}Card" for i in range(len(hotels))]
+    item_components: list[dict[str, Any]] = []
+    for i, hotel in enumerate(hotels):
+        card_id = card_ids[i]
+        outer_id = f"hotel{i}"
+        text_col_id = f"{outer_id}TextCol"
+        name_id = f"{outer_id}Name"
+        subtitle_id = f"{outer_id}Subtitle"
+        desc_id = f"{outer_id}Desc"
+        media_id = f"{outer_id}Media"
+        button_id = f"{outer_id}Button"
+        button_text_id = f"{outer_id}ButtonText"
+
+        subtitle_parts: list[str] = []
+        if hotel.get("price_per_night"):
+            subtitle_parts.append(f"{hotel['price_per_night']}/night")
+        if hotel.get("rating"):
+            rating_text = f"★ {hotel['rating']}"
+            if hotel.get("reviews"):
+                rating_text += f" ({hotel['reviews']:,} reviews)"
+            subtitle_parts.append(rating_text)
+        if hotel.get("hotel_class"):
+            subtitle_parts.append(hotel["hotel_class"])
+        subtitle_text = "  •  ".join(subtitle_parts)
+
+        text_col_children = [name_id]
+        if subtitle_text:
+            text_col_children.append(subtitle_id)
+        if hotel.get("description"):
+            text_col_children.append(desc_id)
+        if hotel.get("link"):
+            text_col_children.append(button_id)
+
+        # padding=0 on the card itself, same reasoning as info_list_card's
+        # photo items: the image sits flush against the card edges, with the
+        # text block below getting its own inset padding instead.
+        item_components.append(card(card_id, outer_id, styles={"padding": "0px"}))
+        if hotel.get("image_url"):
+            item_components.append(column(outer_id, [media_id, text_col_id]))
+            item_components.append(image(media_id, hotel["image_url"], variant="header", fit="cover"))
+        else:
+            item_components.append(column(outer_id, [text_col_id]))
+        item_components.append(column(text_col_id, text_col_children, styles={"padding": "16px", "gap": "8px"}))
+        item_components.append(text(name_id, hotel["name"], variant="h3"))
+        if subtitle_text:
+            item_components.append(text(subtitle_id, subtitle_text, variant="body"))
+        if hotel.get("description"):
+            item_components.append(text(desc_id, hotel["description"], variant="caption", styles={"line-clamp": 0}))
+        if hotel.get("link"):
+            item_components.append(open_url_button(button_id, button_text_id, hotel["link"], styles={"width": "100%"}))
+            item_components.append(
+                text(
+                    button_text_id,
+                    "View Hotel",
+                    styles={"color": "#FFFFFF", "width": "100%", "text-align": "center"},
+                )
+            )
+
+    components = [
+        column("root", ["title", "list"], styles={"gap": "12px"}),
+        text("title", title, variant="h3"),
+        list_view("list", card_ids, styles={"gap": "12px"}),
+        *item_components,
+    ]
+    return [
+        create_surface(surface_id),
+        update_components(surface_id, components),
+    ]

@@ -92,6 +92,47 @@ class TestBasicCatalogHelpers:
         component = genui.map_web("map", "https://example.com/map-embed?data=...")
         assert component == {"id": "map", "component": "MapWeb", "url": "https://example.com/map-embed?data=..."}
 
+    def test_hotel_gallery_card_builds_create_and_update_pair(self):
+        messages = genui.hotel_gallery_card(
+            "surface-1",
+            "Bali hotels",
+            [
+                {
+                    "name": "The Ritz-Carlton, Bali",
+                    "price_per_night": "$548",
+                    "rating": 4.6,
+                    "reviews": 4547,
+                    "hotel_class": "5-star hotel",
+                    "image_url": "https://example.com/thumb.jpg",
+                    "link": "https://example.com/ritz",
+                    "description": "Upscale property with a spa.",
+                }
+            ],
+        )
+        assert len(messages) == 2
+        assert "createSurface" in messages[0]
+        components = {c["id"]: c for c in messages[1]["updateComponents"]["components"]}
+        assert components["hotel0Name"]["text"] == "The Ritz-Carlton, Bali"
+        assert "$548/night" in components["hotel0Subtitle"]["text"]
+        assert "★ 4.6" in components["hotel0Subtitle"]["text"]
+        assert "5-star hotel" in components["hotel0Subtitle"]["text"]
+        assert components["hotel0Media"]["component"] == "Image"
+        assert components["hotel0Desc"]["text"] == "Upscale property with a spa."
+        assert components["hotel0Button"]["action"]["functionCall"] == {
+            "call": "openUrl",
+            "args": {"url": "https://example.com/ritz"},
+        }
+        assert components["hotel0ButtonText"]["text"] == "View Hotel"
+
+    def test_hotel_gallery_card_omits_optional_fields_when_absent(self):
+        messages = genui.hotel_gallery_card("surface-1", "Bali hotels", [{"name": "Mystery Hotel"}])
+        components = {c["id"]: c for c in messages[1]["updateComponents"]["components"]}
+        assert components["hotel0Name"]["text"] == "Mystery Hotel"
+        assert "hotel0Subtitle" not in components
+        assert "hotel0Media" not in components
+        assert "hotel0Desc" not in components
+        assert "hotel0Button" not in components
+
 
 class TestFormHelpers:
     def test_choice_picker_defaults(self):

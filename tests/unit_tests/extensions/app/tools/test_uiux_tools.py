@@ -93,4 +93,6 @@ class TestAllTools:
             "show_video_clips",
             "geocode_place",
             "show_map",
+            "search_hotels",
+            "show_hotel_results",
         }
