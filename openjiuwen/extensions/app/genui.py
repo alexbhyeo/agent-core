@@ -230,6 +230,29 @@ def image(
     return payload
 
 
+def carousel(
+    comp_id: str,
+    content: list[str],
+    autoplay: Optional[bool] = None,
+    draggable: Optional[bool] = None,
+    styles: Optional[dict[str, Any]] = None,
+) -> dict[str, Any]:
+    """A swipeable image carousel (native catalog component, built-in page
+    indicator) -- every URL in ``content`` starts loading immediately once
+    this renders (the client builds one Image node per URL upfront, not
+    lazily as the user swipes), so keep ``content`` short; this app caps it
+    at a few images per gallery item (see ``hotel_tools.MAX_HOTEL_IMAGES``).
+    """
+    payload: dict[str, Any] = {"id": comp_id, "component": "Carousel", "content": content}
+    if autoplay is not None:
+        payload["autoplay"] = autoplay
+    if draggable is not None:
+        payload["draggable"] = draggable
+    if styles is not None:
+        payload["styles"] = styles
+    return payload
+
+
 def video(comp_id: str, url: str, styles: Optional[dict[str, Any]] = None) -> dict[str, Any]:
     """A native video player (client-side AVPlayer or equivalent) loaded directly
     from ``url``.
@@ -866,10 +889,12 @@ def hotel_gallery_card(
     user always finishes the actual booking there themselves, same handoff
     pattern as ``summary_card``'s ``link_url``.
 
-    Each dict in ``hotels`` may have: ``name`` (required), ``image_url``,
-    ``price_per_night``, ``rating``, ``reviews``, ``hotel_class``,
-    ``description``, ``link``. Any field besides ``name`` is optional --
-    only what's actually present is rendered.
+    Each dict in ``hotels`` may have: ``name`` (required), ``image_urls``
+    (a list -- rendered as a swipeable ``carousel()`` when it has more than
+    one URL, a plain ``image()`` when it has exactly one), ``price_per_night``,
+    ``rating``, ``reviews``, ``hotel_class``, ``description``, ``link``. Any
+    field besides ``name`` is optional -- only what's actually present is
+    rendered.
     """
     card_ids = [f"hotel{i}Card" for i in range(len(hotels))]
     item_components: list[dict[str, Any]] = []
@@ -908,9 +933,13 @@ def hotel_gallery_card(
         # photo items: the image sits flush against the card edges, with the
         # text block below getting its own inset padding instead.
         item_components.append(card(card_id, outer_id, styles={"padding": "0px"}))
-        if hotel.get("image_url"):
+        image_urls = hotel.get("image_urls") or []
+        if len(image_urls) > 1:
             item_components.append(column(outer_id, [media_id, text_col_id]))
-            item_components.append(image(media_id, hotel["image_url"], variant="header", fit="cover"))
+            item_components.append(carousel(media_id, image_urls, styles={"width": "100%", "aspect-ratio": "16/9"}))
+        elif image_urls:
+            item_components.append(column(outer_id, [media_id, text_col_id]))
+            item_components.append(image(media_id, image_urls[0], variant="header", fit="cover"))
         else:
             item_components.append(column(outer_id, [text_col_id]))
         item_components.append(column(text_col_id, text_col_children, styles={"padding": "16px", "gap": "8px"}))
