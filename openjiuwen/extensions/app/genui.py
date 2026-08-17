@@ -992,3 +992,131 @@ def hotel_gallery_card(
         create_surface(surface_id),
         update_components(surface_id, components),
     ]
+
+
+def flight_gallery_card(
+    surface_id: str,
+    title: str,
+    flights: list[dict[str, Any]],
+    more_count: int = 0,
+) -> list[dict[str, Any]]:
+    """A titled vertical list of flight results, each in its own Card with a
+    leading airline logo, airline name, price/stops/duration/class subtitle,
+    a departure/arrival route+time line, and a "View Flights" button that
+    opens Google Flights externally (via ``open_url_button``) for that route
+    -- the user picks a fare and finishes booking there themselves, same
+    handoff pattern as ``hotel_gallery_card``'s "View Hotel" button.
+
+    Each dict in ``flights`` may have: ``airline`` (required), ``airline_logo``,
+    ``price``, ``stops_label``, ``duration``, ``travel_class``,
+    ``departure_airport``, ``departure_time``, ``arrival_airport``,
+    ``arrival_time``, ``link``. Any field besides ``airline`` is optional --
+    only what's actually present is rendered.
+
+    ``more_count`` > 0 adds a "Show more" button below the list (a real
+    in-app ``button()`` -- pressing it sends a ``show_more_flights`` UI
+    action back to the agent, see ``flight_tools.show_flight_results`` and
+    the booking policy in ``agent.py``) -- same pagination pattern as
+    ``hotel_gallery_card``.
+    """
+    card_ids = [f"flight{i}Card" for i in range(len(flights))]
+    item_components: list[dict[str, Any]] = []
+    for i, flight in enumerate(flights):
+        card_id = card_ids[i]
+        outer_id = f"flight{i}"
+        header_id = f"{outer_id}Header"
+        logo_id = f"{outer_id}Logo"
+        name_id = f"{outer_id}Name"
+        subtitle_id = f"{outer_id}Subtitle"
+        route_id = f"{outer_id}Route"
+        button_id = f"{outer_id}Button"
+        button_text_id = f"{outer_id}ButtonText"
+
+        subtitle_parts: list[str] = []
+        if flight.get("price"):
+            subtitle_parts.append(flight["price"])
+        if flight.get("stops_label"):
+            subtitle_parts.append(flight["stops_label"])
+        if flight.get("duration"):
+            subtitle_parts.append(flight["duration"])
+        if flight.get("travel_class"):
+            subtitle_parts.append(flight["travel_class"])
+        subtitle_text = "  •  ".join(subtitle_parts)
+
+        route_parts: list[str] = []
+        if flight.get("departure_airport"):
+            departure = flight["departure_airport"]
+            if flight.get("departure_time"):
+                departure += f" {flight['departure_time']}"
+            route_parts.append(departure)
+        if flight.get("arrival_airport"):
+            arrival = flight["arrival_airport"]
+            if flight.get("arrival_time"):
+                arrival += f" {flight['arrival_time']}"
+            route_parts.append(arrival)
+        route_text = "  →  ".join(route_parts)
+
+        has_logo = bool(flight.get("airline_logo"))
+        header_children = [logo_id, name_id] if has_logo else [name_id]
+        outer_children = [header_id] if has_logo else [name_id]
+        if subtitle_text:
+            outer_children.append(subtitle_id)
+        if route_text:
+            outer_children.append(route_id)
+        if flight.get("link"):
+            outer_children.append(button_id)
+
+        item_components.append(card(card_id, outer_id))
+        item_components.append(column(outer_id, outer_children, styles={"gap": "8px"}))
+        if has_logo:
+            item_components.append(row(header_id, header_children, align="center", styles={"gap": "12px"}))
+            item_components.append(
+                image(
+                    logo_id,
+                    flight["airline_logo"],
+                    variant="avatar",
+                    fit="contain",
+                    styles={"width": "32px", "height": "32px"},
+                )
+            )
+        item_components.append(text(name_id, flight["airline"], variant="h3"))
+        if subtitle_text:
+            item_components.append(text(subtitle_id, subtitle_text, variant="body"))
+        if route_text:
+            item_components.append(text(route_id, route_text, variant="caption", styles={"line-clamp": 0}))
+        if flight.get("link"):
+            item_components.append(open_url_button(button_id, button_text_id, flight["link"], styles={"width": "100%"}))
+            item_components.append(
+                text(
+                    button_text_id,
+                    "View Flights",
+                    styles={"color": "#FFFFFF", "width": "100%", "text-align": "center"},
+                )
+            )
+
+    root_children = ["title", "list"]
+    more_components: list[dict[str, Any]] = []
+    if more_count > 0:
+        root_children.append("moreButton")
+        more_components.append(
+            button("moreButton", "moreButtonText", "show_more_flights", styles={"width": "100%"})
+        )
+        more_components.append(
+            text(
+                "moreButtonText",
+                "Show more",
+                styles={"color": "#FFFFFF", "width": "100%", "text-align": "center"},
+            )
+        )
+
+    components = [
+        column("root", root_children, styles={"gap": "12px"}),
+        text("title", title, variant="h3"),
+        list_view("list", card_ids, styles={"gap": "12px"}),
+        *more_components,
+        *item_components,
+    ]
+    return [
+        create_surface(surface_id),
+        update_components(surface_id, components),
+    ]
