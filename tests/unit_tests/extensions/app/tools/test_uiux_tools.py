@@ -117,4 +117,6 @@ class TestAllTools:
             "show_hotel_results",
             "search_flights",
             "show_flight_results",
+            "search_finance",
+            "show_finance_results",
         }

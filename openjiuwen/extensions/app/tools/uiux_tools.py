@@ -7,10 +7,11 @@ messages reach the WebSocket layer: ``rails.A2uiToolEventRail`` captures the
 raw dict from ``AFTER_TOOL_CALL`` and ``ws_session._translate`` turns the
 ``genui`` list into one WebSocket ``genui`` event per message.
 
-Image, video, map, hotel, and flight tools live in their own modules
-(``image_tools.py``, ``video_tools.py``, ``map_tools.py``, ``hotel_tools.py``,
-``flight_tools.py``) -- imported back in here just to keep ``ALL_TOOLS`` as
-the single place that assembles everything the agent gets.
+Image, video, map, hotel, flight, and finance tools live in their own
+modules (``image_tools.py``, ``video_tools.py``, ``map_tools.py``,
+``hotel_tools.py``, ``flight_tools.py``, ``finance_tools.py``) -- imported
+back in here just to keep ``ALL_TOOLS`` as the single place that assembles
+everything the agent gets.
 """
 
 from datetime import datetime, timedelta, timezone
@@ -22,6 +23,7 @@ from pydantic import BaseModel, Field
 from openjiuwen.core.foundation.tool import tool
 
 from .. import genui
+from .finance_tools import search_finance, show_finance_results
 from .flight_tools import search_flights, show_flight_results
 from .hotel_tools import search_hotels, show_hotel_results
 from .image_tools import search_images, fetch_page_image
@@ -431,4 +433,6 @@ ALL_TOOLS = (
     show_hotel_results,
     search_flights,
     show_flight_results,
+    search_finance,
+    show_finance_results,
 )

@@ -994,6 +994,108 @@ def hotel_gallery_card(
     ]
 
 
+_FINANCE_MOVEMENT_COLORS: dict[str, str] = {"Up": "#16A34A", "Down": "#DC2626"}
+_FINANCE_MOVEMENT_ARROWS: dict[str, str] = {"Up": "▲ ", "Down": "▼ "}
+
+
+def finance_gallery_card(
+    surface_id: str,
+    title: str,
+    items: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """A titled vertical list of finance results, each in its own Card with
+    the security's name/ticker, current price, a colored change line (green
+    for "Up", red for "Down"), a real price chart image, and a "View on
+    Google Finance" button that opens the real quote page externally (via
+    ``open_url_button``).
+
+    Each dict in ``items`` may have: ``title`` (required), ``stock``,
+    ``exchange``, ``price``, ``change_text``, ``movement`` ('Up'/'Down'/
+    'Flat' -- colors ``change_text``), ``as_of``, ``window``,
+    ``description``, ``chart_url``, ``link``. Any field besides ``title`` is
+    optional -- only what's actually present is rendered.
+    """
+    card_ids = [f"finance{i}Card" for i in range(len(items))]
+    item_components: list[dict[str, Any]] = []
+    for i, item in enumerate(items):
+        card_id = card_ids[i]
+        outer_id = f"finance{i}"
+        name_id = f"{outer_id}Name"
+        price_id = f"{outer_id}Price"
+        change_id = f"{outer_id}Change"
+        chart_id = f"{outer_id}Chart"
+        desc_id = f"{outer_id}Desc"
+        meta_id = f"{outer_id}Meta"
+        button_id = f"{outer_id}Button"
+        button_text_id = f"{outer_id}ButtonText"
+
+        name_text = f"{item['title']} ({item['stock']})" if item.get("stock") else item["title"]
+
+        meta_parts: list[str] = []
+        if item.get("exchange"):
+            meta_parts.append(item["exchange"])
+        if item.get("as_of"):
+            meta_parts.append(item["as_of"])
+        if item.get("window"):
+            meta_parts.append(item["window"])
+        meta_text = "  •  ".join(meta_parts)
+
+        outer_children = [name_id]
+        if item.get("price"):
+            outer_children.append(price_id)
+        if item.get("change_text"):
+            outer_children.append(change_id)
+        if item.get("chart_url"):
+            outer_children.append(chart_id)
+        if meta_text:
+            outer_children.append(meta_id)
+        if item.get("description"):
+            outer_children.append(desc_id)
+        if item.get("link"):
+            outer_children.append(button_id)
+
+        item_components.append(card(card_id, outer_id))
+        item_components.append(column(outer_id, outer_children, styles={"gap": "8px"}))
+        item_components.append(text(name_id, name_text, variant="h3"))
+        if item.get("price"):
+            item_components.append(text(price_id, item["price"], variant="h2"))
+        if item.get("change_text"):
+            movement = item.get("movement")
+            arrow = _FINANCE_MOVEMENT_ARROWS.get(movement, "")
+            color = _FINANCE_MOVEMENT_COLORS.get(movement, "#6B7280")
+            item_components.append(
+                text(change_id, f"{arrow}{item['change_text']}", variant="body", styles={"color": color})
+            )
+        if item.get("chart_url"):
+            item_components.append(
+                image(chart_id, item["chart_url"], variant="mediumFeature", fit="contain", styles={"width": "100%", "aspect-ratio": "2/1"})
+            )
+        if meta_text:
+            item_components.append(text(meta_id, meta_text, variant="caption"))
+        if item.get("description"):
+            item_components.append(text(desc_id, item["description"], variant="caption", styles={"line-clamp": 0}))
+        if item.get("link"):
+            item_components.append(open_url_button(button_id, button_text_id, item["link"], styles={"width": "100%"}))
+            item_components.append(
+                text(
+                    button_text_id,
+                    "View on Google Finance",
+                    styles={"color": "#FFFFFF", "width": "100%", "text-align": "center"},
+                )
+            )
+
+    components = [
+        column("root", ["title", "list"], styles={"gap": "12px"}),
+        text("title", title, variant="h3"),
+        list_view("list", card_ids, styles={"gap": "12px"}),
+        *item_components,
+    ]
+    return [
+        create_surface(surface_id),
+        update_components(surface_id, components),
+    ]
+
+
 def flight_gallery_card(
     surface_id: str,
     title: str,
