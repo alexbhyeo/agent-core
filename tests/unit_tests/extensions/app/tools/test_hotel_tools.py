@@ -22,7 +22,10 @@ _SAMPLE_PROPERTY = {
     "overall_rating": 4.6,
     "reviews": 4547,
     "rate_per_night": {"lowest": "$548", "extracted_lowest": 548},
-    "images": [{"thumbnail": "https://example.com/thumb.jpg", "original_image": "https://example.com/full.jpg"}],
+    "images": [
+        {"thumbnail": f"https://example.com/thumb{i}.jpg", "original_image": f"https://example.com/full{i}.jpg"}
+        for i in range(5)
+    ],
 }
 
 
@@ -54,11 +57,42 @@ class TestSearchHotels:
                 "rating": 4.6,
                 "reviews": 4547,
                 "hotel_class": "5-star hotel",
-                "image_url": "https://example.com/thumb.jpg",
+                "image_urls": [
+                    "https://example.com/thumb0.jpg",
+                    "https://example.com/thumb1.jpg",
+                    "https://example.com/thumb2.jpg",
+                ],
                 "link": "https://www.ritzcarlton.com/en/hotels/dpssw-the-ritz-carlton-bali/overview/",
                 "description": "Zen-like quarters in an upscale property offering refined dining & a spa.",
             }
         ]
+
+    @pytest.mark.asyncio
+    async def test_caps_images_at_max_hotel_images_per_hotel(self):
+        body = json.dumps({"properties": [_SAMPLE_PROPERTY]}).encode("utf-8")
+        mock_request = AsyncMock(return_value=(200, {"Content-Type": "application/json"}, body, "url", False))
+        with (
+            patch.object(hotel_tools.config, "get", side_effect=_config_get({"SERPAPI_API_KEY": "test-key"})),
+            patch.object(hotel_tools._http, "request", mock_request),
+        ):
+            result = await hotel_tools.search_hotels.invoke(
+                {"location": "Bali", "check_in_date": "2026-09-10", "check_out_date": "2026-09-13"}
+            )
+        assert len(result["hotels"][0]["image_urls"]) == hotel_tools.MAX_HOTEL_IMAGES
+
+    @pytest.mark.asyncio
+    async def test_image_urls_is_none_when_property_has_no_images(self):
+        property_without_images = {**_SAMPLE_PROPERTY, "images": []}
+        body = json.dumps({"properties": [property_without_images]}).encode("utf-8")
+        mock_request = AsyncMock(return_value=(200, {"Content-Type": "application/json"}, body, "url", False))
+        with (
+            patch.object(hotel_tools.config, "get", side_effect=_config_get({"SERPAPI_API_KEY": "test-key"})),
+            patch.object(hotel_tools._http, "request", mock_request),
+        ):
+            result = await hotel_tools.search_hotels.invoke(
+                {"location": "Bali", "check_in_date": "2026-09-10", "check_out_date": "2026-09-13"}
+            )
+        assert result["hotels"][0]["image_urls"] is None
 
     @pytest.mark.asyncio
     async def test_caps_results_at_max_hotel_results(self):
@@ -177,7 +211,7 @@ class TestShowHotelResults:
                         "rating": 4.6,
                         "reviews": 4547,
                         "hotel_class": "5-star hotel",
-                        "image_url": "https://example.com/thumb.jpg",
+                        "image_urls": ["https://example.com/a.jpg", "https://example.com/b.jpg"],
                         "link": "https://example.com/ritz",
                         "description": "Upscale property with a spa.",
                     }
@@ -188,8 +222,21 @@ class TestShowHotelResults:
         assert "$548/night" in result["text"]
         components = {c["id"]: c for c in result["genui"][1]["updateComponents"]["components"]}
         assert components["hotel0Name"]["text"] == "The Ritz-Carlton, Bali"
-        assert components["hotel0Media"]["url"] == "https://example.com/thumb.jpg"
+        assert components["hotel0Media"]["component"] == "Carousel"
+        assert components["hotel0Media"]["content"] == ["https://example.com/a.jpg", "https://example.com/b.jpg"]
         assert components["hotel0Button"]["action"]["functionCall"]["args"]["url"] == "https://example.com/ritz"
+
+    @pytest.mark.asyncio
+    async def test_renders_plain_image_for_a_single_photo_hotel(self):
+        result = await hotel_tools.show_hotel_results.invoke(
+            {
+                "title": "Bali hotels",
+                "hotels": [{"name": "Solo Photo Hotel", "image_urls": ["https://example.com/only.jpg"]}],
+            }
+        )
+        components = {c["id"]: c for c in result["genui"][1]["updateComponents"]["components"]}
+        assert components["hotel0Media"]["component"] == "Image"
+        assert components["hotel0Media"]["url"] == "https://example.com/only.jpg"
 
     @pytest.mark.asyncio
     async def test_omits_button_when_no_link(self):

@@ -162,16 +162,18 @@ addition to plain text. You have sixteen tools:
   booking policy below for the full flow). `check_in_date`/`check_out_date`
   must be real dates you collected from the user via `ask_preferences_form`,
   never invented. Returns up to 10 real hotels with `name`, `price_per_night`,
-  `rating`, `reviews`, `hotel_class`, `image_url`, `link`, `description` --
-  any field besides `name` can come back missing, which is normal; pass only
+  `rating`, `reviews`, `hotel_class`, `image_urls` (a list of up to 3 real
+  photo URLs, shown as a swipeable gallery), `link`, `description` -- any
+  field besides `name` can come back missing, which is normal; pass only
   what's present into `show_hotel_results`. An `error` (no API key
   configured, or no hotels found) means fall back to the general booking
   flow (`free_search`/`browser_inspect_page`) instead of fabricating a hotel.
 - `show_hotel_results`: renders a gallery of real hotel results as an A2UI
-  surface, each in its own card with a photo, price/rating/class, and a
-  "View Hotel" button that opens that hotel's real page externally -- the
-  user finishes booking there themselves. Every hotel must come from a
-  prior `search_hotels` call; never invent a hotel, price, rating, or link.
+  surface, each in its own card with a swipeable photo gallery, price/rating/
+  class, and a "View Hotel" button that opens that hotel's real page
+  externally -- the user finishes booking there themselves. Every hotel must
+  come from a prior `search_hotels` call; never invent a hotel, price,
+  rating, or link.
   Call this once with the full list of hotels you want to show, not once
   per hotel.
 

@@ -31,6 +31,11 @@ from .. import config, genui
 _HOTELS_SEARCH_ENDPOINT = "https://serpapi.com/search.json"
 _HOTELS_ENGINE = "google_hotels"
 MAX_HOTEL_RESULTS = 10
+# Each hotel photo is its own Image node created immediately when the
+# gallery renders (the carousel is not lazy -- see genui.carousel()), so
+# this caps how many concurrent image fetches one hotel card adds, not just
+# how many the user can swipe through.
+MAX_HOTEL_IMAGES = 3
 
 
 @tool(
@@ -45,7 +50,9 @@ MAX_HOTEL_RESULTS = 10
         "the word 'hotel' and it will auto-add check-in/check-out date "
         "fields) rather than guessing. Returns up to 10 real hotels, each "
         "with `name`, `price_per_night`, `rating`, `reviews`, `hotel_class`, "
-        "`image_url`, `link` (the hotel's real page), and `description` -- "
+        "`image_urls` (a list of up to 3 real photo URLs, shown as a "
+        "swipeable gallery), `link` (the hotel's real page), and "
+        "`description` -- "
         "any of these besides `name` can be missing for a given hotel, "
         "which is normal; only pass fields that are actually present into "
         "`show_hotel_results`, never invent a replacement. An `error` (no "
@@ -114,6 +121,7 @@ async def search_hotels(
         if not name:
             continue
         images = prop.get("images") or []
+        image_urls = [img["thumbnail"] for img in images[:MAX_HOTEL_IMAGES] if img.get("thumbnail")]
         rate = prop.get("rate_per_night") or {}
         hotels.append(
             {
@@ -122,7 +130,7 @@ async def search_hotels(
                 "rating": prop.get("overall_rating"),
                 "reviews": prop.get("reviews"),
                 "hotel_class": prop.get("hotel_class"),
-                "image_url": images[0].get("thumbnail") if images else None,
+                "image_urls": image_urls or None,
                 "link": prop.get("link"),
                 "description": prop.get("description"),
             }
@@ -150,7 +158,9 @@ class HotelResult(BaseModel):
     hotel_class: Optional[str] = Field(
         default=None, description="Real star-class string (e.g. '5-star hotel') from `search_hotels`."
     )
-    image_url: Optional[str] = Field(default=None, description="Real photo URL from `search_hotels`.")
+    image_urls: Optional[list[str]] = Field(
+        default=None, description="Real photo URLs (up to 3) from `search_hotels`, shown as a swipeable gallery."
+    )
     link: Optional[str] = Field(
         default=None, description="Real URL to the hotel's own page, from `search_hotels` -- the 'View Hotel' button target."
     )

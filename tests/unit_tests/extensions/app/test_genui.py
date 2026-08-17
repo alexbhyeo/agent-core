@@ -53,6 +53,20 @@ class TestBasicCatalogHelpers:
         assert "align" not in component
         assert component["children"] == ["a", "b"]
 
+    def test_carousel_builds_component_payload(self):
+        component = genui.carousel("media", ["https://example.com/a.jpg", "https://example.com/b.jpg"])
+        assert component == {
+            "id": "media",
+            "component": "Carousel",
+            "content": ["https://example.com/a.jpg", "https://example.com/b.jpg"],
+        }
+
+    def test_carousel_omits_unset_optional_fields(self):
+        component = genui.carousel("media", ["https://example.com/a.jpg"])
+        assert "autoplay" not in component
+        assert "draggable" not in component
+        assert "styles" not in component
+
     def test_summary_card_builds_create_and_update_pair(self):
         messages = genui.summary_card("surface-1", title="Title", body="Body")
         assert len(messages) == 2
@@ -103,7 +117,7 @@ class TestBasicCatalogHelpers:
                     "rating": 4.6,
                     "reviews": 4547,
                     "hotel_class": "5-star hotel",
-                    "image_url": "https://example.com/thumb.jpg",
+                    "image_urls": ["https://example.com/a.jpg", "https://example.com/b.jpg"],
                     "link": "https://example.com/ritz",
                     "description": "Upscale property with a spa.",
                 }
@@ -116,13 +130,22 @@ class TestBasicCatalogHelpers:
         assert "$548/night" in components["hotel0Subtitle"]["text"]
         assert "★ 4.6" in components["hotel0Subtitle"]["text"]
         assert "5-star hotel" in components["hotel0Subtitle"]["text"]
-        assert components["hotel0Media"]["component"] == "Image"
+        assert components["hotel0Media"]["component"] == "Carousel"
+        assert components["hotel0Media"]["content"] == ["https://example.com/a.jpg", "https://example.com/b.jpg"]
         assert components["hotel0Desc"]["text"] == "Upscale property with a spa."
         assert components["hotel0Button"]["action"]["functionCall"] == {
             "call": "openUrl",
             "args": {"url": "https://example.com/ritz"},
         }
         assert components["hotel0ButtonText"]["text"] == "View Hotel"
+
+    def test_hotel_gallery_card_renders_plain_image_for_a_single_photo(self):
+        messages = genui.hotel_gallery_card(
+            "surface-1", "Bali hotels", [{"name": "Solo Photo Hotel", "image_urls": ["https://example.com/only.jpg"]}]
+        )
+        components = {c["id"]: c for c in messages[1]["updateComponents"]["components"]}
+        assert components["hotel0Media"]["component"] == "Image"
+        assert components["hotel0Media"]["url"] == "https://example.com/only.jpg"
 
     def test_hotel_gallery_card_omits_optional_fields_when_absent(self):
         messages = genui.hotel_gallery_card("surface-1", "Bali hotels", [{"name": "Mystery Hotel"}])
