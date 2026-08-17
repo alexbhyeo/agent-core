@@ -28,7 +28,7 @@ from openjiuwen.harness.tools.web import _http
 from openjiuwen.harness.tools.web._common import _REQUEST_HEADERS, _parse_html
 from openjiuwen.harness.tools.web._decode import _decode_response_text
 
-from . import config, genui
+from .. import config, genui
 
 MAX_VIDEO_FETCH_ATTEMPTS = 3
 

@@ -1,6 +1,6 @@
 # -*- coding: UTF-8 -*-
 # Copyright (c) Huawei Technologies Co., Ltd. 2025. All rights reserved.
-"""Unit tests for openjiuwen.extensions.app.uiux_tools.
+"""Unit tests for openjiuwen.extensions.app.tools.uiux_tools.
 
 Image/video-specific tools have their own test modules (test_image_tools.py,
 test_video_tools.py) alongside their own source modules (image_tools.py,
@@ -10,7 +10,7 @@ uiux_tools.py.
 
 import pytest
 
-from openjiuwen.extensions.app import uiux_tools as tools
+from openjiuwen.extensions.app.tools import uiux_tools as tools
 
 
 class TestGetCurrentTime:

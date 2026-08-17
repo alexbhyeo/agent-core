@@ -1,13 +1,13 @@
 # -*- coding: UTF-8 -*-
 # Copyright (c) Huawei Technologies Co., Ltd. 2025. All rights reserved.
-"""Unit tests for openjiuwen.extensions.app.map_tools."""
+"""Unit tests for openjiuwen.extensions.app.tools.map_tools."""
 
 import json
 from unittest.mock import AsyncMock, patch
 
 import pytest
 
-from openjiuwen.extensions.app import map_tools
+from openjiuwen.extensions.app.tools import map_tools
 
 
 def _config_get(values):

@@ -1,6 +1,6 @@
 # -*- coding: UTF-8 -*-
 # Copyright (c) Huawei Technologies Co., Ltd. 2025. All rights reserved.
-"""Unit tests for openjiuwen.extensions.app.browser_tools.
+"""Unit tests for openjiuwen.extensions.app.tools.browser_tools.
 
 These mock ``playwright.async_api`` entirely -- no real browser/network is
 exercised here (that's covered by the live end-to-end run). The focus is the
@@ -11,7 +11,7 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
-from openjiuwen.extensions.app import browser_tools
+from openjiuwen.extensions.app.tools import browser_tools
 
 
 class TestInspectPageOnce:
