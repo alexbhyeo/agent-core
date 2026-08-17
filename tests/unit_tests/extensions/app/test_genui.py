@@ -235,6 +235,68 @@ class TestBasicCatalogHelpers:
         assert "moreButton" not in components
         assert "moreButtonText" not in components
 
+    def test_finance_gallery_card_builds_create_and_update_pair(self):
+        messages = genui.finance_gallery_card(
+            "surface-1",
+            "Markets",
+            [
+                {
+                    "title": "Apple Inc",
+                    "stock": "AAPL",
+                    "exchange": "NASDAQ",
+                    "price": "$150.23",
+                    "change_text": "+2.34 (+1.58%) today",
+                    "movement": "Up",
+                    "as_of": "Aug 17 2026, 09:30 AM UTC-05:00",
+                    "window": "1D",
+                    "description": "Apple Inc. designs, manufactures, and markets smartphones.",
+                    "chart_url": "https://quickchart.io/chart?c=%7B%7D",
+                    "link": "https://www.google.com/finance/quote/AAPL:NASDAQ",
+                }
+            ],
+        )
+        assert len(messages) == 2
+        assert "createSurface" in messages[0]
+        components = {c["id"]: c for c in messages[1]["updateComponents"]["components"]}
+        assert components["finance0Name"]["text"] == "Apple Inc (AAPL)"
+        assert components["finance0Price"]["text"] == "$150.23"
+        assert components["finance0Price"]["variant"] == "h2"
+        assert components["finance0Change"]["text"] == "▲ +2.34 (+1.58%) today"
+        assert components["finance0Change"]["styles"]["color"] == "#16A34A"
+        assert components["finance0Chart"]["component"] == "Image"
+        assert components["finance0Chart"]["url"] == "https://quickchart.io/chart?c=%7B%7D"
+        assert "NASDAQ" in components["finance0Meta"]["text"]
+        assert components["finance0Desc"]["text"] == "Apple Inc. designs, manufactures, and markets smartphones."
+        assert components["finance0Button"]["action"]["functionCall"] == {
+            "call": "openUrl",
+            "args": {"url": "https://www.google.com/finance/quote/AAPL:NASDAQ"},
+        }
+        assert components["finance0ButtonText"]["text"] == "View on Google Finance"
+
+    def test_finance_gallery_card_colors_change_text_red_for_down_movement(self):
+        messages = genui.finance_gallery_card(
+            "surface-1", "Markets", [{"title": "Widget Co", "change_text": "-1.00 (-2%)", "movement": "Down"}]
+        )
+        components = {c["id"]: c for c in messages[1]["updateComponents"]["components"]}
+        assert components["finance0Change"]["text"] == "▼ -1.00 (-2%)"
+        assert components["finance0Change"]["styles"]["color"] == "#DC2626"
+
+    def test_finance_gallery_card_omits_optional_fields_when_absent(self):
+        messages = genui.finance_gallery_card("surface-1", "Markets", [{"title": "Mystery Corp"}])
+        components = {c["id"]: c for c in messages[1]["updateComponents"]["components"]}
+        assert components["finance0Name"]["text"] == "Mystery Corp"
+        assert "finance0Price" not in components
+        assert "finance0Change" not in components
+        assert "finance0Chart" not in components
+        assert "finance0Meta" not in components
+        assert "finance0Desc" not in components
+        assert "finance0Button" not in components
+
+    def test_finance_gallery_card_name_omits_ticker_when_no_stock(self):
+        messages = genui.finance_gallery_card("surface-1", "Markets", [{"title": "Mystery Corp"}])
+        components = {c["id"]: c for c in messages[1]["updateComponents"]["components"]}
+        assert components["finance0Name"]["text"] == "Mystery Corp"
+
 
 class TestFormHelpers:
     def test_choice_picker_defaults(self):
