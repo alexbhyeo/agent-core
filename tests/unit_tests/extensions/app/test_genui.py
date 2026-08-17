@@ -156,6 +156,21 @@ class TestBasicCatalogHelpers:
         assert "hotel0Desc" not in components
         assert "hotel0Button" not in components
 
+    def test_hotel_gallery_card_adds_show_more_button_when_more_count_positive(self):
+        messages = genui.hotel_gallery_card(
+            "surface-1", "Bali hotels", [{"name": "Hotel A"}], more_count=5
+        )
+        components = {c["id"]: c for c in messages[1]["updateComponents"]["components"]}
+        assert components["moreButtonText"]["text"] == "Show more"
+        assert components["moreButton"]["action"]["event"]["name"] == "show_more_hotels"
+        assert "moreButton" in messages[1]["updateComponents"]["components"][0]["children"]
+
+    def test_hotel_gallery_card_omits_show_more_button_when_more_count_zero(self):
+        messages = genui.hotel_gallery_card("surface-1", "Bali hotels", [{"name": "Hotel A"}])
+        components = {c["id"]: c for c in messages[1]["updateComponents"]["components"]}
+        assert "moreButton" not in components
+        assert "moreButtonText" not in components
+
 
 class TestFormHelpers:
     def test_choice_picker_defaults(self):

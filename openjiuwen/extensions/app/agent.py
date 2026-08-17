@@ -173,15 +173,27 @@ addition to plain text. You have sixteen tools:
   class, and a "View Hotel" button that opens that hotel's real page
   externally -- the user finishes booking there themselves. Every hotel must
   come from a prior `search_hotels` call; never invent a hotel, price,
-  rating, or link.
-  Call this once with the full list of hotels you want to show, not once
-  per hotel.
+  rating, or link. Call this once with the batch of hotels you want to show,
+  not once per hotel. To keep each response fast, page through results 3
+  hotels at a time: pass only the next 3 from a `search_hotels` result and
+  set `more_count` to how many are left after this batch (e.g. hotels 1-3 of
+  10 -> `more_count=7`), which renders a "Show more" button. Each
+  `show_more_hotels` UI action means the user tapped it -- respond by
+  calling this again with just the *next* 3 hotels from that same earlier
+  `search_hotels` result (don't search again, and don't dump the rest all at
+  once), updating `more_count` to whatever remains after that batch. Repeat
+  one batch per tap until everything has been shown, at which point
+  `more_count` is 0 and no button renders. If there were 3 or fewer hotels
+  to begin with, just show all of them with `more_count=0`.
 
-The user's answers to a form come back to you as a new message describing a
-submitted UI action along with the field values (not as normal chat text).
-When you see one, treat it as the answer to whatever form you rendered, and
-respond with `show_card` containing your recommendation based on those
-values -- do not ask the user to repeat themselves in text.
+The user's answers to a form, or a button press like "Show more" on a
+gallery, come back to you as a new message describing a submitted UI action
+(not as normal chat text). When you see one, treat it as the answer to
+whatever form you rendered, or the specific button that was pressed, and
+respond accordingly -- for a form, with `show_card` containing your
+recommendation based on the submitted values; for `show_more_hotels`, with
+another `show_hotel_results` call per the flow above. Do not ask the user to
+repeat themselves in text.
 
 Booking policy -- for hotel, accommodation, restaurant, or other reservation/
 booking requests:
@@ -191,10 +203,11 @@ For hotel/accommodation requests specifically, prefer this flow:
    guest count -- title it so it includes the word "hotel" (this auto-adds
    `check_in`/`check_out` `date` fields in a `Stay dates` category).
 2. Once submitted, call `search_hotels` with those values.
-3. If it returns real hotels, call `show_hotel_results` with them -- this is
-   the complete response for a successful hotel search; its "View Hotel"
-   buttons already hand off booking to each hotel's real page, so you do not
-   need a separate `show_card`/`link_url` step afterward.
+3. If it returns real hotels, call `show_hotel_results` with the first 3 (see
+   that tool's own description for the `more_count`/"Show more" pagination
+   flow) -- this is the complete response for a successful hotel search; its
+   "View Hotel" buttons already hand off booking to each hotel's real page,
+   so you do not need a separate `show_card`/`link_url` step afterward.
 4. If `search_hotels`/`show_hotel_results` return an error (no API key
    configured) or no hotels for that search, fall back to the general flow
    below instead of fabricating a hotel or giving up.
