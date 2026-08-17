@@ -77,6 +77,26 @@ class TestAskPreferencesForm:
         component_ids = {c["id"] for c in result["genui"][-1]["updateComponents"]["components"]}
         assert {"check_in", "check_out"} <= component_ids
 
+    @pytest.mark.asyncio
+    async def test_flight_title_auto_inserts_travel_date_fields(self):
+        result = await tools.ask_preferences_form.invoke(
+            {
+                "title": "Flight booking preferences",
+                "fields": [{"id": "adults", "type": "slider", "label": "Adults", "min_value": 1, "max_value": 9}],
+            }
+        )
+        component_ids = {c["id"] for c in result["genui"][-1]["updateComponents"]["components"]}
+        assert {"outbound_date", "return_date"} <= component_ids
+        assert "check_in" not in component_ids
+
+    @pytest.mark.asyncio
+    async def test_flight_title_does_not_also_insert_hotel_stay_date_fields(self):
+        result = await tools.ask_preferences_form.invoke(
+            {"title": "Flight booking preferences", "fields": []}
+        )
+        component_ids = {c["id"] for c in result["genui"][-1]["updateComponents"]["components"]}
+        assert {"check_in", "check_out"}.isdisjoint(component_ids)
+
 
 class TestAllTools:
     def test_all_tools_exposes_expected_names(self):
@@ -95,4 +115,6 @@ class TestAllTools:
             "show_map",
             "search_hotels",
             "show_hotel_results",
+            "search_flights",
+            "show_flight_results",
         }

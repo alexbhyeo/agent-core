@@ -7,10 +7,10 @@ messages reach the WebSocket layer: ``rails.A2uiToolEventRail`` captures the
 raw dict from ``AFTER_TOOL_CALL`` and ``ws_session._translate`` turns the
 ``genui`` list into one WebSocket ``genui`` event per message.
 
-Image, video, map, and hotel tools live in their own modules
-(``image_tools.py``, ``video_tools.py``, ``map_tools.py``, ``hotel_tools.py``)
--- imported back in here just to keep ``ALL_TOOLS`` as the single place that
-assembles everything the agent gets.
+Image, video, map, hotel, and flight tools live in their own modules
+(``image_tools.py``, ``video_tools.py``, ``map_tools.py``, ``hotel_tools.py``,
+``flight_tools.py``) -- imported back in here just to keep ``ALL_TOOLS`` as
+the single place that assembles everything the agent gets.
 """
 
 from datetime import datetime, timedelta, timezone
@@ -22,6 +22,7 @@ from pydantic import BaseModel, Field
 from openjiuwen.core.foundation.tool import tool
 
 from .. import genui
+from .flight_tools import search_flights, show_flight_results
 from .hotel_tools import search_hotels, show_hotel_results
 from .image_tools import search_images, fetch_page_image
 from .map_tools import geocode_place, show_map
@@ -252,8 +253,43 @@ def ask_preferences_form(title: str, fields: list[FormField], submit_label: str 
     # Nested list items arrive as raw dicts, not coerced FormField instances
     # (LocalFunction's schema formatting doesn't recurse into list[BaseModel]).
     parsed_fields = [f if isinstance(f, FormField) else FormField(**f) for f in fields]
-    is_hotel_form = any(term in title.lower() for term in ("hotel", "accommodation", "stay", "booking"))
-    if is_hotel_form:
+    is_flight_form = any(term in title.lower() for term in ("flight", "flights", "fly", "airfare", "plane"))
+    # Checked before the hotel keywords below: "booking" alone is a shared
+    # generic word (e.g. "Flight booking details") that would otherwise also
+    # match the hotel branch and insert check_in/check_out fields onto a
+    # flight form.
+    is_hotel_form = not is_flight_form and any(
+        term in title.lower() for term in ("hotel", "accommodation", "stay", "booking")
+    )
+    if is_flight_form:
+        today = datetime.now(timezone.utc).date()
+        default_outbound = today.isoformat()
+        default_return = (today + timedelta(days=1)).isoformat()
+        field_by_id = {field.id: field for field in parsed_fields}
+        for field_id, label, default_date in (
+            ("outbound_date", "Departure date", default_outbound),
+            ("return_date", "Return date", default_return),
+        ):
+            existing = field_by_id.get(field_id)
+            if existing is None:
+                parsed_fields.insert(
+                    0,
+                    FormField(
+                        id=field_id,
+                        type=FormFieldType.date,
+                        label=label,
+                        category="Travel dates",
+                        default_date=default_date,
+                        min_date=default_outbound,
+                    ),
+                )
+            else:
+                existing.type = FormFieldType.date
+                existing.category = existing.category or "Travel dates"
+                existing.label = label
+                existing.default_date = existing.default_date or default_date
+                existing.min_date = existing.min_date or default_outbound
+    elif is_hotel_form:
         today = datetime.now(timezone.utc).date()
         default_check_in = today.isoformat()
         default_check_out = (today + timedelta(days=1)).isoformat()
@@ -393,4 +429,6 @@ ALL_TOOLS = (
     show_map,
     search_hotels,
     show_hotel_results,
+    search_flights,
+    show_flight_results,
 )

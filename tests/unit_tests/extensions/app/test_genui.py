@@ -171,6 +171,70 @@ class TestBasicCatalogHelpers:
         assert "moreButton" not in components
         assert "moreButtonText" not in components
 
+    def test_flight_gallery_card_builds_create_and_update_pair(self):
+        messages = genui.flight_gallery_card(
+            "surface-1",
+            "Tokyo flights",
+            [
+                {
+                    "airline": "Singapore Airlines",
+                    "airline_logo": "https://example.com/sq-logo.png",
+                    "price": "$412",
+                    "stops_label": "Nonstop",
+                    "duration": "7h 30m",
+                    "travel_class": "Economy",
+                    "departure_airport": "SIN",
+                    "departure_time": "Sep 10, 22:05",
+                    "arrival_airport": "NRT",
+                    "arrival_time": "Sep 11, 06:15",
+                    "link": "https://www.google.com/travel/flights?q=test",
+                }
+            ],
+        )
+        assert len(messages) == 2
+        assert "createSurface" in messages[0]
+        components = {c["id"]: c for c in messages[1]["updateComponents"]["components"]}
+        assert components["flight0Name"]["text"] == "Singapore Airlines"
+        assert "$412" in components["flight0Subtitle"]["text"]
+        assert "Nonstop" in components["flight0Subtitle"]["text"]
+        assert "7h 30m" in components["flight0Subtitle"]["text"]
+        assert components["flight0Logo"]["component"] == "Image"
+        assert components["flight0Logo"]["url"] == "https://example.com/sq-logo.png"
+        assert "SIN" in components["flight0Route"]["text"]
+        assert "NRT" in components["flight0Route"]["text"]
+        assert components["flight0Button"]["action"]["functionCall"] == {
+            "call": "openUrl",
+            "args": {"url": "https://www.google.com/travel/flights?q=test"},
+        }
+        assert components["flight0ButtonText"]["text"] == "View Flights"
+
+    def test_flight_gallery_card_omits_logo_when_absent(self):
+        messages = genui.flight_gallery_card("surface-1", "Tokyo flights", [{"airline": "Mystery Air"}])
+        components = {c["id"]: c for c in messages[1]["updateComponents"]["components"]}
+        assert "flight0Logo" not in components
+        assert components["flight0Name"]["text"] == "Mystery Air"
+
+    def test_flight_gallery_card_omits_optional_fields_when_absent(self):
+        messages = genui.flight_gallery_card("surface-1", "Tokyo flights", [{"airline": "Mystery Air"}])
+        components = {c["id"]: c for c in messages[1]["updateComponents"]["components"]}
+        assert components["flight0Name"]["text"] == "Mystery Air"
+        assert "flight0Subtitle" not in components
+        assert "flight0Route" not in components
+        assert "flight0Button" not in components
+
+    def test_flight_gallery_card_adds_show_more_button_when_more_count_positive(self):
+        messages = genui.flight_gallery_card("surface-1", "Tokyo flights", [{"airline": "Airline A"}], more_count=5)
+        components = {c["id"]: c for c in messages[1]["updateComponents"]["components"]}
+        assert components["moreButtonText"]["text"] == "Show more"
+        assert components["moreButton"]["action"]["event"]["name"] == "show_more_flights"
+        assert "moreButton" in messages[1]["updateComponents"]["components"][0]["children"]
+
+    def test_flight_gallery_card_omits_show_more_button_when_more_count_zero(self):
+        messages = genui.flight_gallery_card("surface-1", "Tokyo flights", [{"airline": "Airline A"}])
+        components = {c["id"]: c for c in messages[1]["updateComponents"]["components"]}
+        assert "moreButton" not in components
+        assert "moreButtonText" not in components
+
 
 class TestFormHelpers:
     def test_choice_picker_defaults(self):
