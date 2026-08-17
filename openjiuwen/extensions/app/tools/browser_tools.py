@@ -1,9 +1,9 @@
 # -*- coding: UTF-8 -*-
 # Copyright (c) Huawei Technologies Co., Ltd. 2025. All rights reserved.
 """Read-only headless-browser tool, for pages the plain HTTP fetch in
-``tools.fetch_page_image``/``WebFetchWebpageTool`` can't handle (JS-rendered
-content) -- e.g. inspecting a real booking site's images and required form
-fields before recreating them as an A2UI form.
+``image_tools.fetch_page_image``/``WebFetchWebpageTool`` can't handle
+(JS-rendered content) -- e.g. inspecting a real booking site's images and
+required form fields before recreating them as an A2UI form.
 
 Deliberately exposes no click/fill/submit capability. This agent must never
 complete a real booking/reservation/purchase itself -- see ``agent.py``'s

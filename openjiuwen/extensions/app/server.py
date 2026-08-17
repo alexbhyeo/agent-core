@@ -30,7 +30,7 @@ from fastapi.responses import HTMLResponse
 from openjiuwen.core.runner import Runner
 from openjiuwen.extensions.app import config as app_config
 from openjiuwen.extensions.app.agent import build_agent
-from openjiuwen.extensions.app.map_tools import MAP_EMBED_ROUTE_PATH, MapPlace, render_map_embed_html
+from openjiuwen.extensions.app.tools.map_tools import MAP_EMBED_ROUTE_PATH, MapPlace, render_map_embed_html
 from openjiuwen.extensions.app.ws_session import ConnectionSession
 
 
