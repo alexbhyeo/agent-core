@@ -107,6 +107,7 @@ def _build_span_bridge(
     member_agent_id: str,
     team_name: str,
     session_id: str,
+    role: str | None = None,
 ) -> Any:
     """Load the OTel bridge only when its optional dependencies are installed."""
     try:
@@ -118,6 +119,7 @@ def _build_span_bridge(
         member_agent_id=member_agent_id,
         team_name=team_name,
         session_id=session_id,
+        role=role,
     )
 
 
@@ -900,6 +902,7 @@ async def build_codex_runtime(
     turn_idle_timeout_s: float | None = None,
     turn_idle_retries: int | None = None,
     team_context_tracker: Any = None,
+    role: str | None = None,
 ) -> CodexSdkRuntime:
     """Build a Codex Python SDK runtime without starting its thread eagerly."""
     sdk = load_codex_sdk()
@@ -908,6 +911,7 @@ async def build_codex_runtime(
         member_agent_id=member_agent_id,
         team_name=team_name,
         session_id=team_session_id,
+        role=role,
     )
     native_otel_receiver = None
     rollout_trace_reader = None

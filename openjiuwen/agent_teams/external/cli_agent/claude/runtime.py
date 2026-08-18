@@ -270,6 +270,7 @@ def build_claude_runtime(
     member_agent_id: str | None = None,
     team_context_tracker: Any = None,
     team_name: str | None = None,
+    role: str | None = None,
 ) -> ClaudeSdkRuntime:
     """Build a Claude SDK runtime, using an SSH SDK transport when configured."""
     _ = mcp_server_command
@@ -292,6 +293,7 @@ def build_claude_runtime(
         member_agent_id=member_agent_id,
         team_name=team_name,
         session_id=team_session_id,
+        role=role,
     )
     return ClaudeSdkRuntime(
         member_name=member_name,
@@ -338,6 +340,7 @@ def _build_claude_span_bridge(
     member_agent_id: str | None,
     team_name: str | None,
     session_id: str | None,
+    role: str | None = None,
 ) -> Any:
     """Build the optional Claude OTel bridge without making runtime import depend on OTel."""
     try:
@@ -356,6 +359,7 @@ def _build_claude_span_bridge(
         member_agent_id=member_agent_id,
         team_name=team_name,
         session_id=session_id,
+        role=role,
     )
 
 
