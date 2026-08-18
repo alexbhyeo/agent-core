@@ -230,6 +230,39 @@ def image(
     return payload
 
 
+def chart(
+    comp_id: str,
+    chart_type: str,
+    series: list[dict[str, Any]],
+    x_axis: Optional[list[str]] = None,
+    y_axis: Optional[list[str]] = None,
+    styles: Optional[dict[str, Any]] = None,
+) -> dict[str, Any]:
+    """A native interactive chart, rendered directly by AGenUI's built-in
+    ``Chart`` catalog component. Unlike ``map_web()``/``youtube_embed()``,
+    this needs no WebView or client-side custom-component registration --
+    it's part of the standard catalog every AGenUI client already renders,
+    the same way ``image()``/``text()`` are.
+
+    ``chart_type``: one of "line"/"donut"/"bar".
+    ``series``: list of ``{"name": <str, optional>, "data": [{"value": <number>,
+    "label": <str, optional>}, ...]}`` -- donut charts use a single series
+    with a label per slice; line/bar charts use one series per line/bar set.
+    ``x_axis``/``y_axis``: optional string axis labels, for line/bar charts.
+    Colors default to the catalog's own palette; override with
+    ``styles={"chartConfig": {"colors": [...]}}``.
+    """
+    data: dict[str, Any] = {"series": series}
+    if x_axis is not None:
+        data["xAxis"] = x_axis
+    if y_axis is not None:
+        data["yAxis"] = y_axis
+    payload: dict[str, Any] = {"id": comp_id, "component": "Chart", "chartType": chart_type, "data": data}
+    if styles is not None:
+        payload["styles"] = styles
+    return payload
+
+
 def carousel(
     comp_id: str,
     content: list[str],
@@ -1005,15 +1038,17 @@ def finance_gallery_card(
 ) -> list[dict[str, Any]]:
     """A titled vertical list of finance results, each in its own Card with
     the security's name/ticker, current price, a colored change line (green
-    for "Up", red for "Down"), a real price chart image, and a "View on
-    Google Finance" button that opens the real quote page externally (via
+    for "Up", red for "Down"), a real interactive price chart (native
+    ``chart()``, colored to match the change line), and a "View on Google
+    Finance" button that opens the real quote page externally (via
     ``open_url_button``).
 
     Each dict in ``items`` may have: ``title`` (required), ``stock``,
     ``exchange``, ``price``, ``change_text``, ``movement`` ('Up'/'Down'/
-    'Flat' -- colors ``change_text``), ``as_of``, ``window``,
-    ``description``, ``chart_url``, ``link``. Any field besides ``title`` is
-    optional -- only what's actually present is rendered.
+    'Flat' -- colors ``change_text`` and the chart line), ``as_of``,
+    ``window``, ``description``, ``chart_x_axis``/``chart_values`` (paired
+    lists -- both required together to render a chart), ``link``. Any field
+    besides ``title`` is optional -- only what's actually present is rendered.
     """
     card_ids = [f"finance{i}Card" for i in range(len(items))]
     item_components: list[dict[str, Any]] = []
@@ -1045,7 +1080,8 @@ def finance_gallery_card(
             outer_children.append(price_id)
         if item.get("change_text"):
             outer_children.append(change_id)
-        if item.get("chart_url"):
+        has_chart = item.get("chart_x_axis") and item.get("chart_values")
+        if has_chart:
             outer_children.append(chart_id)
         if meta_text:
             outer_children.append(meta_id)
@@ -1066,9 +1102,16 @@ def finance_gallery_card(
             item_components.append(
                 text(change_id, f"{arrow}{item['change_text']}", variant="body", styles={"color": color})
             )
-        if item.get("chart_url"):
+        if has_chart:
+            color = _FINANCE_MOVEMENT_COLORS.get(item.get("movement"), "#6B7280")
             item_components.append(
-                image(chart_id, item["chart_url"], variant="mediumFeature", fit="contain", styles={"width": "100%", "aspect-ratio": "2/1"})
+                chart(
+                    chart_id,
+                    "line",
+                    series=[{"name": item["title"], "data": [{"value": v} for v in item["chart_values"]]}],
+                    x_axis=item["chart_x_axis"],
+                    styles={"width": "100%", "aspect-ratio": "2/1", "chartConfig": {"colors": [color]}},
+                )
             )
         if meta_text:
             item_components.append(text(meta_id, meta_text, variant="caption"))

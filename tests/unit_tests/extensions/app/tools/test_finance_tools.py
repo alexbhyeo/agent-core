@@ -4,7 +4,6 @@
 
 import json
 from unittest.mock import AsyncMock, patch
-from urllib.parse import parse_qs, urlparse
 
 import pytest
 
@@ -34,11 +33,6 @@ _SAMPLE_RESPONSE = {
 }
 
 
-def _chart_config(chart_url):
-    query = parse_qs(urlparse(chart_url).query)
-    return json.loads(query["c"][0])
-
-
 class TestSearchFinance:
     @pytest.mark.asyncio
     async def test_returns_error_when_api_key_not_configured(self):
@@ -66,10 +60,11 @@ class TestSearchFinance:
         assert result["window"] == "1D"
         assert result["description"] == "Apple Inc. designs, manufactures, and markets smartphones."
         assert result["link"] == "https://www.google.com/finance/quote/AAPL:NASDAQ"
-        assert result["chart_url"].startswith("https://quickchart.io/chart?")
+        assert result["chart_values"] == [150.1, 151.2, 150.23]
+        assert len(result["chart_x_axis"]) == 3
 
     @pytest.mark.asyncio
-    async def test_chart_url_uses_real_graph_prices(self):
+    async def test_chart_points_use_real_graph_prices(self):
         body = json.dumps(_SAMPLE_RESPONSE).encode("utf-8")
         mock_request = AsyncMock(return_value=(200, {"Content-Type": "application/json"}, body, "url", False))
         with (
@@ -77,27 +72,12 @@ class TestSearchFinance:
             patch.object(finance_tools._http, "request", mock_request),
         ):
             result = await finance_tools.search_finance.invoke({"query": "Apple"})
-        chart_config = _chart_config(result["chart_url"])
-        assert chart_config["data"]["datasets"][0]["data"] == [150.1, 151.2, 150.23]
-        assert chart_config["data"]["datasets"][0]["borderColor"] == "#16A34A"  # Up == green
+        assert result["chart_values"] == [150.1, 151.2, 150.23]
+        # window defaults to "1D" (intraday) -- labels are times, not dates
+        assert result["chart_x_axis"] == ["09:30 AM", "10:00 AM", "10:30 AM"]
 
     @pytest.mark.asyncio
-    async def test_chart_url_is_red_for_down_movement(self):
-        response = json.loads(json.dumps(_SAMPLE_RESPONSE))
-        response["summary"]["price_movement"]["movement"] = "Down"
-        body = json.dumps(response).encode("utf-8")
-        mock_request = AsyncMock(return_value=(200, {"Content-Type": "application/json"}, body, "url", False))
-        with (
-            patch.object(finance_tools.config, "get", side_effect=_config_get({"SERPAPI_API_KEY": "test-key"})),
-            patch.object(finance_tools._http, "request", mock_request),
-        ):
-            result = await finance_tools.search_finance.invoke({"query": "Apple"})
-        assert result["change_text"] == "-2.34 (-1.58%) today"
-        chart_config = _chart_config(result["chart_url"])
-        assert chart_config["data"]["datasets"][0]["borderColor"] == "#DC2626"
-
-    @pytest.mark.asyncio
-    async def test_chart_url_downsamples_to_max_points(self):
+    async def test_chart_points_downsample_to_max_points(self):
         response = json.loads(json.dumps(_SAMPLE_RESPONSE))
         response["graph"] = [
             {"price": 100 + i * 0.1, "date": f"Aug 17 2026, {9 + i // 60:02d}:{i % 60:02d} AM UTC-05:00"}
@@ -110,13 +90,12 @@ class TestSearchFinance:
             patch.object(finance_tools._http, "request", mock_request),
         ):
             result = await finance_tools.search_finance.invoke({"query": "Apple"})
-        chart_config = _chart_config(result["chart_url"])
-        assert len(chart_config["data"]["datasets"][0]["data"]) == finance_tools.MAX_CHART_POINTS
+        assert len(result["chart_values"]) == finance_tools.MAX_CHART_POINTS
         # the very last real price point is always kept, even after sampling
-        assert chart_config["data"]["datasets"][0]["data"][-1] == response["graph"][-1]["price"]
+        assert result["chart_values"][-1] == response["graph"][-1]["price"]
 
     @pytest.mark.asyncio
-    async def test_chart_url_is_none_when_no_graph_points(self):
+    async def test_chart_points_are_none_when_no_graph_points(self):
         response = json.loads(json.dumps(_SAMPLE_RESPONSE))
         response["graph"] = []
         body = json.dumps(response).encode("utf-8")
@@ -126,7 +105,8 @@ class TestSearchFinance:
             patch.object(finance_tools._http, "request", mock_request),
         ):
             result = await finance_tools.search_finance.invoke({"query": "Apple"})
-        assert result["chart_url"] is None
+        assert result["chart_x_axis"] is None
+        assert result["chart_values"] is None
 
     @pytest.mark.asyncio
     async def test_returns_error_when_no_summary_title(self):
@@ -211,7 +191,8 @@ class TestShowFinanceResults:
                         "as_of": "Aug 17 2026, 09:30 AM UTC-05:00",
                         "window": "1D",
                         "description": "Apple Inc. designs, manufactures, and markets smartphones.",
-                        "chart_url": "https://quickchart.io/chart?c=%7B%7D",
+                        "chart_x_axis": ["Aug 17", "Aug 17", "Aug 17"],
+                        "chart_values": [150.1, 151.2, 150.23],
                         "link": "https://www.google.com/finance/quote/AAPL:NASDAQ",
                     }
                 ],
@@ -224,10 +205,35 @@ class TestShowFinanceResults:
         assert components["finance0Price"]["text"] == "$150.23"
         assert "+2.34" in components["finance0Change"]["text"]
         assert components["finance0Change"]["styles"]["color"] == "#16A34A"
-        assert components["finance0Chart"]["url"] == "https://quickchart.io/chart?c=%7B%7D"
+        chart = components["finance0Chart"]
+        assert chart["component"] == "Chart"
+        assert chart["chartType"] == "line"
+        assert chart["data"]["xAxis"] == ["Aug 17", "Aug 17", "Aug 17"]
+        assert chart["data"]["series"] == [
+            {"name": "Apple Inc", "data": [{"value": 150.1}, {"value": 151.2}, {"value": 150.23}]}
+        ]
+        assert chart["styles"]["chartConfig"]["colors"] == ["#16A34A"]  # Up == green
         assert components["finance0Button"]["action"]["functionCall"]["args"]["url"] == (
             "https://www.google.com/finance/quote/AAPL:NASDAQ"
         )
+
+    @pytest.mark.asyncio
+    async def test_chart_is_red_for_down_movement(self):
+        result = await finance_tools.show_finance_results.invoke(
+            {
+                "title": "Markets",
+                "items": [
+                    {
+                        "title": "Apple Inc",
+                        "movement": "Down",
+                        "chart_x_axis": ["Aug 17"],
+                        "chart_values": [150.1],
+                    }
+                ],
+            }
+        )
+        components = {c["id"]: c for c in result["genui"][1]["updateComponents"]["components"]}
+        assert components["finance0Chart"]["styles"]["chartConfig"]["colors"] == ["#DC2626"]
 
     @pytest.mark.asyncio
     async def test_omits_optional_fields_when_absent(self):
@@ -240,3 +246,11 @@ class TestShowFinanceResults:
         assert "finance0Change" not in components
         assert "finance0Chart" not in components
         assert "finance0Button" not in components
+
+    @pytest.mark.asyncio
+    async def test_omits_chart_when_only_one_of_the_paired_fields_present(self):
+        result = await finance_tools.show_finance_results.invoke(
+            {"title": "Markets", "items": [{"title": "Mystery Corp", "chart_x_axis": ["Aug 17"]}]}
+        )
+        components = {c["id"]: c for c in result["genui"][1]["updateComponents"]["components"]}
+        assert "finance0Chart" not in components
