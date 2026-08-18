@@ -97,6 +97,54 @@ class TestAskPreferencesForm:
         component_ids = {c["id"] for c in result["genui"][-1]["updateComponents"]["components"]}
         assert {"check_in", "check_out"}.isdisjoint(component_ids)
 
+    @pytest.mark.asyncio
+    async def test_hotel_stay_dates_get_separate_categories_in_correct_order(self):
+        result = await tools.ask_preferences_form.invoke(
+            {"title": "Hotel booking preferences", "fields": []}
+        )
+        components = result["genui"][-1]["updateComponents"]["components"]
+        component_ids = [c["id"] for c in components]
+        # Regression test: the auto-insert loop used to insert(0, ...) each
+        # date individually, which reverses their order (the second insert
+        # pushes the first one down a slot) -- check-in must render before
+        # check-out, not after.
+        assert component_ids.index("check_in") < component_ids.index("check_out")
+        # Each date gets its own category heading (not a shared "Stay
+        # dates") -- the category IS the field's real visible label on this
+        # client, so the two category-title Text components must differ.
+        category_titles = [c["text"] for c in components if c.get("variant") == "h4"]
+        assert "Check-in date" in category_titles
+        assert "Check-out date" in category_titles
+
+    @pytest.mark.asyncio
+    async def test_flight_travel_dates_get_separate_categories_in_correct_order(self):
+        result = await tools.ask_preferences_form.invoke(
+            {"title": "Flight booking preferences", "fields": []}
+        )
+        components = result["genui"][-1]["updateComponents"]["components"]
+        component_ids = [c["id"] for c in components]
+        assert component_ids.index("outbound_date") < component_ids.index("return_date")
+        category_titles = [c["text"] for c in components if c.get("variant") == "h4"]
+        assert "Departure date" in category_titles
+        assert "Return date" in category_titles
+
+    @pytest.mark.asyncio
+    async def test_purely_chinese_hotel_title_still_auto_inserts_stay_date_fields(self):
+        # Regression test: a title generated entirely in Chinese, with no
+        # English word at all (e.g. the model titling a form "预订酒店" for a
+        # "我想订酒店" request), must still trigger the same auto-insert as an
+        # English "hotel" title -- the keyword list isn't English-only.
+        result = await tools.ask_preferences_form.invoke({"title": "预订酒店", "fields": []})
+        component_ids = {c["id"] for c in result["genui"][-1]["updateComponents"]["components"]}
+        assert {"check_in", "check_out"} <= component_ids
+
+    @pytest.mark.asyncio
+    async def test_purely_chinese_flight_title_still_auto_inserts_travel_date_fields(self):
+        result = await tools.ask_preferences_form.invoke({"title": "预订机票", "fields": []})
+        component_ids = {c["id"] for c in result["genui"][-1]["updateComponents"]["components"]}
+        assert {"outbound_date", "return_date"} <= component_ids
+        assert "check_in" not in component_ids
+
 
 class TestAllTools:
     def test_all_tools_exposes_expected_names(self):
