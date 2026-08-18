@@ -152,6 +152,13 @@ _MAP_EMBED_TEMPLATE = """<!DOCTYPE html>
     const map = new google.maps.Map(document.getElementById("map"), {
       zoom: 12,
       center: { lat: PLACES[0].lat, lng: PLACES[0].lng },
+      // This map sits inside a scrollable chat transcript, not a full page --
+      // without this, a one-finger drag meant to scroll the chat instead pans
+      // the map (the API's 'auto' default doesn't detect that context
+      // correctly here). 'cooperative' scrolls the page on one finger and
+      // only pans the map on a two-finger drag, showing a hint if the user
+      // tries one finger.
+      gestureHandling: "cooperative",
     });
     const infoWindow = new google.maps.InfoWindow();
     PLACES.forEach(function (place) {
