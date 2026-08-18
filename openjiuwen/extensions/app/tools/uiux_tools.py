@@ -192,9 +192,17 @@ class FormField(BaseModel):
     category: Optional[str] = Field(
         default=None,
         description=(
-            "Short section heading for this field, e.g. 'Dietary needs', "
-            "'Taste preferences', or 'Trip details'. Fields in the same category "
-            "are shown together in their own card."
+            "Short section heading for this field -- this heading is the field's "
+            "real, reliably-visible label (a field's own `label` value is not "
+            "shown by this client's input widgets), so give every field its own "
+            "specific category matching what it actually is, e.g. category='Adults' "
+            "on the adults field, category='Check-in date' on the check-in field. "
+            "Never give two different fields the same shared/umbrella category "
+            "(like 'Guests' for both an adults field and a children field, or "
+            "'Stay dates' for both a check-in and a check-out field) -- fields in "
+            "the same category are visually merged under one heading in one card, "
+            "so sharing one hides which value is which just as much as combining "
+            "them into a single field would. One field, one category, always."
         ),
     )
     type: FormFieldType = Field(
@@ -203,11 +211,24 @@ class FormField(BaseModel):
             "multi_choice = checkboxes (pick any number, including zero) -- use this "
             "whenever the user could reasonably want more than one option, e.g. "
             "'which cuisines do you like', 'which amenities matter to you'; "
-            "slider = numeric range; text = free text; checkbox = a single yes/no toggle."
+            "slider = a numeric range where the exact value matters less than the "
+            "position within a wide range, e.g. a price/budget range -- do NOT use "
+            "it for a small discrete count like a number of guests/adults/"
+            "children/passengers, since a slider knob doesn't let the user see or "
+            "set the exact number precisely; use `choice` with explicit numbered "
+            "options instead (e.g. '1', '2', '3', '4+') for those; "
+            "text = free text; checkbox = a single yes/no toggle; "
             "date = date-only calendar picker (use for check-in, check-out, booking, or travel dates)."
         )
     )
-    label: str = Field(description="Label shown above/next to the field.")
+    label: str = Field(
+        description=(
+            "Label shown above/next to the field. For type=date, this must specifically "
+            "name which date it is -- 'Check-in date', 'Check-out date', 'Departure date', "
+            "'Return date', 'Appointment date', etc. -- never a bare 'Date' the user has to "
+            "guess the meaning of."
+        )
+    )
     help_text: Optional[str] = Field(
         default=None,
         description=(
@@ -245,9 +266,22 @@ class FormField(BaseModel):
         "it any time you need a handful of structured inputs before you can give a good "
         "answer (choosing/buying something, planning something, configuring something, "
         "etc.). You decide the title and the fields yourself, based on what information "
-        "you actually need for the request at hand. The user's answers come back later as "
-        "a new message describing a submitted UI form -- respond to that by calling "
-        "`show_card` with an answer that references their actual submitted values."
+        "you actually need for the request at hand. Every distinct piece of information "
+        "is its own field, in its own category -- never merge two different preferences "
+        "into one field or combine their options together, and never give two different "
+        "fields the same shared category (see FormField.category). For example, "
+        "'adults' and 'children' are two separate counts: use two separate `choice` "
+        "fields with explicit numbered options (e.g. '1'/'2'/'3'/'4+'), each in its own "
+        "category ('Adults', 'Children') -- never one field whose options are combined "
+        "pairs like '(1 adult, 2 children)' / '(2 adults, 0 children)', and never a "
+        "`slider` for a count like this (see FormField.type). Likewise, every `date` "
+        "field needs its own specific label naming which date it is and its own category "
+        "(see FormField.label/category) -- e.g. a 'Check-in date' field and a "
+        "'Check-out date' field are two separate fields in two separate categories, "
+        "never a bare 'Date' field, and never two date fields sharing one category. The "
+        "user's answers come back later as a new message describing a submitted UI form "
+        "-- respond to that by calling `show_card` with an answer that references their "
+        "actual submitted values."
     )
 )
 def ask_preferences_form(title: str, fields: list[FormField], submit_label: str = "Submit") -> dict[str, Any]:
@@ -255,70 +289,98 @@ def ask_preferences_form(title: str, fields: list[FormField], submit_label: str 
     # Nested list items arrive as raw dicts, not coerced FormField instances
     # (LocalFunction's schema formatting doesn't recurse into list[BaseModel]).
     parsed_fields = [f if isinstance(f, FormField) else FormField(**f) for f in fields]
-    is_flight_form = any(term in title.lower() for term in ("flight", "flights", "fly", "airfare", "plane"))
+    # Title keywords aren't guaranteed to be English -- the model may title a
+    # form entirely in the user's own language (e.g. a Chinese request for
+    # "我想订酒店" can come back titled "预订酒店" with no English gloss at
+    # all), so each list also carries the common-language equivalents most
+    # likely to appear rather than relying on English substrings alone.
+    is_flight_form = any(
+        term in title.lower()
+        for term in (
+            "flight", "flights", "fly", "airfare", "plane",
+            "机票", "航班", "飞机",  # Chinese: air ticket / flight / airplane
+        )
+    )
     # Checked before the hotel keywords below: "booking" alone is a shared
     # generic word (e.g. "Flight booking details") that would otherwise also
     # match the hotel branch and insert check_in/check_out fields onto a
     # flight form.
     is_hotel_form = not is_flight_form and any(
-        term in title.lower() for term in ("hotel", "accommodation", "stay", "booking")
+        term in title.lower()
+        for term in (
+            "hotel", "accommodation", "stay", "booking",
+            "酒店", "住宿", "预订", "预定", "订房",  # Chinese: hotel / lodging / reserve / book a room
+        )
     )
     if is_flight_form:
         today = datetime.now(timezone.utc).date()
         default_outbound = today.isoformat()
         default_return = (today + timedelta(days=1)).isoformat()
         field_by_id = {field.id: field for field in parsed_fields}
+        # Collected in order and prepended as one block below -- inserting
+        # each field individually at index 0 would reverse departure/return
+        # (the second insert(0, ...) pushes the first one down a slot).
+        new_fields: list[FormField] = []
         for field_id, label, default_date in (
             ("outbound_date", "Departure date", default_outbound),
             ("return_date", "Return date", default_return),
         ):
             existing = field_by_id.get(field_id)
             if existing is None:
-                parsed_fields.insert(
-                    0,
+                new_fields.append(
                     FormField(
                         id=field_id,
                         type=FormFieldType.date,
                         label=label,
-                        category="Travel dates",
+                        # Its own category, not a shared "Travel dates" --
+                        # the category heading is the field's real visible
+                        # label (see FormField.category), so departure and
+                        # return each get their own card.
+                        category=label,
                         default_date=default_date,
                         min_date=default_outbound,
-                    ),
+                    )
                 )
             else:
                 existing.type = FormFieldType.date
-                existing.category = existing.category or "Travel dates"
+                existing.category = existing.category or label
                 existing.label = label
                 existing.default_date = existing.default_date or default_date
                 existing.min_date = existing.min_date or default_outbound
+        parsed_fields[0:0] = new_fields
     elif is_hotel_form:
         today = datetime.now(timezone.utc).date()
         default_check_in = today.isoformat()
         default_check_out = (today + timedelta(days=1)).isoformat()
         field_by_id = {field.id: field for field in parsed_fields}
+        new_fields = []
         for field_id, label, default_date in (
             ("check_in", "Check-in date", default_check_in),
             ("check_out", "Check-out date", default_check_out),
         ):
             existing = field_by_id.get(field_id)
             if existing is None:
-                parsed_fields.insert(
-                    0,
+                new_fields.append(
                     FormField(
                         id=field_id,
                         type=FormFieldType.date,
                         label=label,
-                        category="Stay dates",
+                        # Its own category, not a shared "Stay dates" -- the
+                        # category heading is the field's real visible label
+                        # (see FormField.category), so check-in and
+                        # check-out each get their own card.
+                        category=label,
                         default_date=default_date,
                         min_date=default_check_in,
-                    ),
+                    )
                 )
             else:
                 existing.type = FormFieldType.date
-                existing.category = existing.category or "Stay dates"
+                existing.category = existing.category or label
                 existing.label = label
                 existing.default_date = existing.default_date or default_date
                 existing.min_date = existing.min_date or default_check_in
+        parsed_fields[0:0] = new_fields
     built_groups: dict[str, list[dict[str, Any]]] = {}
     field_paths = {}
     field_defaults: dict[str, Any] = {}
