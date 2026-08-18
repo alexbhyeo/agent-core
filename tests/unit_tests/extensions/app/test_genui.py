@@ -121,7 +121,9 @@ class TestBasicCatalogHelpers:
         assert "caption" not in components
 
     def test_map_card_with_caption_adds_caption_text(self):
-        messages = genui.map_card("surface-1", "Bangkok", "https://example.com/map-embed?data=...", caption="- Grand Palace")
+        messages = genui.map_card(
+            "surface-1", "Bangkok", "https://example.com/map-embed?data=...", caption="- Grand Palace"
+        )
         components = {c["id"]: c for c in messages[1]["updateComponents"]["components"]}
         assert components["caption"]["text"] == "- Grand Palace"
 
@@ -180,9 +182,7 @@ class TestBasicCatalogHelpers:
         assert "hotel0Button" not in components
 
     def test_hotel_gallery_card_adds_show_more_button_when_more_count_positive(self):
-        messages = genui.hotel_gallery_card(
-            "surface-1", "Bali hotels", [{"name": "Hotel A"}], more_count=5
-        )
+        messages = genui.hotel_gallery_card("surface-1", "Bali hotels", [{"name": "Hotel A"}], more_count=5)
         components = {c["id"]: c for c in messages[1]["updateComponents"]["components"]}
         assert components["moreButtonText"]["text"] == "Show more"
         assert components["moreButton"]["action"]["event"]["name"] == "show_more_hotels"

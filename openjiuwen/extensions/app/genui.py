@@ -1003,9 +1003,7 @@ def hotel_gallery_card(
     more_components: list[dict[str, Any]] = []
     if more_count > 0:
         root_children.append("moreButton")
-        more_components.append(
-            button("moreButton", "moreButtonText", "show_more_hotels", styles={"width": "100%"})
-        )
+        more_components.append(button("moreButton", "moreButtonText", "show_more_hotels", styles={"width": "100%"}))
         more_components.append(
             text(
                 "moreButtonText",
@@ -1243,9 +1241,7 @@ def flight_gallery_card(
     more_components: list[dict[str, Any]] = []
     if more_count > 0:
         root_children.append("moreButton")
-        more_components.append(
-            button("moreButton", "moreButtonText", "show_more_flights", styles={"width": "100%"})
-        )
+        more_components.append(button("moreButton", "moreButtonText", "show_more_flights", styles={"width": "100%"}))
         more_components.append(
             text(
                 "moreButtonText",
