@@ -403,7 +403,7 @@ def map_card(
         column("content", inner_children),
         text("title", title, variant="h3", styles={"padding": "16px 16px 12px 16px"}),
         divider("divider"),
-        map_web("map", map_embed_url, styles={"width": "100%", "aspect-ratio": "3/4"}),
+        map_web("map", map_embed_url, styles={"width": "100%", "aspect-ratio": "1/1"}),
         *(
             [text("caption", caption, variant="body", styles={"padding": "12px 16px", "line-clamp": 0})]
             if caption
