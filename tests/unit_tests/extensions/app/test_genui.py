@@ -53,6 +53,29 @@ class TestBasicCatalogHelpers:
         assert "align" not in component
         assert component["children"] == ["a", "b"]
 
+    def test_chart_builds_native_component_with_series_and_axes(self):
+        component = genui.chart(
+            "c1",
+            "line",
+            series=[{"name": "AAPL", "data": [{"value": 150.1}, {"value": 151.2}]}],
+            x_axis=["09:30 AM", "10:00 AM"],
+        )
+        assert component == {
+            "id": "c1",
+            "component": "Chart",
+            "chartType": "line",
+            "data": {
+                "series": [{"name": "AAPL", "data": [{"value": 150.1}, {"value": 151.2}]}],
+                "xAxis": ["09:30 AM", "10:00 AM"],
+            },
+        }
+
+    def test_chart_omits_unset_axes_and_styles(self):
+        component = genui.chart("c1", "donut", series=[{"data": [{"value": 1, "label": "A"}]}])
+        assert "xAxis" not in component["data"]
+        assert "yAxis" not in component["data"]
+        assert "styles" not in component
+
     def test_carousel_builds_component_payload(self):
         component = genui.carousel("media", ["https://example.com/a.jpg", "https://example.com/b.jpg"])
         assert component == {
@@ -250,7 +273,8 @@ class TestBasicCatalogHelpers:
                     "as_of": "Aug 17 2026, 09:30 AM UTC-05:00",
                     "window": "1D",
                     "description": "Apple Inc. designs, manufactures, and markets smartphones.",
-                    "chart_url": "https://quickchart.io/chart?c=%7B%7D",
+                    "chart_x_axis": ["09:30 AM", "10:00 AM", "10:30 AM"],
+                    "chart_values": [150.1, 151.2, 150.23],
                     "link": "https://www.google.com/finance/quote/AAPL:NASDAQ",
                 }
             ],
@@ -263,8 +287,13 @@ class TestBasicCatalogHelpers:
         assert components["finance0Price"]["variant"] == "h2"
         assert components["finance0Change"]["text"] == "▲ +2.34 (+1.58%) today"
         assert components["finance0Change"]["styles"]["color"] == "#16A34A"
-        assert components["finance0Chart"]["component"] == "Image"
-        assert components["finance0Chart"]["url"] == "https://quickchart.io/chart?c=%7B%7D"
+        assert components["finance0Chart"]["component"] == "Chart"
+        assert components["finance0Chart"]["chartType"] == "line"
+        assert components["finance0Chart"]["data"]["xAxis"] == ["09:30 AM", "10:00 AM", "10:30 AM"]
+        assert components["finance0Chart"]["data"]["series"] == [
+            {"name": "Apple Inc", "data": [{"value": 150.1}, {"value": 151.2}, {"value": 150.23}]}
+        ]
+        assert components["finance0Chart"]["styles"]["chartConfig"]["colors"] == ["#16A34A"]
         assert "NASDAQ" in components["finance0Meta"]["text"]
         assert components["finance0Desc"]["text"] == "Apple Inc. designs, manufactures, and markets smartphones."
         assert components["finance0Button"]["action"]["functionCall"] == {

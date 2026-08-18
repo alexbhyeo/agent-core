@@ -1,9 +1,10 @@
 # -*- coding: UTF-8 -*-
 # Copyright (c) Huawei Technologies Co., Ltd. 2025. All rights reserved.
 """Finance search tools for the ReAct agent: real stock/index/currency/crypto
-data via SerpApi's Google Finance engine, rendered as cards with a real price
-chart (via QuickChart's chart-image API, fed the actual price-history points
-returned by SerpApi -- see ``_build_chart_url``).
+data via SerpApi's Google Finance engine, rendered as cards with a real,
+interactive price chart -- AGenUI's native ``Chart`` catalog component
+(via ``genui.chart()``), fed the actual price-history points SerpApi
+returned (see ``_build_chart_points``).
 
 The query (a company/ticker/index/currency/crypto) and desired time window
 are never guessed -- the system prompt in ``agent.py`` has the agent collect
@@ -33,17 +34,11 @@ _FINANCE_SEARCH_ENDPOINT = "https://serpapi.com/search.json"
 _FINANCE_ENGINE = "google_finance"
 _VALID_WINDOWS = {"1D", "5D", "1M", "6M", "YTD", "1Y", "5Y", "MAX"}
 _INTRADAY_WINDOWS = {"1D", "5D"}
-# QuickChart renders the chart image itself (a public, free, no-API-key chart
-# rendering service -- the same "real, publicly reachable URL the client
-# fetches directly" pattern as every other image in this app, see
-# genui.image()); this caps how many of SerpApi's real graph points get fed
-# into it, both to keep the request URL a reasonable length and the chart
-# readable rather than an illegibly dense line.
+# Caps how many of SerpApi's real graph points get fed into the chart, so it
+# stays readable rather than an illegibly dense line -- the chart itself
+# renders natively client-side (genui.chart()), no image/URL length limit
+# involved, this is purely for chart legibility.
 MAX_CHART_POINTS = 30
-
-_UP_COLOR = "#16A34A"
-_DOWN_COLOR = "#DC2626"
-_FLAT_COLOR = "#6B7280"
 
 
 def _short_label(date_str: Optional[str], window: str) -> str:
@@ -60,44 +55,20 @@ def _short_label(date_str: Optional[str], window: str) -> str:
     return " ".join(tokens[:2]) if len(tokens) >= 2 else date_part.strip()
 
 
-def _build_chart_url(graph: list[dict[str, Any]], window: str, chart_title: str, movement: Optional[str]) -> Optional[str]:
+def _build_chart_points(graph: list[dict[str, Any]], window: str) -> tuple[list[str], list[float]]:
+    """Downsample SerpApi's real price-history graph points to (x-axis
+    labels, values) for a native line chart -- always keeps the latest real
+    price point even after sampling.
+    """
     points = [p for p in graph if isinstance(p.get("price"), (int, float))]
     if not points:
-        return None
+        return [], []
     if len(points) > MAX_CHART_POINTS:
         step = len(points) / MAX_CHART_POINTS
         sampled = [points[min(int(i * step), len(points) - 1)] for i in range(MAX_CHART_POINTS)]
         sampled[-1] = points[-1]  # always keep the latest real price point
         points = sampled
-
-    color = _DOWN_COLOR if movement == "Down" else _UP_COLOR if movement == "Up" else _FLAT_COLOR
-    config_payload = {
-        "type": "line",
-        "data": {
-            "labels": [_short_label(p.get("date"), window) for p in points],
-            "datasets": [
-                {
-                    "data": [p["price"] for p in points],
-                    "label": chart_title,
-                    "borderColor": color,
-                    "fill": False,
-                    "pointRadius": 0,
-                    "borderWidth": 2,
-                }
-            ],
-        },
-        "options": {
-            "title": {"display": True, "text": f"{chart_title} — {window}"},
-            "legend": {"display": False},
-            "scales": {
-                "xAxes": [{"ticks": {"maxTicksLimit": 6}}],
-                "yAxes": [{"ticks": {"maxTicksLimit": 5}}],
-            },
-        },
-    }
-    return "https://quickchart.io/chart?" + urlencode(
-        {"c": json.dumps(config_payload), "backgroundColor": "white", "width": 600, "height": 300, "devicePixelRatio": 2}
-    )
+    return [_short_label(p.get("date"), window) for p in points], [p["price"] for p in points]
 
 
 @tool(
@@ -123,8 +94,9 @@ def _build_chart_url(graph: list[dict[str, Any]], window: str, chart_title: str,
         "`exchange`, `price`, `currency`, `change_text` (e.g. '+2.34 "
         "(+1.58%) today'), `movement` ('Up'/'Down'/'Flat'), `as_of`, "
         "`description` (a short real company/asset blurb, when available), "
-        "`chart_url` (a real chart image built from the actual price-history "
-        "SerpApi returned), and `link` (the real Google Finance page) -- any "
+        "`chart_x_axis`/`chart_values` (paired lists built from the actual "
+        "price-history SerpApi returned, for a real interactive chart), and "
+        "`link` (the real Google Finance page) -- any "
         "field besides `title` can come back missing, which is normal; pass "
         "only what's present into `show_finance_results`. Call this once "
         "per security if the user asks about more than one (like "
@@ -195,7 +167,7 @@ async def search_finance(query: str, window: str = "1D") -> dict[str, Any]:
     exchange = summary.get("exchange")
     link = f"https://www.google.com/finance/quote/{stock}:{exchange}" if stock and exchange else None
 
-    chart_url = _build_chart_url(data.get("graph") or [], window, title, movement)
+    chart_x_axis, chart_values = _build_chart_points(data.get("graph") or [], window)
 
     return {
         "query": query,
@@ -209,7 +181,8 @@ async def search_finance(query: str, window: str = "1D") -> dict[str, Any]:
         "as_of": summary.get("date"),
         "window": window,
         "description": description,
-        "chart_url": chart_url,
+        "chart_x_axis": chart_x_axis or None,
+        "chart_values": chart_values or None,
         "link": link,
     }
 
@@ -231,8 +204,11 @@ class FinanceResult(BaseModel):
     description: Optional[str] = Field(
         default=None, description="Real short company/asset blurb from `search_finance`, when available."
     )
-    chart_url: Optional[str] = Field(
-        default=None, description="Real chart image URL from `search_finance`, built from actual price history."
+    chart_x_axis: Optional[list[str]] = Field(
+        default=None, description="Real chart x-axis labels from `search_finance`, paired with `chart_values`."
+    )
+    chart_values: Optional[list[float]] = Field(
+        default=None, description="Real price-history values from `search_finance`, paired with `chart_x_axis`."
     )
     link: Optional[str] = Field(
         default=None, description="Real Google Finance page URL from `search_finance` -- the button target."
@@ -243,8 +219,8 @@ class FinanceResult(BaseModel):
     description=(
         "Render one or more real finance results as an A2UI surface, each "
         "in its own card with the security's name/ticker, current price and "
-        "change (colored for up/down), a real price chart, and a 'View on "
-        "Google Finance' button. Every item must come from a prior "
+        "change (colored for up/down), a real interactive price chart, and a "
+        "'View on Google Finance' button. Every item must come from a prior "
         "`search_finance` call -- never invent a price, change, or chart. "
         "Pass through exactly what `search_finance` returned, including "
         "missing/null fields (just leave those out, don't invent a "
