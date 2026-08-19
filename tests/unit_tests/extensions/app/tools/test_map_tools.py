@@ -182,11 +182,12 @@ class TestRenderMapEmbedHtml:
         assert "new google.maps.OverlayView()" in html
         assert "buildPin(" in html
 
-    def test_uses_dark_map_style(self):
+    def test_uses_default_day_mode_map_style(self):
+        # No custom `styles:` map option -- Google's own default day-mode
+        # tiles, not the dark "Night mode" style this used to hardcode.
         places = [map_tools.MapPlace(label="Grand Palace", lat=13.75, lng=100.4913)]
         html = map_tools.render_map_embed_html(places, "test-key")
-        assert "styles:" in html
-        assert '"color": "#1d2c4d"' in html
+        assert "styles:" not in html
 
     def test_suppresses_cooperative_gesture_hint_but_keeps_cooperative_handling(self):
         places = [map_tools.MapPlace(label="Grand Palace", lat=13.75, lng=100.4913)]

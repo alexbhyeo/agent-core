@@ -1,7 +1,7 @@
 # -*- coding: UTF-8 -*-
 # Copyright (c) Huawei Technologies Co., Ltd. 2025. All rights reserved.
 """Map tools for the ReAct agent: geocoding real places and rendering them as
-an interactive, dark-themed map with custom rating-pin markers.
+an interactive map with custom rating-pin markers.
 
 Unlike a static map image, real tap-to-see-info markers need a live Google
 Maps JavaScript API page, not a server-rendered PNG (see the Static Maps API
@@ -180,43 +180,13 @@ class MapPlace(BaseModel):
     )
 
 
-# Google's well-known "Night mode" Maps style -- see
-# https://developers.google.com/maps/documentation/javascript/style-reference.
-_DARK_MAP_STYLE_JSON = json.dumps([
-    {"elementType": "geometry", "stylers": [{"color": "#1d2c4d"}]},
-    {"elementType": "labels.text.fill", "stylers": [{"color": "#8ec3b9"}]},
-    {"elementType": "labels.text.stroke", "stylers": [{"color": "#1a3646"}]},
-    {"featureType": "administrative.country", "elementType": "geometry.stroke", "stylers": [{"color": "#4b6878"}]},
-    {"featureType": "administrative.land_parcel", "elementType": "labels.text.fill", "stylers": [{"color": "#64779e"}]},
-    {"featureType": "administrative.province", "elementType": "geometry.stroke", "stylers": [{"color": "#4b6878"}]},
-    {"featureType": "landscape.man_made", "elementType": "geometry.stroke", "stylers": [{"color": "#334e87"}]},
-    {"featureType": "landscape.natural", "elementType": "geometry", "stylers": [{"color": "#023e58"}]},
-    {"featureType": "poi", "elementType": "geometry", "stylers": [{"color": "#283d6a"}]},
-    {"featureType": "poi", "elementType": "labels.text.fill", "stylers": [{"color": "#6f9ba5"}]},
-    {"featureType": "poi", "elementType": "labels.text.stroke", "stylers": [{"color": "#1d2c4d"}]},
-    {"featureType": "poi.park", "elementType": "geometry.fill", "stylers": [{"color": "#023e58"}]},
-    {"featureType": "road", "elementType": "geometry", "stylers": [{"color": "#304a7d"}]},
-    {"featureType": "road", "elementType": "labels.text.fill", "stylers": [{"color": "#98a5be"}]},
-    {"featureType": "road", "elementType": "labels.text.stroke", "stylers": [{"color": "#1d2c4d"}]},
-    {"featureType": "road.highway", "elementType": "geometry", "stylers": [{"color": "#2c6675"}]},
-    {"featureType": "road.highway", "elementType": "geometry.stroke", "stylers": [{"color": "#255763"}]},
-    {"featureType": "road.highway", "elementType": "labels.text.fill", "stylers": [{"color": "#b0d5ce"}]},
-    {"featureType": "road.highway", "elementType": "labels.text.stroke", "stylers": [{"color": "#023e58"}]},
-    {"featureType": "transit", "elementType": "labels.text.fill", "stylers": [{"color": "#98a5be"}]},
-    {"featureType": "transit", "elementType": "labels.text.stroke", "stylers": [{"color": "#1d2c4d"}]},
-    {"featureType": "transit.line", "elementType": "geometry.fill", "stylers": [{"color": "#283d6a"}]},
-    {"featureType": "transit.station", "elementType": "geometry", "stylers": [{"color": "#3a4762"}]},
-    {"featureType": "water", "elementType": "geometry", "stylers": [{"color": "#0e1626"}]},
-    {"featureType": "water", "elementType": "labels.text.fill", "stylers": [{"color": "#4e6d70"}]},
-])
-
 _MAP_EMBED_TEMPLATE = """<!DOCTYPE html>
 <html>
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <style>
-  html, body { height: 100%; margin: 0; padding: 0; overflow: hidden; background: #0e1626; font-family: -apple-system, Roboto, sans-serif; }
+  html, body { height: 100%; margin: 0; padding: 0; overflow: hidden; background: #f5f5f5; font-family: -apple-system, Roboto, sans-serif; }
   #map { position: absolute; top: 0; left: 0; right: 0; bottom: 0; }
   /* Google injects this overlay ("Use two fingers to move the map" /
      "Use ctrl + scroll to zoom the map") when gestureHandling is
@@ -239,8 +209,8 @@ _MAP_EMBED_TEMPLATE = """<!DOCTYPE html>
     background: #2273f7; border-color: #ffffff; transform: scale(1.08);
   }
   .map-pin .pin-label {
-    margin-top: 3px; font-size: 12px; font-weight: 700; color: #fff;
-    text-shadow: 0 1px 3px rgba(0,0,0,0.8); max-width: 140px;
+    margin-top: 3px; font-size: 12px; font-weight: 700; color: #202124;
+    text-shadow: 0 0 3px #fff, 0 0 3px #fff, 0 1px 2px #fff; max-width: 140px;
     overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
   }
   .map-pin .dot {
@@ -339,7 +309,7 @@ _MAP_EMBED_TEMPLATE = """<!DOCTYPE html>
     map = new google.maps.Map(mapDiv, {
       zoom: 12,
       center: { lat: PLACES[0].lat, lng: PLACES[0].lng },
-      styles: __DARK_STYLE_JSON__,
+      // No custom `styles` here -- Google's own default day-mode tiles.
       disableDefaultUI: true,
       zoomControl: true,
       // This map sits inside a scrollable chat transcript, not a full page --
@@ -406,7 +376,7 @@ def _place_payload(p: MapPlace) -> dict[str, Any]:
 def render_map_embed_html(places: list[MapPlace], api_key: str) -> str:
     """Render a small self-contained HTML page embedding the real Google Maps
     JavaScript API -- unlike a static map image, this gives a real
-    interactive dark-themed map with a rating pill over every place.
+    interactive day-mode map with a rating pill over every place.
     ``selectPlace(idx)`` (called by tapping a pin, or from the native place
     cards below the map via ``MapWebComponent.highlightPlace()`` -- see
     ``genui.map_places_list()``) pans to and highlights that place's pin.
@@ -418,7 +388,6 @@ def render_map_embed_html(places: list[MapPlace], api_key: str) -> str:
     places_json = json.dumps(places_payload).replace("</", "<\\/")
     html = _MAP_EMBED_TEMPLATE
     html = html.replace("__PLACES_JSON__", places_json)
-    html = html.replace("__DARK_STYLE_JSON__", _DARK_MAP_STYLE_JSON)
     html = html.replace("__API_KEY__", quote(api_key, safe=""))
     return html
 
