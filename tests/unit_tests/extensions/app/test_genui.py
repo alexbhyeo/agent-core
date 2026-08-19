@@ -146,6 +146,23 @@ class TestBasicCatalogHelpers:
         assert by_id["place0Btn"]["child"] == "place0Card"
         assert by_id["place0Meta"]["text"] == "★ 4.6"
 
+    def test_map_places_list_spaces_cards_via_spacer_component_not_gap_or_margin(self):
+        # Regression test: neither "gap" on the List nor per-item "margin"
+        # has any visible effect in this client -- confirmed on-device two
+        # separate ways (gap: 0px-60px all rendered identically; margin: a
+        # rebuilt debug client logged the *correct* margin-adjusted position
+        # per card, yet the on-screen spacing didn't change). A real spacer
+        # component between cards is the one thing consistently confirmed to
+        # render at its requested width.
+        _list_id, components = genui.map_places_list(
+            "surface-1", [{"label": "Grand Palace"}, {"label": "Wat Arun"}, {"label": "Erawan Shrine"}]
+        )
+        by_id = {c["id"]: c for c in components}
+        assert "gap" not in by_id["placesList"]["styles"]
+        assert "margin" not in by_id["place0Btn"]["styles"]
+        assert by_id["placesList"]["children"] == ["place0Btn", "spacer1", "place1Btn", "spacer2", "place2Btn"]
+        assert by_id["spacer1"] == {"id": "spacer1", "component": "Column", "children": [], "styles": {"width": "6px"}}
+
     def test_map_places_list_keeps_every_card_row_present_when_data_missing(self):
         # Regression test: a card that skips a row entirely (e.g. no rating)
         # ends up shorter than its siblings, and the horizontal List's
@@ -170,6 +187,16 @@ class TestBasicCatalogHelpers:
         assert by_id["place0Image"]["component"] == "Image"
         assert by_id["place0Image"]["styles"]["width"] == "100%"
         assert by_id["place0Image"]["fit"] == "cover"
+        # Card doesn't stretch its child to the card's own width by itself,
+        # so the image's own width:100% is 100% of whatever this wrapping
+        # column resolves to -- it must itself be pinned to the card's full
+        # width, or the image ends up narrower than the card regardless.
+        assert by_id["place0Content"]["styles"]["width"] == "100%"
+        # No align="stretch" on this column -- that would also stretch the
+        # text rows to the card's full width instead of their own natural
+        # size; only elements that explicitly opt in (the image, above)
+        # should stretch.
+        assert "align" not in by_id["place0Content"]
 
     def test_map_web_builds_component_payload(self):
         component = genui.map_web("map", "https://example.com/map-embed?data=...")
