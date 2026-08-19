@@ -159,6 +159,18 @@ class TestBasicCatalogHelpers:
         assert by_id["place0Image"]["component"] == "Column"
         assert by_id["place0Image"]["children"] == []
 
+    def test_map_places_list_image_fills_full_card_width(self):
+        # Regression test: without an explicit width, the image only took
+        # its own intrinsic/variant-driven width instead of the card's full
+        # width, leaving a gap on one side instead of filling the card.
+        _list_id, components = genui.map_places_list(
+            "surface-1", [{"label": "Grand Palace", "image_url": "https://example.com/a.jpg"}]
+        )
+        by_id = {c["id"]: c for c in components}
+        assert by_id["place0Image"]["component"] == "Image"
+        assert by_id["place0Image"]["styles"]["width"] == "100%"
+        assert by_id["place0Image"]["fit"] == "cover"
+
     def test_map_web_builds_component_payload(self):
         component = genui.map_web("map", "https://example.com/map-embed?data=...")
         assert component == {"id": "map", "component": "MapWeb", "url": "https://example.com/map-embed?data=..."}

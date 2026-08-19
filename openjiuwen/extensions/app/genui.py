@@ -499,7 +499,18 @@ def map_places_list(surface_id: str, places: list[dict[str, Any]]) -> tuple[str,
         item_components.append(column(content_id, content_children, styles={"gap": "2px"}))
         if place.get("image_url"):
             item_components.append(
-                image(image_id, place["image_url"], variant="header", fit="cover", styles={"height": "96px"})
+                image(
+                    image_id,
+                    place["image_url"],
+                    variant="header",
+                    fit="cover",
+                    # Explicit width -- without it the image only takes its
+                    # own intrinsic/variant-driven width instead of the
+                    # card's full 220px, leaving a gap (the card's `overflow:
+                    # hidden` cropped it from the *right*, which is what
+                    # showed as "the left side doesn't fit").
+                    styles={"width": "100%", "height": "96px"},
+                )
             )
         else:
             item_components.append(column(image_id, [], styles={"height": "96px", "background-color": "#E1E4E9"}))
@@ -530,7 +541,17 @@ def map_places_list(surface_id: str, places: list[dict[str, Any]]) -> tuple[str,
 
     list_id = "placesList"
     components = [
-        list_view(list_id, [f"place{i}Btn" for i in range(len(places))], direction="horizontal", styles={"gap": "10px"}),
+        list_view(
+            list_id,
+            [f"place{i}Btn" for i in range(len(places))],
+            direction="horizontal",
+            # Top padding only -- separates this row from the map above
+            # without adding unwanted gap anywhere else in map_card()'s
+            # title/divider/map/placesList stack (that Column has no "gap"
+            # style, so title-divider-map stay flush, which already looks
+            # right) or changing the cards' existing flush-left/right edges.
+            styles={"gap": "10px", "padding": "12px 0px 0px 0px"},
+        ),
         *item_components,
     ]
     return list_id, components
