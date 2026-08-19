@@ -376,7 +376,7 @@ class TestShowMap:
         components = {c["id"]: c for c in result["genui"][1]["updateComponents"]["components"]}
         assert components["placesList"]["component"] == "List"
         assert components["placesList"]["direction"] == "horizontal"
-        assert components["placesList"]["children"] == ["place0Btn", "place1Btn"]
+        assert components["placesList"]["children"] == ["place0Btn", "spacer1", "place1Btn"]
         assert components["place0Btn"]["action"] == {
             "functionCall": {"call": "highlightMapPlace", "args": {"surfaceId": surface_id, "index": 0}}
         }

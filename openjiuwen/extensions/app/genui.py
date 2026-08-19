@@ -496,7 +496,19 @@ def map_places_list(surface_id: str, places: list[dict[str, Any]]) -> tuple[str,
         item_components.append(
             card(card_id, content_id, styles={"width": "220px", "padding": "0px", "overflow": "hidden"})
         )
-        item_components.append(column(content_id, content_children, styles={"gap": "2px"}))
+        item_components.append(
+            # Card doesn't stretch its child to the card's own width by
+            # itself -- without "width": "100%" here, this column (and the
+            # image inside it) only take their own intrinsic width (as wide
+            # as the longest text row), leaving the image short of the
+            # card's actual edges despite its own width:100% below (100% of
+            # an already-too-narrow parent is still too narrow). No
+            # align="stretch" here though -- that would *also* stretch the
+            # text rows to the card's full width instead of their own
+            # natural size; only the image (and its no-photo placeholder)
+            # ask for width:100% on themselves below, so only they stretch.
+            column(content_id, content_children, styles={"gap": "2px", "width": "100%"})
+        )
         if place.get("image_url"):
             item_components.append(
                 image(
@@ -509,11 +521,18 @@ def map_places_list(surface_id: str, places: list[dict[str, Any]]) -> tuple[str,
                     # card's full 220px, leaving a gap (the card's `overflow:
                     # hidden` cropped it from the *right*, which is what
                     # showed as "the left side doesn't fit").
-                    styles={"width": "100%", "height": "96px"},
+                    # "header" variant bakes in a default aspect-ratio:"16/9" --
+                    # override it to "auto" or Yoga derives width from
+                    # height*ratio instead of respecting width:100% (this is
+                    # what caused images to render narrower than their card,
+                    # leaving a blank gap before the next card).
+                    styles={"width": "100%", "height": "96px", "aspect-ratio": "auto"},
                 )
             )
         else:
-            item_components.append(column(image_id, [], styles={"height": "96px", "background-color": "#E1E4E9"}))
+            item_components.append(
+                column(image_id, [], styles={"width": "100%", "height": "96px", "background-color": "#E1E4E9"})
+            )
         item_components.append(
             text(name_id, place["label"], variant="body", weight=1, styles={"padding": "0px 12px", "line-clamp": 1})
         )
@@ -539,18 +558,33 @@ def map_places_list(surface_id: str, places: list[dict[str, Any]]) -> tuple[str,
             )
         )
 
+    # Neither "gap" on the List nor per-item "margin" has any visible effect
+    # in this client -- confirmed two different ways: (1) "gap" from 0px to
+    # 60px all rendered identically, and (2) a rebuilt debug client with
+    # logging showed the engine computing the *correct* margin-adjusted
+    # position for each card, yet the on-screen spacing between cards still
+    # didn't change. A real spacer *component* between cards works instead,
+    # since a component's own width is the one thing consistently confirmed
+    # (by the same logging) to render exactly as requested.
+    list_children: list[str] = []
+    for i in range(len(places)):
+        if i > 0:
+            list_children.append(f"spacer{i}")
+            item_components.append(column(f"spacer{i}", [], styles={"width": "6px"}))
+        list_children.append(f"place{i}Btn")
+
     list_id = "placesList"
     components = [
         list_view(
             list_id,
-            [f"place{i}Btn" for i in range(len(places))],
+            list_children,
             direction="horizontal",
-            # Top padding only -- separates this row from the map above
-            # without adding unwanted gap anywhere else in map_card()'s
+            # Top padding separates this row from the map above without
+            # adding unwanted space anywhere else in map_card()'s
             # title/divider/map/placesList stack (that Column has no "gap"
             # style, so title-divider-map stay flush, which already looks
-            # right) or changing the cards' existing flush-left/right edges.
-            styles={"gap": "10px", "padding": "12px 0px 0px 0px"},
+            # right).
+            styles={"padding": "12px 0px 0px 0px"},
         ),
         *item_components,
     ]
