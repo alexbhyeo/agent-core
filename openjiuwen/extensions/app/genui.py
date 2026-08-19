@@ -419,29 +419,155 @@ def video_gallery_card(
     ]
 
 
+_MAP_PLACE_STATUS_COLORS: dict[bool, str] = {True: "#16A34A", False: "#DC2626"}
+
+
+def map_places_list(surface_id: str, places: list[dict[str, Any]]) -> tuple[str, list[dict[str, Any]]]:
+    """A horizontally-scrollable strip of place cards (native ``List``
+    component, ``direction="horizontal"`` -- unlike ``Carousel``, which this
+    catalog only supports as a plain image gallery, ``List`` takes arbitrary
+    child components, so each card can carry a photo, rating, category,
+    price, and open/closed status). Tapping a card calls the client's
+    ``highlightMapPlace`` function (registered in ``Index.ets`` /
+    ``HighlightMapPlaceFunction.ets``) with this map's own ``surface_id`` and
+    the place's index, which pans/highlights that place's pin on the map --
+    see ``buildPin()``/``selectPlace()`` in ``map_tools._MAP_EMBED_TEMPLATE``
+    for the client-side half of this.
+
+    Each dict in ``places`` is one ``_place_payload()`` result: ``label``
+    (required), ``image_url``, ``rating``, ``category``, ``price_level``,
+    ``open_now`` all optional -- only what's present is rendered.
+
+    Returns ``(list_component_id, components)`` -- the caller embeds the
+    returned id as a child alongside the map, and appends ``components`` to
+    its own component list (this doesn't create its own surface).
+    """
+    card_ids = [f"place{i}Card" for i in range(len(places))]
+    item_components: list[dict[str, Any]] = []
+    for i, place in enumerate(places):
+        outer = f"place{i}"
+        button_id = f"{outer}Btn"
+        card_id = card_ids[i]
+        content_id = f"{outer}Content"
+        name_id = f"{outer}Name"
+        meta_id = f"{outer}Meta"
+        status_id = f"{outer}Status"
+        image_id = f"{outer}Image"
+
+        meta_parts: list[str] = []
+        if place.get("rating") is not None:
+            meta_parts.append(f"★ {place['rating']:.1f}")
+        if place.get("category"):
+            meta_parts.append(place["category"])
+        status_parts: list[str] = []
+        if place.get("price_level"):
+            status_parts.append(place["price_level"])
+        if place.get("open_now") is not None:
+            status_parts.append("Open" if place["open_now"] else "Closed")
+
+        # Every card gets the same four rows (image, name, meta, status),
+        # each present even when that place has no data for it -- a card
+        # that skips a row entirely ends up shorter than its siblings, and
+        # since the horizontal List stretches every card to the row's
+        # height, the shorter one's content visually centers instead of
+        # lining up at the top with the rest. A blank placeholder in that
+        # row's spot keeps every card's content the same height instead.
+        content_children = [image_id, name_id, meta_id, status_id]
+
+        item_components.append(
+            {
+                "id": button_id,
+                "component": "Button",
+                "child": card_id,
+                "variant": "borderless",
+                # Unlike button()/open_url_button(), no _DEFAULT_BUTTON_STYLES
+                # merge here -- this wrapper exists only to make the whole
+                # card tappable; its own chrome (the CTA blue pill styling
+                # those helpers apply) would show through behind the card.
+                "styles": {"padding": "0px", "background-color": "transparent", "border-radius": "0px"},
+                # Client-local functionCall (like open_url_button), not a
+                # server-round-trip action.event -- see
+                # HighlightMapPlaceFunction.ets / MapWebComponent.highlightPlace().
+                "action": {
+                    "functionCall": {"call": "highlightMapPlace", "args": {"surfaceId": surface_id, "index": i}}
+                },
+            }
+        )
+        item_components.append(
+            card(card_id, content_id, styles={"width": "220px", "padding": "0px", "overflow": "hidden"})
+        )
+        item_components.append(column(content_id, content_children, styles={"gap": "2px"}))
+        if place.get("image_url"):
+            item_components.append(
+                image(image_id, place["image_url"], variant="header", fit="cover", styles={"height": "96px"})
+            )
+        else:
+            item_components.append(column(image_id, [], styles={"height": "96px", "background-color": "#E1E4E9"}))
+        item_components.append(
+            text(name_id, place["label"], variant="body", weight=1, styles={"padding": "0px 12px", "line-clamp": 1})
+        )
+        # " " (not "") -- an empty string can collapse to zero height
+        # in some Text renderers, which would reintroduce the same
+        # misalignment this whole placeholder scheme exists to avoid.
+        item_components.append(
+            text(
+                meta_id,
+                "  •  ".join(meta_parts) if meta_parts else " ",
+                variant="caption",
+                styles={"padding": "0px 12px"},
+            )
+        )
+        status_color = _MAP_PLACE_STATUS_COLORS.get(place.get("open_now"), "#6B7280") if status_parts else "transparent"
+        item_components.append(
+            text(
+                status_id,
+                "  •  ".join(status_parts) if status_parts else " ",
+                variant="caption",
+                weight=1,
+                styles={"padding": "0px 12px 12px 12px", "color": status_color},
+            )
+        )
+
+    list_id = "placesList"
+    components = [
+        list_view(list_id, [f"place{i}Btn" for i in range(len(places))], direction="horizontal", styles={"gap": "10px"}),
+        *item_components,
+    ]
+    return list_id, components
+
+
 def map_card(
     surface_id: str,
     title: str,
     map_embed_url: str,
-    caption: Optional[str] = None,
+    places: Optional[list[dict[str, Any]]] = None,
 ) -> list[dict[str, Any]]:
     """A titled card showing an interactive map (see ``map_web()`` -- real,
     tappable markers via a live Google Maps JavaScript API page, not a
     static image) -- ``map_embed_url`` must be this app's own ``/map-embed``
-    route, see ``map_tools.show_map``.
+    route, see ``map_tools.show_map``. When ``places`` is given, a
+    horizontally-scrollable card strip (see ``map_places_list()``) renders
+    below the map, one card per place, synced to the map's pins by tap.
     """
-    inner_children = ["title", "divider", "map"] + (["caption"] if caption else [])
+    places_components: list[dict[str, Any]] = []
+    places_list_id: Optional[str] = None
+    if places:
+        places_list_id, places_components = map_places_list(surface_id, places)
+
+    inner_children = ["title", "divider", "map"] + ([places_list_id] if places_list_id else [])
     components = [
         card("root", "content", styles={"padding": "0px"}),
         column("content", inner_children),
         text("title", title, variant="h3", styles={"padding": "16px 16px 12px 16px"}),
         divider("divider"),
-        map_web("map", map_embed_url, styles={"width": "100%", "aspect-ratio": "3/4"}),
-        *(
-            [text("caption", caption, variant="body", styles={"padding": "12px 16px", "line-clamp": 0})]
-            if caption
-            else []
-        ),
+        # Must match MapWebComponent.ets's own .aspectRatio() value -- this
+        # server-declared hint and the client's internal ArkUI sizing are
+        # two independent sources of truth for the same box; a mismatch
+        # between them leaves blank space around the map (the layout engine
+        # reserves a slot sized off this value, but the WebView itself
+        # renders at whatever ratio the client component actually uses).
+        map_web("map", map_embed_url, styles={"width": "100%", "aspect-ratio": "4/3"}),
+        *places_components,
     ]
     return [
         create_surface(surface_id),

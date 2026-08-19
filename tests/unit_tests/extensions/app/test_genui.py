@@ -120,12 +120,44 @@ class TestBasicCatalogHelpers:
         assert components["map"]["url"] == "https://example.com/map-embed?data=..."
         assert "caption" not in components
 
-    def test_map_card_with_caption_adds_caption_text(self):
+    def test_map_card_with_places_adds_horizontal_places_list(self):
         messages = genui.map_card(
-            "surface-1", "Bangkok", "https://example.com/map-embed?data=...", caption="- Grand Palace"
+            "surface-1",
+            "Bangkok",
+            "https://example.com/map-embed?data=...",
+            places=[{"label": "Grand Palace", "rating": 4.6}],
         )
         components = {c["id"]: c for c in messages[1]["updateComponents"]["components"]}
-        assert components["caption"]["text"] == "- Grand Palace"
+        assert components["placesList"]["component"] == "List"
+        assert components["placesList"]["direction"] == "horizontal"
+        assert components["place0Name"]["text"] == "Grand Palace"
+        root_children = next(c for c in messages[1]["updateComponents"]["components"] if c["id"] == "content")[
+            "children"
+        ]
+        assert "placesList" in root_children
+
+    def test_map_places_list_wires_tap_to_highlight_map_place_function(self):
+        list_id, components = genui.map_places_list("surface-1", [{"label": "Grand Palace", "rating": 4.6}])
+        assert list_id == "placesList"
+        by_id = {c["id"]: c for c in components}
+        assert by_id["place0Btn"]["action"] == {
+            "functionCall": {"call": "highlightMapPlace", "args": {"surfaceId": "surface-1", "index": 0}}
+        }
+        assert by_id["place0Btn"]["child"] == "place0Card"
+        assert by_id["place0Meta"]["text"] == "★ 4.6"
+
+    def test_map_places_list_keeps_every_card_row_present_when_data_missing(self):
+        # Regression test: a card that skips a row entirely (e.g. no rating)
+        # ends up shorter than its siblings, and the horizontal List's
+        # stretch-to-equal-height then visually centers its content instead
+        # of aligning it to the top like the rest of the row -- every card
+        # must keep the same rows, blank where there's no data for them.
+        _list_id, components = genui.map_places_list("surface-1", [{"label": "Wat Arun"}])
+        by_id = {c["id"]: c for c in components}
+        assert by_id["place0Meta"]["text"] == " "
+        assert by_id["place0Status"]["text"] == " "
+        assert by_id["place0Image"]["component"] == "Column"
+        assert by_id["place0Image"]["children"] == []
 
     def test_map_web_builds_component_payload(self):
         component = genui.map_web("map", "https://example.com/map-embed?data=...")
