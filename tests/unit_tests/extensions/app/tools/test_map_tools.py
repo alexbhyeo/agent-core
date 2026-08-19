@@ -53,6 +53,46 @@ class TestGeocodePlace:
         )
 
     @pytest.mark.asyncio
+    async def test_returns_category_price_and_open_now_when_present(self):
+        body = json.dumps(
+            {
+                "places": [
+                    {
+                        "formattedAddress": "2 Orchard Turn, Singapore",
+                        "location": {"latitude": 1.3006, "longitude": 103.8368},
+                        "primaryTypeDisplayName": {"text": "Seafood restaurant", "languageCode": "en"},
+                        "priceLevel": "PRICE_LEVEL_EXPENSIVE",
+                        "currentOpeningHours": {"openNow": False},
+                    }
+                ]
+            }
+        ).encode("utf-8")
+        mock_request = AsyncMock(return_value=(200, {"Content-Type": "application/json"}, body, "url", False))
+        with (
+            patch.object(map_tools.config, "get", side_effect=_config_get({"GOOGLE_MAPS_API_KEY": "test-key"})),
+            patch.object(map_tools._http, "request", mock_request),
+        ):
+            result = await map_tools.geocode_place.invoke({"query": "Jumbo Seafood, Singapore"})
+        assert result["category"] == "Seafood restaurant"
+        assert result["price_level"] == "$$$"
+        assert result["open_now"] is False
+
+    @pytest.mark.asyncio
+    async def test_returns_null_category_price_and_open_now_when_absent(self):
+        body = json.dumps(
+            {"places": [{"formattedAddress": "somewhere", "location": {"latitude": 1.0, "longitude": 2.0}}]}
+        ).encode("utf-8")
+        mock_request = AsyncMock(return_value=(200, {"Content-Type": "application/json"}, body, "url", False))
+        with (
+            patch.object(map_tools.config, "get", side_effect=_config_get({"GOOGLE_MAPS_API_KEY": "test-key"})),
+            patch.object(map_tools._http, "request", mock_request),
+        ):
+            result = await map_tools.geocode_place.invoke({"query": "somewhere"})
+        assert result["category"] is None
+        assert result["price_level"] is None
+        assert result["open_now"] is None
+
+    @pytest.mark.asyncio
     async def test_returns_null_rating_and_photo_when_place_has_neither(self):
         body = json.dumps(
             {
@@ -132,11 +172,70 @@ class TestRenderMapEmbedHtml:
         html = map_tools.render_map_embed_html(places, "test-key")
         assert "key=test-key" in html
 
-    def test_markers_use_default_google_maps_style(self):
-        # No custom `icon` -- markers render as Google's default red teardrop pin.
+    def test_markers_render_as_custom_rating_pins_via_overlay_view(self):
+        # No classic google.maps.Marker/`icon:` -- each place gets a custom
+        # rating-pill OverlayView pin instead (see buildPin() in the embed).
         places = [map_tools.MapPlace(label="Grand Palace", lat=13.75, lng=100.4913)]
         html = map_tools.render_map_embed_html(places, "test-key")
         assert "icon:" not in html
+        assert "new google.maps.Marker(" not in html
+        assert "new google.maps.OverlayView()" in html
+        assert "buildPin(" in html
+
+    def test_uses_dark_map_style(self):
+        places = [map_tools.MapPlace(label="Grand Palace", lat=13.75, lng=100.4913)]
+        html = map_tools.render_map_embed_html(places, "test-key")
+        assert "styles:" in html
+        assert '"color": "#1d2c4d"' in html
+
+    def test_suppresses_cooperative_gesture_hint_but_keeps_cooperative_handling(self):
+        places = [map_tools.MapPlace(label="Grand Palace", lat=13.75, lng=100.4913)]
+        html = map_tools.render_map_embed_html(places, "test-key")
+        assert 'gestureHandling: "cooperative"' in html
+        # Two independent mechanisms: a CSS rule targeting the notice's
+        # class name (fast path, but that name is an unofficial internal
+        # detail confirmed on-device to no longer match), plus a polling
+        # fallback that hides any element whose own text matches the
+        # notice's stable, displayed wording -- confirmed more robust than
+        # a MutationObserver, which missed cases where the wrapper and its
+        # text are inserted as separate DOM mutations.
+        assert ".gm-style-pbc" in html
+        assert "function suppressGestureHint()" in html
+        assert "setInterval(" in html
+        assert "suppressGestureHint();" in html
+        assert "two finger" in html
+
+    def test_exposes_select_place_for_native_card_taps_to_call(self):
+        # selectPlace(idx) is invoked two ways: tapping a pin directly here,
+        # and via MapWebComponent.highlightPlace() -> webController's
+        # runJavaScript() when the native place card below the map (see
+        # genui.map_places_list()) is tapped -- both need this exact
+        # function name/signature to keep working.
+        places = [map_tools.MapPlace(label="Grand Palace", lat=13.75, lng=100.4913)]
+        html = map_tools.render_map_embed_html(places, "test-key")
+        assert "function selectPlace(idx)" in html
+        assert "map.panTo(" in html
+        assert "buildPin(place, idx)" in html
+
+    def test_embeds_category_price_and_open_status_in_places_json(self):
+        # The place cards below the map are now native components built
+        # server-side (genui.map_places_list()) from the same payload, not
+        # rendered inside this HTML -- so the embed only needs to carry the
+        # raw data through, not reference these fields in its own JS.
+        places = [
+            map_tools.MapPlace(
+                label="Jumbo Seafood",
+                lat=13.75,
+                lng=100.4913,
+                category="Seafood restaurant",
+                price_level="$$$",
+                open_now=False,
+            )
+        ]
+        html = map_tools.render_map_embed_html(places, "test-key")
+        assert '"category": "Seafood restaurant"' in html
+        assert '"price_level": "$$$"' in html
+        assert '"open_now": false' in html
 
     def test_escapes_closing_script_tag_in_label(self):
         # A place label containing "</script>" must not be able to break out
@@ -175,13 +274,6 @@ class TestRenderMapEmbedHtml:
         html = map_tools.render_map_embed_html(places, "test-key")
         assert '"image_url": null' in html
         assert '"rating": null' in html
-
-    def test_sets_image_src_as_property_not_string_concat(self):
-        # Confirms the info window builds its <img> via a safe property
-        # assignment, not by concatenating place data into an HTML string.
-        places = [map_tools.MapPlace(label="Grand Palace", lat=13.75, lng=100.4913)]
-        html = map_tools.render_map_embed_html(places, "test-key")
-        assert "img.src = place.image_url" in html
 
 
 class TestShowMap:
@@ -260,8 +352,36 @@ class TestShowMap:
                 "image_url": "https://places.googleapis.com/v1/places/abc/photos/xyz/media",
                 "rating": 4.6,
                 "user_ratings_total": 12345,
+                "category": None,
+                "price_level": None,
+                "open_now": None,
             }
         ]
+
+    @pytest.mark.asyncio
+    async def test_renders_native_place_cards_with_highlight_action(self):
+        config_values = {"GOOGLE_MAPS_API_KEY": "test-key", "PUBLIC_BASE_URL": "https://example.com:8090"}
+        with patch.object(map_tools.config, "get", side_effect=_config_get(config_values)):
+            result = await map_tools.show_map.invoke(
+                {
+                    "title": "Bangkok",
+                    "places": [
+                        {"label": "Grand Palace", "lat": 13.75, "lng": 100.4913, "rating": 4.6},
+                        {"label": "Wat Arun", "lat": 13.7437, "lng": 100.4888},
+                    ],
+                }
+            )
+        surface_id = result["genui"][0]["createSurface"]["surfaceId"]
+        components = {c["id"]: c for c in result["genui"][1]["updateComponents"]["components"]}
+        assert components["placesList"]["component"] == "List"
+        assert components["placesList"]["direction"] == "horizontal"
+        assert components["placesList"]["children"] == ["place0Btn", "place1Btn"]
+        assert components["place0Btn"]["action"] == {
+            "functionCall": {"call": "highlightMapPlace", "args": {"surfaceId": surface_id, "index": 0}}
+        }
+        assert components["place0Name"]["text"] == "Grand Palace"
+        assert "★ 4.6" in components["place0Meta"]["text"]
+        assert components["place1Btn"]["action"]["functionCall"]["args"]["index"] == 1
 
     @pytest.mark.asyncio
     async def test_embed_url_strips_trailing_slash_on_base_url(self):
