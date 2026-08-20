@@ -101,6 +101,7 @@ class ConnectionSession:
             "any_text_sent": False,
             "last_presentation_text": "",
             "bubble_open": False,
+            "geocode_pending": 0,
         }
         try:
             async for chunk in Runner.run_agent_streaming(self.agent, {"query": text}, session=conversation_id):
@@ -138,6 +139,30 @@ def _describe_ui_actions(ui_actions: Optional[list[dict[str, Any]]]) -> str:
         context = action.get("context", {})
         parts.append(f"[UI action: {name}] submitted values: {json.dumps(context)}")
     return "\n".join(parts)
+
+
+def _tool_progress_text(tool_name: str, tool_args: Any) -> str:
+    """Human-readable status line for a tool.started event's "text" field.
+
+    Surfaced in the client's "Working..." row while a tool call is in
+    flight (see Index.ets's kind === 'working' rendering) so a slow
+    multi-tool-call turn -- e.g. show_map's caller geocoding several places
+    one at a time before the map itself renders -- reads as visible
+    progress instead of one static "Working..." the whole time.
+    """
+    args = tool_args if isinstance(tool_args, dict) else {}
+    if tool_name == "geocode_place":
+        query = args.get("query")
+        return f"Looking up {query}…" if query else "Looking up a place…"
+    if tool_name == "show_map":
+        title = args.get("title")
+        return f"Building your map: {title}…" if title else "Building your map…"
+    if tool_name:
+        # Generic fallback for every other tool: "search_flights" -> "Search flights…".
+        readable = tool_name.replace("_", " ").strip()
+        if readable:
+            return readable[0].upper() + readable[1:] + "…"
+    return "Working…"
 
 
 def _translate(chunk: Any, state: dict[str, Any]) -> list[tuple[str, dict[str, Any]]]:
@@ -191,8 +216,23 @@ def _translate(chunk: Any, state: dict[str, Any]) -> list[tuple[str, dict[str, A
         # the tool when deduplicating the final answer after the tool result.
         state["last_llm_text"] = ""
         tool_name = (payload or {}).get("tool_name", "")
+        tool_args = (payload or {}).get("tool_args")
         call_id = (payload or {}).get("tool_call_id")
-        events.append(("tool.started", {"tool": tool_name, "callId": call_id}))
+        if tool_name == "geocode_place":
+            # geocode_place is called once per place, often several at once
+            # in one parallel batch (e.g. 7 calls for a 7-place map) -- track
+            # how many are still outstanding so the batch's *completion* can
+            # also report progress (see tool_result below). Without this, the
+            # "Working..." row freezes on whichever place happened to be
+            # looked up last for the entire stretch afterward where the model
+            # is silently reasoning over all the results to build the next
+            # (usually single, much larger) show_map call -- often the
+            # longest, least-explained part of the whole request.
+            state["geocode_pending"] = state.get("geocode_pending", 0) + 1
+        events.append((
+            "tool.started",
+            {"tool": tool_name, "callId": call_id, "text": _tool_progress_text(tool_name, tool_args)},
+        ))
         return events
 
     if chunk_type == "tool_result":
@@ -200,7 +240,16 @@ def _translate(chunk: Any, state: dict[str, Any]) -> list[tuple[str, dict[str, A
         tool_name = (payload or {}).get("tool_name", "")
         call_id = (payload or {}).get("tool_call_id")
         tool_result = (payload or {}).get("tool_result")
-        events.append(("tool.finished", {"tool": tool_name, "callId": call_id}))
+        finished_payload: dict[str, Any] = {"tool": tool_name, "callId": call_id}
+        if tool_name == "geocode_place":
+            state["geocode_pending"] = max(0, state.get("geocode_pending", 0) - 1)
+            if state["geocode_pending"] == 0:
+                # Last outstanding lookup in the batch just came back. The
+                # model still has to reason over every result and produce the
+                # (larger, single) show_map call next -- report that instead
+                # of leaving the row on a stale "Looking up ..." place name.
+                finished_payload["text"] = "Got them all — planning your map…"
+        events.append(("tool.finished", finished_payload))
 
         result_text, genui_messages = _extract_result(tool_result)
         if genui_messages and result_text:
