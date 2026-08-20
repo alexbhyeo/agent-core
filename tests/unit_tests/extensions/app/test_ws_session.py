@@ -144,8 +144,65 @@ class TestTranslate:
         state = _new_state()
         state["last_llm_text"] = "some preceding text"
         events = _translate(_chunk("tool_call", {"tool_name": "show_card", "tool_call_id": "c1"}), state)
-        assert events == [("tool.started", {"tool": "show_card", "callId": "c1"})]
+        assert events == [("tool.started", {"tool": "show_card", "callId": "c1", "text": "Show card…"})]
         assert state["last_llm_text"] == ""
+
+    def test_tool_call_progress_text_for_geocode_place(self):
+        state = _new_state()
+        events = _translate(
+            _chunk("tool_call", {"tool_name": "geocode_place", "tool_call_id": "c1", "tool_args": {"query": "Maxwell Food Centre"}}),
+            state,
+        )
+        assert events == [
+            ("tool.started", {"tool": "geocode_place", "callId": "c1", "text": "Looking up Maxwell Food Centre…"})
+        ]
+
+    def test_tool_call_progress_text_for_show_map(self):
+        state = _new_state()
+        events = _translate(
+            _chunk("tool_call", {"tool_name": "show_map", "tool_call_id": "c1", "tool_args": {"title": "Best eats"}}),
+            state,
+        )
+        assert events == [
+            ("tool.started", {"tool": "show_map", "callId": "c1", "text": "Building your map: Best eats…"})
+        ]
+
+    def test_geocode_batch_completion_reports_planning_text_only_once_all_resolve(self):
+        # Three geocode_place calls dispatched (a parallel batch), then two
+        # results come back -- the row must stay silent (no "text" key) on
+        # tool.finished until the *last* outstanding call resolves.
+        state = _new_state()
+        for call_id in ("c1", "c2", "c3"):
+            _translate(_chunk("tool_call", {"tool_name": "geocode_place", "tool_call_id": call_id}), state)
+        assert state["geocode_pending"] == 3
+
+        events1 = _translate(
+            _chunk("tool_result", {"tool_name": "geocode_place", "tool_call_id": "c1", "tool_result": {}}), state
+        )
+        assert events1[0] == ("tool.finished", {"tool": "geocode_place", "callId": "c1"})
+        assert state["geocode_pending"] == 2
+
+        events2 = _translate(
+            _chunk("tool_result", {"tool_name": "geocode_place", "tool_call_id": "c2", "tool_result": {}}), state
+        )
+        assert events2[0] == ("tool.finished", {"tool": "geocode_place", "callId": "c2"})
+        assert state["geocode_pending"] == 1
+
+        events3 = _translate(
+            _chunk("tool_result", {"tool_name": "geocode_place", "tool_call_id": "c3", "tool_result": {}}), state
+        )
+        assert events3[0] == (
+            "tool.finished",
+            {"tool": "geocode_place", "callId": "c3", "text": "Got them all — planning your map…"},
+        )
+        assert state["geocode_pending"] == 0
+
+    def test_non_geocode_tool_result_never_gets_planning_text(self):
+        state = _new_state()
+        events = _translate(
+            _chunk("tool_result", {"tool_name": "show_map", "tool_call_id": "c1", "tool_result": {}}), state
+        )
+        assert events[0] == ("tool.finished", {"tool": "show_map", "callId": "c1"})
 
     def test_tool_result_emits_finished_output_and_genui(self):
         state = _new_state()
