@@ -14,6 +14,7 @@ back in here just to keep ``ALL_TOOLS`` as the single place that assembles
 everything the agent gets.
 """
 
+import re
 from datetime import datetime, timedelta, timezone
 from enum import Enum
 from typing import Any, Optional
@@ -21,6 +22,20 @@ from typing import Any, Optional
 from pydantic import BaseModel, Field
 
 from openjiuwen.core.foundation.tool import tool
+
+_CJK_RE = re.compile(r"[一-鿿]")
+
+
+def _is_chinese_title(title: str) -> bool:
+    """True if `title` contains any Chinese (CJK) characters.
+
+    Used to pick Chinese vs. English labels for the date fields
+    `ask_preferences_form` auto-inserts below, so a form titled entirely in
+    Chinese (e.g. "预订巴士票", with no English gloss) doesn't end up with
+    English "Departure date"/"Return date" labels while every other field on
+    the same form -- the ones the model wrote itself -- is in Chinese.
+    """
+    return bool(_CJK_RE.search(title))
 
 from .. import genui
 from .finance_tools import search_finance, show_finance_results
@@ -301,15 +316,31 @@ def ask_preferences_form(title: str, fields: list[FormField], submit_label: str 
             "机票", "航班", "飞机",  # Chinese: air ticket / flight / airplane
         )
     )
-    # Checked before the hotel keywords below: "booking" alone is a shared
-    # generic word (e.g. "Flight booking details") that would otherwise also
-    # match the hotel branch and insert check_in/check_out fields onto a
-    # flight form.
+    # "booking"/"预订"/"预定" alone used to be in this list, but they're
+    # generic booking-verb words that appear in titles for *any* domain (a
+    # Chinese bus-ticket form titled "预订巴士票" matched here and got
+    # hotel check_in/check_out fields bolted onto its own correctly-labeled
+    # departure/return fields -- four date fields instead of two). Every
+    # term below is specific to actually staying somewhere overnight.
     is_hotel_form = not is_flight_form and any(
         term in title.lower()
         for term in (
-            "hotel", "accommodation", "stay", "booking",
-            "酒店", "住宿", "预订", "预定", "订房",  # Chinese: hotel / lodging / reserve / book a room
+            "hotel", "accommodation", "stay",
+            "酒店", "住宿", "订房",  # Chinese: hotel / lodging / book a room
+        )
+    )
+    # Round-trip transport (bus, coach, train, ferry) -- checked after
+    # flight/hotel since a title could otherwise ambiguously match more than
+    # one (e.g. a title mentioning both a city and "巴士"). Without this
+    # branch these forms fell through to the model inventing its own
+    # departure/return fields from scratch, which is what "General flow"
+    # asks it to do for stay dates too -- so a bus form ended up with both
+    # its own correct fields AND the unrelated hotel ones.
+    is_transport_form = not is_flight_form and not is_hotel_form and any(
+        term in title.lower()
+        for term in (
+            "bus", "coach", "train", "railway", "ferry",
+            "巴士", "大巴", "客车", "火车", "高铁", "动车", "渡轮",
         )
     )
     if is_flight_form:
@@ -317,13 +348,16 @@ def ask_preferences_form(title: str, fields: list[FormField], submit_label: str 
         default_outbound = today.isoformat()
         default_return = (today + timedelta(days=1)).isoformat()
         field_by_id = {field.id: field for field in parsed_fields}
+        outbound_label, return_label = (
+            ("出发日期", "返程日期") if _is_chinese_title(title) else ("Departure date", "Return date")
+        )
         # Collected in order and prepended as one block below -- inserting
         # each field individually at index 0 would reverse departure/return
         # (the second insert(0, ...) pushes the first one down a slot).
         new_fields: list[FormField] = []
         for field_id, label, default_date in (
-            ("outbound_date", "Departure date", default_outbound),
-            ("return_date", "Return date", default_return),
+            ("outbound_date", outbound_label, default_outbound),
+            ("return_date", return_label, default_return),
         ):
             existing = field_by_id.get(field_id)
             if existing is None:
@@ -353,10 +387,13 @@ def ask_preferences_form(title: str, fields: list[FormField], submit_label: str 
         default_check_in = today.isoformat()
         default_check_out = (today + timedelta(days=1)).isoformat()
         field_by_id = {field.id: field for field in parsed_fields}
+        check_in_label, check_out_label = (
+            ("入住日期", "退房日期") if _is_chinese_title(title) else ("Check-in date", "Check-out date")
+        )
         new_fields = []
         for field_id, label, default_date in (
-            ("check_in", "Check-in date", default_check_in),
-            ("check_out", "Check-out date", default_check_out),
+            ("check_in", check_in_label, default_check_in),
+            ("check_out", check_out_label, default_check_out),
         ):
             existing = field_by_id.get(field_id)
             if existing is None:
@@ -380,6 +417,42 @@ def ask_preferences_form(title: str, fields: list[FormField], submit_label: str 
                 existing.label = label
                 existing.default_date = existing.default_date or default_date
                 existing.min_date = existing.min_date or default_check_in
+        parsed_fields[0:0] = new_fields
+    elif is_transport_form:
+        today = datetime.now(timezone.utc).date()
+        default_departure = today.isoformat()
+        default_return = (today + timedelta(days=1)).isoformat()
+        field_by_id = {field.id: field for field in parsed_fields}
+        departure_label, return_label = (
+            ("出发日期", "返程日期") if _is_chinese_title(title) else ("Departure date", "Return date")
+        )
+        new_fields = []
+        for field_id, label, default_date in (
+            ("departure_date", departure_label, default_departure),
+            ("return_date", return_label, default_return),
+        ):
+            existing = field_by_id.get(field_id)
+            if existing is None:
+                new_fields.append(
+                    FormField(
+                        id=field_id,
+                        type=FormFieldType.date,
+                        label=label,
+                        # Its own category, not a shared "Travel dates" --
+                        # the category heading is the field's real visible
+                        # label (see FormField.category), so departure and
+                        # return each get their own card.
+                        category=label,
+                        default_date=default_date,
+                        min_date=default_departure,
+                    )
+                )
+            else:
+                existing.type = FormFieldType.date
+                existing.category = existing.category or label
+                existing.label = label
+                existing.default_date = existing.default_date or default_date
+                existing.min_date = existing.min_date or default_departure
         parsed_fields[0:0] = new_fields
     built_groups: dict[str, list[dict[str, Any]]] = {}
     field_paths = {}
