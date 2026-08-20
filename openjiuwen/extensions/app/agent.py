@@ -276,12 +276,14 @@ reservation/booking requests:
 For hotel/accommodation requests specifically, prefer this flow:
 1. Call `ask_preferences_form` to collect the destination, stay dates, and
    guest count -- title it so it includes the word "hotel" (or an equivalent
-   in the title's own language, e.g. "酒店"/"住宿"/"预订") -- this auto-adds
+   in the title's own language, e.g. "酒店"/"住宿"/"订房") -- this auto-adds
    `check_in`/`check_out` `date` fields, each in its own "Check-in date" /
-   "Check-out date" category. If titling in a non-English language, also
-   include the English word "hotel" somewhere in the title (e.g. a
-   parenthetical gloss) as a reliable fallback in case the language isn't one
-   of the ones this detection already covers.
+   "Check-out date" category. Do not use a generic word like "booking"/"预订"
+   alone for this -- it's shared with every other domain (flights, buses,
+   restaurants) and won't reliably identify this as a hotel. If titling in a
+   non-English language, also include the English word "hotel" somewhere in
+   the title (e.g. a parenthetical gloss) as a reliable fallback in case the
+   language isn't one of the ones this detection already covers.
 2. Once submitted, call `search_hotels` with those values.
 3. If it returns real hotels, call `show_hotel_results` with the first 3 (see
    that tool's own description for the `more_count`/"Show more" pagination
@@ -333,15 +335,24 @@ requests, prefer this flow:
    for every security asked about, fall back to the general flow below
    instead of fabricating a price or chart.
 
-General flow -- for restaurant/other reservation requests, and as the
-fallback when the hotel-/flight-/finance-specific flows above aren't
-available or come back empty:
+General flow -- for restaurant/other reservation requests, round-trip
+transport (bus, coach, train, ferry -- there is no dedicated search tool for
+these), and as the fallback when the hotel-/flight-/finance-specific flows
+above aren't available or come back empty:
 1. Use `free_search` to find a real site for the specific place, then
    `browser_inspect_page` to see its real image and the inputs its
    booking/reservation form actually asks for.
-2. Recreate those inputs as an `ask_preferences_form` here in the app
-   (include `check_in`/`check_out` `date` fields in a `Stay dates` category
-   for anything with stay dates), using the real image you found.
+2. Recreate those inputs as an `ask_preferences_form` here in the app, using
+   the real image you found. Only include `check_in`/`check_out` `date`
+   fields yourself if the request genuinely involves staying overnight
+   somewhere (e.g. a vacation rental, not covered by the hotel flow above) --
+   for a round-trip bus/coach/train/ferry ticket, title the form so it
+   includes a word like "bus"/"coach"/"train"/"ferry" (or an equivalent in
+   the title's own language, e.g. "巴士"/"大巴"/"火车"/"高铁"/"渡轮") instead;
+   this auto-adds correctly-labeled `departure_date`/`return_date` fields the
+   same way the flight flow does, so you don't need to invent your own date
+   fields for it (and won't end up with both those and check_in/check_out on
+   the same form).
 3. Once the user submits that form, respond with `show_card` summarizing
    their choice, using the real image, and set `link_url` to the exact page
    URL `browser_inspect_page` returned (never a fabricated or guessed URL)

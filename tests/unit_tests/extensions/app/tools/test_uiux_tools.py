@@ -145,6 +145,92 @@ class TestAskPreferencesForm:
         assert {"outbound_date", "return_date"} <= component_ids
         assert "check_in" not in component_ids
 
+    @pytest.mark.asyncio
+    async def test_bus_title_auto_inserts_departure_return_fields(self):
+        result = await tools.ask_preferences_form.invoke(
+            {"title": "Bus ticket booking", "fields": []}
+        )
+        component_ids = {c["id"] for c in result["genui"][-1]["updateComponents"]["components"]}
+        assert {"departure_date", "return_date"} <= component_ids
+        assert {"check_in", "check_out"}.isdisjoint(component_ids)
+
+    @pytest.mark.asyncio
+    async def test_purely_chinese_bus_title_auto_inserts_departure_return_fields(self):
+        # Regression test for the reported bug: a round-trip bus ticket
+        # request ("我想买来回的巴士票") titled entirely in Chinese as
+        # "预订巴士票" used to match the hotel branch on the generic "预订"
+        # (book/reserve) substring, bolting check_in/check_out onto the
+        # form's own correctly-labeled departure_date/return_date fields --
+        # four date fields shown to the user instead of two.
+        result = await tools.ask_preferences_form.invoke({"title": "预订巴士票", "fields": []})
+        component_ids = {c["id"] for c in result["genui"][-1]["updateComponents"]["components"]}
+        assert {"departure_date", "return_date"} <= component_ids
+        assert {"check_in", "check_out"}.isdisjoint(component_ids)
+
+    @pytest.mark.asyncio
+    async def test_generic_booking_word_alone_no_longer_triggers_hotel_fields(self):
+        # "booking"/"预订"/"预定" alone are shared across every domain and
+        # must not be sufficient on their own to identify a hotel form.
+        for title in ("Booking preferences", "预订", "预定详情"):
+            result = await tools.ask_preferences_form.invoke({"title": title, "fields": []})
+            component_ids = {c["id"] for c in result["genui"][-1]["updateComponents"]["components"]}
+            assert {"check_in", "check_out"}.isdisjoint(component_ids), title
+
+    @pytest.mark.asyncio
+    async def test_bus_travel_dates_get_separate_categories_in_correct_order(self):
+        result = await tools.ask_preferences_form.invoke({"title": "Bus ticket booking", "fields": []})
+        components = result["genui"][-1]["updateComponents"]["components"]
+        component_ids = [c["id"] for c in components]
+        assert component_ids.index("departure_date") < component_ids.index("return_date")
+        category_titles = [c["text"] for c in components if c.get("variant") == "h4"]
+        assert "Departure date" in category_titles
+        assert "Return date" in category_titles
+
+    @pytest.mark.asyncio
+    async def test_chinese_bus_title_gets_chinese_date_labels(self):
+        # Regression test: a form titled entirely in Chinese must not end up
+        # with English "Departure date"/"Return date" labels while every
+        # other field on the same form (which the model wrote itself) is in
+        # Chinese.
+        result = await tools.ask_preferences_form.invoke({"title": "往返巴士票预订", "fields": []})
+        components = result["genui"][-1]["updateComponents"]["components"]
+        category_titles = [c["text"] for c in components if c.get("variant") == "h4"]
+        assert "出发日期" in category_titles
+        assert "返程日期" in category_titles
+        assert "Departure date" not in category_titles
+        assert "Return date" not in category_titles
+
+    @pytest.mark.asyncio
+    async def test_chinese_flight_title_gets_chinese_date_labels(self):
+        result = await tools.ask_preferences_form.invoke({"title": "预订机票", "fields": []})
+        components = result["genui"][-1]["updateComponents"]["components"]
+        category_titles = [c["text"] for c in components if c.get("variant") == "h4"]
+        assert "出发日期" in category_titles
+        assert "返程日期" in category_titles
+        assert "Departure date" not in category_titles
+
+    @pytest.mark.asyncio
+    async def test_chinese_hotel_title_gets_chinese_date_labels(self):
+        result = await tools.ask_preferences_form.invoke({"title": "预订酒店", "fields": []})
+        components = result["genui"][-1]["updateComponents"]["components"]
+        category_titles = [c["text"] for c in components if c.get("variant") == "h4"]
+        assert "入住日期" in category_titles
+        assert "退房日期" in category_titles
+        assert "Check-in date" not in category_titles
+
+    @pytest.mark.asyncio
+    async def test_english_titles_keep_english_date_labels(self):
+        for title, expected in (
+            ("Bus ticket booking", ("Departure date", "Return date")),
+            ("Flight booking preferences", ("Departure date", "Return date")),
+            ("Hotel booking preferences", ("Check-in date", "Check-out date")),
+        ):
+            result = await tools.ask_preferences_form.invoke({"title": title, "fields": []})
+            components = result["genui"][-1]["updateComponents"]["components"]
+            category_titles = [c["text"] for c in components if c.get("variant") == "h4"]
+            for label in expected:
+                assert label in category_titles, (title, label)
+
 
 class TestAllTools:
     def test_all_tools_exposes_expected_names(self):
