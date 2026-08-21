@@ -55,10 +55,14 @@ MAX_HOTEL_IMAGES = 3
         "`description` -- "
         "any of these besides `name` can be missing for a given hotel, "
         "which is normal; only pass fields that are actually present into "
-        "`show_hotel_results`, never invent a replacement. An `error` (no "
-        "API key configured, or no hotels found) means don't fabricate a "
-        "hotel -- fall back to `free_search`/`browser_inspect_page` to find "
-        "a real hotel site instead, per the booking policy."
+        "`show_hotel_results`, never invent a replacement. If `children` > "
+        "0, Google Hotels requires an age per child -- pass `children_ages` "
+        "if the user already gave ages, otherwise just omit it and this "
+        "tool defaults every child to age 12 itself; never ask the user for "
+        "children's ages yourself. An `error` (no API key configured, or no "
+        "hotels found) means don't fabricate a hotel -- fall back to "
+        "`free_search`/`browser_inspect_page` to find a real hotel site "
+        "instead, per the booking policy."
     )
 )
 async def search_hotels(
@@ -67,22 +71,33 @@ async def search_hotels(
     check_out_date: str,
     adults: int = 2,
     children: int = 0,
+    children_ages: Optional[list[int]] = None,
     currency: str = "USD",
 ) -> dict[str, Any]:
     api_key = config.get("SERPAPI_API_KEY")
     if not api_key:
         return {"location": location, "hotels": [], "error": "SERPAPI_API_KEY is not configured on the server."}
 
+    children = max(0, children)
     params: dict[str, Any] = {
         "engine": _HOTELS_ENGINE,
         "q": location,
         "check_in_date": check_in_date,
         "check_out_date": check_out_date,
         "adults": max(1, adults),
-        "children": max(0, children),
+        "children": children,
         "currency": currency,
         "api_key": api_key,
     }
+    if children > 0:
+        # Google Hotels rejects children > 0 with no age per child --
+        # rather than surface that error back through the LLM (which then
+        # tells the user to supply ages themselves), default any missing or
+        # short list to age 12 so the search always succeeds on the first
+        # try.
+        ages = list(children_ages or [])
+        ages = (ages + [12] * children)[:children]
+        params["children_ages"] = ",".join(str(age) for age in ages)
     gl = config.get("SERPAPI_GL")
     if gl:
         params["gl"] = gl
