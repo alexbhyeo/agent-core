@@ -231,6 +231,83 @@ class TestAskPreferencesForm:
             for label in expected:
                 assert label in category_titles, (title, label)
 
+    @pytest.mark.asyncio
+    async def test_hotel_title_auto_inserts_localized_guest_count_fields(self):
+        # Regression test for the reported bug: a Chinese hotel request
+        # ("我想订酒店") must get "成人"/"儿童" category headings, not English
+        # "Adults"/"Children" -- these are now code-inserted the same
+        # deterministic way as check_in/check_out, not left to the model.
+        result = await tools.ask_preferences_form.invoke({"title": "预订酒店", "fields": []})
+        components = result["genui"][-1]["updateComponents"]["components"]
+        component_ids = {c["id"] for c in components}
+        assert {"adults", "children"} <= component_ids
+        category_titles = [c["text"] for c in components if c.get("variant") == "h4"]
+        assert "成人" in category_titles
+        assert "儿童" in category_titles
+        assert "Adults" not in category_titles
+        assert "Children" not in category_titles
+
+    @pytest.mark.asyncio
+    async def test_english_hotel_title_gets_english_guest_count_labels(self):
+        result = await tools.ask_preferences_form.invoke({"title": "Hotel booking preferences", "fields": []})
+        components = result["genui"][-1]["updateComponents"]["components"]
+        category_titles = [c["text"] for c in components if c.get("variant") == "h4"]
+        assert "Adults" in category_titles
+        assert "Children" in category_titles
+
+    @pytest.mark.asyncio
+    async def test_flight_title_auto_inserts_localized_guest_count_fields(self):
+        result = await tools.ask_preferences_form.invoke({"title": "预订机票", "fields": []})
+        components = result["genui"][-1]["updateComponents"]["components"]
+        component_ids = {c["id"] for c in components}
+        assert {"adults", "children"} <= component_ids
+        category_titles = [c["text"] for c in components if c.get("variant") == "h4"]
+        assert "成人" in category_titles
+        assert "儿童" in category_titles
+
+    @pytest.mark.asyncio
+    async def test_transport_form_does_not_insert_guest_count_fields(self):
+        # search_hotels/search_flights need structured adults/children ints;
+        # there's no dedicated transport search tool, so the general flow
+        # handles passenger count itself -- no auto-insert for these here.
+        result = await tools.ask_preferences_form.invoke({"title": "预订巴士票", "fields": []})
+        component_ids = {c["id"] for c in result["genui"][-1]["updateComponents"]["components"]}
+        assert {"adults", "children"}.isdisjoint(component_ids)
+
+    @pytest.mark.asyncio
+    async def test_model_authored_bilingual_category_on_auto_field_is_overridden(self):
+        # Regression test for the reported bug's second half: when the model
+        # pre-populates check_in/check_out itself (instead of leaving it to
+        # the auto-insert) with a bilingual/English category -- observed live
+        # as "Check-in date 入住日期" -- that must be forcibly overridden to
+        # the deterministic translation, not preserved via `existing.category
+        # or label` (which silently let the model's own text win).
+        result = await tools.ask_preferences_form.invoke(
+            {
+                "title": "预订酒店",
+                "fields": [
+                    {
+                        "id": "check_in",
+                        "type": "date",
+                        "label": "Check-in date 入住日期",
+                        "category": "Check-in date 入住日期",
+                    },
+                    {
+                        "id": "adults",
+                        "type": "choice",
+                        "label": "Adults 成人",
+                        "category": "Adults 成人",
+                        "options": [{"label": "2", "value": "2"}],
+                    },
+                ],
+            }
+        )
+        components = result["genui"][-1]["updateComponents"]["components"]
+        category_titles = [c["text"] for c in components if c.get("variant") == "h4"]
+        assert "入住日期" in category_titles
+        assert "成人" in category_titles
+        assert not any("Check-in" in t or "Adults" in t for t in category_titles)
+
 
 class TestAllTools:
     def test_all_tools_exposes_expected_names(self):

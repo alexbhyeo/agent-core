@@ -29,13 +29,60 @@ _CJK_RE = re.compile(r"[一-鿿]")
 def _is_chinese_title(title: str) -> bool:
     """True if `title` contains any Chinese (CJK) characters.
 
-    Used to pick Chinese vs. English labels for the date fields
+    Used to pick Chinese vs. English labels for the date/guest-count fields
     `ask_preferences_form` auto-inserts below, so a form titled entirely in
     Chinese (e.g. "预订巴士票", with no English gloss) doesn't end up with
-    English "Departure date"/"Return date" labels while every other field on
-    the same form -- the ones the model wrote itself -- is in Chinese.
+    English "Departure date"/"Return date"/"Adults"/"Children" labels while
+    every other field on the same form -- the ones the model wrote itself --
+    is in Chinese.
     """
     return bool(_CJK_RE.search(title))
+
+
+def _localized_guest_count_fields(
+    title: str, field_by_id: dict[str, "FormField"], default_adults: int
+) -> list["FormField"]:
+    """Build (or relocalize) the adults/children fields for a hotel or flight
+    form, mirroring the date-field auto-insert below.
+
+    Unlike a date, the *value* the model asks the user to pick has no fixed
+    real-world label to translate (there's no single correct string for "the
+    number 2"), so this can't be pre-populated with one deterministic default
+    the way check_in/check_out dates are -- it only fixes the field's
+    category/label (the part that leaked English in the reported bug), plus
+    seeding a sensible default count when the model didn't already ask for
+    one itself. `search_hotels`/`search_flights` both take structured
+    `adults`/`children` ints, so standardizing these two fields the same
+    deterministic way as dates avoids relying on the model to correctly
+    translate `FormField.category`'s "e.g. category='Adults'" example on its
+    own -- which it does unreliably (see the regression tests below).
+    """
+    adults_label, children_label = ("成人", "儿童") if _is_chinese_title(title) else ("Adults", "Children")
+    new_fields: list[FormField] = []
+    for field_id, label, default_value, options in (
+        ("adults", adults_label, str(default_adults), (("1", "1"), ("2", "2"), ("3", "3"), ("4+", "4+"))),
+        ("children", children_label, "0", (("0", "0"), ("1", "1"), ("2", "2"), ("3+", "3+"))),
+    ):
+        existing = field_by_id.get(field_id)
+        if existing is None:
+            new_fields.append(
+                FormField(
+                    id=field_id,
+                    type=FormFieldType.choice,
+                    label=label,
+                    category=label,
+                    options=[FormFieldOption(label=opt_label, value=opt_value) for opt_label, opt_value in options],
+                    default_option_value=default_value,
+                )
+            )
+        else:
+            # Always override category/label with the deterministic
+            # translation -- never `existing.category or label`, which lets
+            # whatever (possibly English, possibly bilingual) text the model
+            # already wrote silently pass through untranslated.
+            existing.category = label
+            existing.label = label
+    return new_fields
 
 from .. import genui
 from .finance_tools import search_finance, show_finance_results
@@ -377,10 +424,14 @@ def ask_preferences_form(title: str, fields: list[FormField], submit_label: str 
                 )
             else:
                 existing.type = FormFieldType.date
-                existing.category = existing.category or label
+                # Always the deterministic translation -- never `existing.category
+                # or label`, which let whatever (possibly English, possibly
+                # bilingual) text the model already wrote pass through untranslated.
+                existing.category = label
                 existing.label = label
                 existing.default_date = existing.default_date or default_date
                 existing.min_date = existing.min_date or default_outbound
+        new_fields += _localized_guest_count_fields(title, field_by_id, default_adults=1)
         parsed_fields[0:0] = new_fields
     elif is_hotel_form:
         today = datetime.now(timezone.utc).date()
@@ -413,10 +464,11 @@ def ask_preferences_form(title: str, fields: list[FormField], submit_label: str 
                 )
             else:
                 existing.type = FormFieldType.date
-                existing.category = existing.category or label
+                existing.category = label
                 existing.label = label
                 existing.default_date = existing.default_date or default_date
                 existing.min_date = existing.min_date or default_check_in
+        new_fields += _localized_guest_count_fields(title, field_by_id, default_adults=2)
         parsed_fields[0:0] = new_fields
     elif is_transport_form:
         today = datetime.now(timezone.utc).date()
@@ -449,7 +501,7 @@ def ask_preferences_form(title: str, fields: list[FormField], submit_label: str 
                 )
             else:
                 existing.type = FormFieldType.date
-                existing.category = existing.category or label
+                existing.category = label
                 existing.label = label
                 existing.default_date = existing.default_date or default_date
                 existing.min_date = existing.min_date or default_departure
