@@ -300,7 +300,7 @@ class TestShowFlightResults:
             {"title": "Tokyo flights", "flights": [{"airline": "Airline A"}], "more_count": 5}
         )
         components = {c["id"]: c for c in result["genui"][1]["updateComponents"]["components"]}
-        assert components["moreButtonText"]["text"] == "Show more"
+        assert components["moreButtonText"]["text"] == "Show more..."
         assert components["moreButton"]["action"]["event"]["name"] == "show_more_flights"
         assert "...and 5 more" in result["text"]
 

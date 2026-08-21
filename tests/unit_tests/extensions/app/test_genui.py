@@ -255,9 +255,16 @@ class TestBasicCatalogHelpers:
     def test_hotel_gallery_card_adds_show_more_button_when_more_count_positive(self):
         messages = genui.hotel_gallery_card("surface-1", "Bali hotels", [{"name": "Hotel A"}], more_count=5)
         components = {c["id"]: c for c in messages[1]["updateComponents"]["components"]}
-        assert components["moreButtonText"]["text"] == "Show more"
+        assert components["moreButtonText"]["text"] == "Show more..."
         assert components["moreButton"]["action"]["event"]["name"] == "show_more_hotels"
         assert "moreButton" in messages[1]["updateComponents"]["components"][0]["children"]
+        # A link, not a filled button -- "borderless" variant, transparent
+        # background, and the label styled bold + underlined instead of the
+        # white-on-brand-blue pill every other button in this app uses.
+        assert components["moreButton"]["variant"] == "borderless"
+        assert components["moreButton"]["styles"]["background-color"] == "transparent"
+        assert components["moreButtonText"]["styles"]["font-weight"] == "bold"
+        assert components["moreButtonText"]["styles"]["text-decoration"] == "underline"
 
     def test_hotel_gallery_card_omits_show_more_button_when_more_count_zero(self):
         messages = genui.hotel_gallery_card("surface-1", "Bali hotels", [{"name": "Hotel A"}])
@@ -319,9 +326,12 @@ class TestBasicCatalogHelpers:
     def test_flight_gallery_card_adds_show_more_button_when_more_count_positive(self):
         messages = genui.flight_gallery_card("surface-1", "Tokyo flights", [{"airline": "Airline A"}], more_count=5)
         components = {c["id"]: c for c in messages[1]["updateComponents"]["components"]}
-        assert components["moreButtonText"]["text"] == "Show more"
+        assert components["moreButtonText"]["text"] == "Show more..."
         assert components["moreButton"]["action"]["event"]["name"] == "show_more_flights"
         assert "moreButton" in messages[1]["updateComponents"]["components"][0]["children"]
+        assert components["moreButton"]["variant"] == "borderless"
+        assert components["moreButtonText"]["styles"]["font-weight"] == "bold"
+        assert components["moreButtonText"]["styles"]["text-decoration"] == "underline"
 
     def test_flight_gallery_card_omits_show_more_button_when_more_count_zero(self):
         messages = genui.flight_gallery_card("surface-1", "Tokyo flights", [{"airline": "Airline A"}])
