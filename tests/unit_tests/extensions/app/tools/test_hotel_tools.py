@@ -192,6 +192,79 @@ class TestSearchHotels:
         assert "currency=SGD" in url
         assert "key=test-key" in url
 
+    @pytest.mark.asyncio
+    async def test_children_without_ages_default_to_age_12(self):
+        # Regression test: Google Hotels rejects children > 0 with no age
+        # per child, and that error used to surface back through the LLM as
+        # a prompt asking the user to supply ages -- this tool must default
+        # every child to 12 itself instead, so search_hotels always
+        # succeeds on the first call.
+        body = json.dumps({"properties": [_SAMPLE_PROPERTY]}).encode("utf-8")
+        mock_request = AsyncMock(return_value=(200, {"Content-Type": "application/json"}, body, "url", False))
+        with (
+            patch.object(hotel_tools.config, "get", side_effect=_config_get({"SERPAPI_API_KEY": "test-key"})),
+            patch.object(hotel_tools._http, "request", mock_request),
+        ):
+            await hotel_tools.search_hotels.invoke(
+                {"location": "Bali", "check_in_date": "2026-09-10", "check_out_date": "2026-09-13", "children": 2}
+            )
+        _session, _method, url = mock_request.await_args.args
+        assert "children_ages=12%2C12" in url
+
+    @pytest.mark.asyncio
+    async def test_children_ages_shorter_than_children_count_padded_with_12(self):
+        body = json.dumps({"properties": [_SAMPLE_PROPERTY]}).encode("utf-8")
+        mock_request = AsyncMock(return_value=(200, {"Content-Type": "application/json"}, body, "url", False))
+        with (
+            patch.object(hotel_tools.config, "get", side_effect=_config_get({"SERPAPI_API_KEY": "test-key"})),
+            patch.object(hotel_tools._http, "request", mock_request),
+        ):
+            await hotel_tools.search_hotels.invoke(
+                {
+                    "location": "Bali",
+                    "check_in_date": "2026-09-10",
+                    "check_out_date": "2026-09-13",
+                    "children": 3,
+                    "children_ages": [8],
+                }
+            )
+        _session, _method, url = mock_request.await_args.args
+        assert "children_ages=8%2C12%2C12" in url
+
+    @pytest.mark.asyncio
+    async def test_provided_children_ages_are_respected(self):
+        body = json.dumps({"properties": [_SAMPLE_PROPERTY]}).encode("utf-8")
+        mock_request = AsyncMock(return_value=(200, {"Content-Type": "application/json"}, body, "url", False))
+        with (
+            patch.object(hotel_tools.config, "get", side_effect=_config_get({"SERPAPI_API_KEY": "test-key"})),
+            patch.object(hotel_tools._http, "request", mock_request),
+        ):
+            await hotel_tools.search_hotels.invoke(
+                {
+                    "location": "Bali",
+                    "check_in_date": "2026-09-10",
+                    "check_out_date": "2026-09-13",
+                    "children": 2,
+                    "children_ages": [5, 9],
+                }
+            )
+        _session, _method, url = mock_request.await_args.args
+        assert "children_ages=5%2C9" in url
+
+    @pytest.mark.asyncio
+    async def test_no_children_ages_param_when_children_is_zero(self):
+        body = json.dumps({"properties": [_SAMPLE_PROPERTY]}).encode("utf-8")
+        mock_request = AsyncMock(return_value=(200, {"Content-Type": "application/json"}, body, "url", False))
+        with (
+            patch.object(hotel_tools.config, "get", side_effect=_config_get({"SERPAPI_API_KEY": "test-key"})),
+            patch.object(hotel_tools._http, "request", mock_request),
+        ):
+            await hotel_tools.search_hotels.invoke(
+                {"location": "Bali", "check_in_date": "2026-09-10", "check_out_date": "2026-09-13"}
+            )
+        _session, _method, url = mock_request.await_args.args
+        assert "children_ages" not in url
+
 
 class TestShowHotelResults:
     @pytest.mark.asyncio
