@@ -91,17 +91,13 @@ class TestAskPreferencesForm:
 
     @pytest.mark.asyncio
     async def test_flight_title_does_not_also_insert_hotel_stay_date_fields(self):
-        result = await tools.ask_preferences_form.invoke(
-            {"title": "Flight booking preferences", "fields": []}
-        )
+        result = await tools.ask_preferences_form.invoke({"title": "Flight booking preferences", "fields": []})
         component_ids = {c["id"] for c in result["genui"][-1]["updateComponents"]["components"]}
         assert {"check_in", "check_out"}.isdisjoint(component_ids)
 
     @pytest.mark.asyncio
     async def test_hotel_stay_dates_get_separate_categories_in_correct_order(self):
-        result = await tools.ask_preferences_form.invoke(
-            {"title": "Hotel booking preferences", "fields": []}
-        )
+        result = await tools.ask_preferences_form.invoke({"title": "Hotel booking preferences", "fields": []})
         components = result["genui"][-1]["updateComponents"]["components"]
         component_ids = [c["id"] for c in components]
         # Regression test: the auto-insert loop used to insert(0, ...) each
@@ -118,9 +114,7 @@ class TestAskPreferencesForm:
 
     @pytest.mark.asyncio
     async def test_flight_travel_dates_get_separate_categories_in_correct_order(self):
-        result = await tools.ask_preferences_form.invoke(
-            {"title": "Flight booking preferences", "fields": []}
-        )
+        result = await tools.ask_preferences_form.invoke({"title": "Flight booking preferences", "fields": []})
         components = result["genui"][-1]["updateComponents"]["components"]
         component_ids = [c["id"] for c in components]
         assert component_ids.index("outbound_date") < component_ids.index("return_date")
@@ -147,9 +141,7 @@ class TestAskPreferencesForm:
 
     @pytest.mark.asyncio
     async def test_bus_title_auto_inserts_departure_return_fields(self):
-        result = await tools.ask_preferences_form.invoke(
-            {"title": "Bus ticket booking", "fields": []}
-        )
+        result = await tools.ask_preferences_form.invoke({"title": "Bus ticket booking", "fields": []})
         component_ids = {c["id"] for c in result["genui"][-1]["updateComponents"]["components"]}
         assert {"departure_date", "return_date"} <= component_ids
         assert {"check_in", "check_out"}.isdisjoint(component_ids)

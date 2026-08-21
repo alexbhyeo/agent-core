@@ -23,6 +23,14 @@ from pydantic import BaseModel, Field
 
 from openjiuwen.core.foundation.tool import tool
 
+from .. import genui
+from .finance_tools import search_finance, show_finance_results
+from .flight_tools import search_flights, show_flight_results
+from .hotel_tools import search_hotels, show_hotel_results
+from .image_tools import fetch_page_image, search_images
+from .map_tools import geocode_place, show_map
+from .video_tools import fetch_video_source, search_youtube_videos, show_video_clips
+
 _CJK_RE = re.compile(r"[一-鿿]")
 
 
@@ -83,14 +91,6 @@ def _localized_guest_count_fields(
             existing.category = label
             existing.label = label
     return new_fields
-
-from .. import genui
-from .finance_tools import search_finance, show_finance_results
-from .flight_tools import search_flights, show_flight_results
-from .hotel_tools import search_hotels, show_hotel_results
-from .image_tools import search_images, fetch_page_image
-from .map_tools import geocode_place, show_map
-from .video_tools import fetch_video_source, search_youtube_videos, show_video_clips
 
 
 @tool(
@@ -359,8 +359,14 @@ def ask_preferences_form(title: str, fields: list[FormField], submit_label: str 
     is_flight_form = any(
         term in title.lower()
         for term in (
-            "flight", "flights", "fly", "airfare", "plane",
-            "机票", "航班", "飞机",  # Chinese: air ticket / flight / airplane
+            "flight",
+            "flights",
+            "fly",
+            "airfare",
+            "plane",
+            "机票",
+            "航班",
+            "飞机",  # Chinese: air ticket / flight / airplane
         )
     )
     # "booking"/"预订"/"预定" alone used to be in this list, but they're
@@ -372,8 +378,12 @@ def ask_preferences_form(title: str, fields: list[FormField], submit_label: str 
     is_hotel_form = not is_flight_form and any(
         term in title.lower()
         for term in (
-            "hotel", "accommodation", "stay",
-            "酒店", "住宿", "订房",  # Chinese: hotel / lodging / book a room
+            "hotel",
+            "accommodation",
+            "stay",
+            "酒店",
+            "住宿",
+            "订房",  # Chinese: hotel / lodging / book a room
         )
     )
     # Round-trip transport (bus, coach, train, ferry) -- checked after
@@ -383,11 +393,25 @@ def ask_preferences_form(title: str, fields: list[FormField], submit_label: str 
     # departure/return fields from scratch, which is what "General flow"
     # asks it to do for stay dates too -- so a bus form ended up with both
     # its own correct fields AND the unrelated hotel ones.
-    is_transport_form = not is_flight_form and not is_hotel_form and any(
-        term in title.lower()
-        for term in (
-            "bus", "coach", "train", "railway", "ferry",
-            "巴士", "大巴", "客车", "火车", "高铁", "动车", "渡轮",
+    is_transport_form = (
+        not is_flight_form
+        and not is_hotel_form
+        and any(
+            term in title.lower()
+            for term in (
+                "bus",
+                "coach",
+                "train",
+                "railway",
+                "ferry",
+                "巴士",
+                "大巴",
+                "客车",
+                "火车",
+                "高铁",
+                "动车",
+                "渡轮",
+            )
         )
     )
     if is_flight_form:
