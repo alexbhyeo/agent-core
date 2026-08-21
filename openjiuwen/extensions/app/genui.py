@@ -1111,10 +1111,11 @@ def hotel_gallery_card(
     field besides ``name`` is optional -- only what's actually present is
     rendered.
 
-    ``more_count`` > 0 adds a "Show more" button below the list
-    (a real in-app ``button()``, not ``open_url_button`` -- pressing it
-    sends a ``show_more_hotels`` UI action back to the agent, see
-    ``hotel_tools.show_hotel_results`` and the booking policy in
+    ``more_count`` > 0 adds a "Show more..." link (bold, underlined text,
+    no button chrome) below the list -- still a real in-app ``button()``
+    under the hood (a "borderless" variant), not ``open_url_button``, so
+    tapping it sends a ``show_more_hotels`` UI action back to the agent
+    (see ``hotel_tools.show_hotel_results`` and the booking policy in
     ``agent.py``) -- lets the caller render only the first batch of results
     up front instead of every image in a long list all at once.
     """
@@ -1184,12 +1185,35 @@ def hotel_gallery_card(
     more_components: list[dict[str, Any]] = []
     if more_count > 0:
         root_children.append("moreButton")
-        more_components.append(button("moreButton", "moreButtonText", "show_more_hotels", styles={"width": "100%"}))
+        # A link, not a filled button -- "borderless" strips the pill
+        # chrome _DEFAULT_BUTTON_STYLES normally adds, and the background/
+        # padding/border-radius overrides below clear what's left of it, so
+        # only the bold, underlined text itself reads as tappable.
+        more_components.append(
+            button(
+                "moreButton",
+                "moreButtonText",
+                "show_more_hotels",
+                variant="borderless",
+                styles={
+                    "width": "100%",
+                    "background-color": "transparent",
+                    "padding": "8px 0px",
+                    "border-radius": "0px",
+                },
+            )
+        )
         more_components.append(
             text(
                 "moreButtonText",
-                "Show more",
-                styles={"color": "#FFFFFF", "width": "100%", "text-align": "center"},
+                "Show more...",
+                styles={
+                    "color": "#2273F7",
+                    "font-weight": "bold",
+                    "text-decoration": "underline",
+                    "width": "100%",
+                    "text-align": "center",
+                },
             )
         )
 
@@ -1337,11 +1361,11 @@ def flight_gallery_card(
     ``arrival_time``, ``link``. Any field besides ``airline`` is optional --
     only what's actually present is rendered.
 
-    ``more_count`` > 0 adds a "Show more" button below the list (a real
-    in-app ``button()`` -- pressing it sends a ``show_more_flights`` UI
-    action back to the agent, see ``flight_tools.show_flight_results`` and
-    the booking policy in ``agent.py``) -- same pagination pattern as
-    ``hotel_gallery_card``.
+    ``more_count`` > 0 adds a "Show more..." link (bold, underlined text,
+    no button chrome) below the list -- pressing it sends a
+    ``show_more_flights`` UI action back to the agent, see
+    ``flight_tools.show_flight_results`` and the booking policy in
+    ``agent.py`` -- same pagination pattern as ``hotel_gallery_card``.
     """
     card_ids = [f"flight{i}Card" for i in range(len(flights))]
     item_components: list[dict[str, Any]] = []
@@ -1422,12 +1446,33 @@ def flight_gallery_card(
     more_components: list[dict[str, Any]] = []
     if more_count > 0:
         root_children.append("moreButton")
-        more_components.append(button("moreButton", "moreButtonText", "show_more_flights", styles={"width": "100%"}))
+        # A link, not a filled button -- see hotel_gallery_card's identical
+        # "Show more" block above for why.
+        more_components.append(
+            button(
+                "moreButton",
+                "moreButtonText",
+                "show_more_flights",
+                variant="borderless",
+                styles={
+                    "width": "100%",
+                    "background-color": "transparent",
+                    "padding": "8px 0px",
+                    "border-radius": "0px",
+                },
+            )
+        )
         more_components.append(
             text(
                 "moreButtonText",
-                "Show more",
-                styles={"color": "#FFFFFF", "width": "100%", "text-align": "center"},
+                "Show more...",
+                styles={
+                    "color": "#2273F7",
+                    "font-weight": "bold",
+                    "text-decoration": "underline",
+                    "width": "100%",
+                    "text-align": "center",
+                },
             )
         )
 

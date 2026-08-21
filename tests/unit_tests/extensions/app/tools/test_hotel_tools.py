@@ -252,7 +252,7 @@ class TestShowHotelResults:
             {"title": "Bali hotels", "hotels": [{"name": "Hotel A"}], "more_count": 5}
         )
         components = {c["id"]: c for c in result["genui"][1]["updateComponents"]["components"]}
-        assert components["moreButtonText"]["text"] == "Show more"
+        assert components["moreButtonText"]["text"] == "Show more..."
         assert "...and 5 more" in result["text"]
 
     @pytest.mark.asyncio
