@@ -440,14 +440,20 @@ async def build_agent() -> ReActAgent:
         api_base=app_config.get("API_BASE"),
         verify_ssl=app_config.get("LLM_SSL_VERIFY"),
     )
-    # `seed` isn't a declared ModelRequestConfig field, but the model allows extras
-    # (model_config = {"extra": "allow"}) and several model clients (e.g. deepseek)
-    # read it back off the instance at call time.
-    model_request_config = ModelRequestConfig(
-        model=app_config.get("MODEL_NAME"),
-        temperature=app_config.get("LLM_TEMPERATURE"),
-        seed=app_config.get("LLM_SEED"),  # type: ignore[call-arg]
-    )
+    # `seed`/`reasoning_effort` aren't declared ModelRequestConfig fields, but the
+    # model allows extras (model_config = {"extra": "allow"}) and get forwarded
+    # straight through to the API call (see base_model_client._build_request_params).
+    # `reasoning_effort` is only included when actually configured -- not every
+    # provider/model accepts it (e.g. DeepSeek's chat models reject it outright).
+    model_request_kwargs: dict[str, object] = {
+        "model": app_config.get("MODEL_NAME"),
+        "temperature": app_config.get("LLM_TEMPERATURE"),
+        "seed": app_config.get("LLM_SEED"),
+    }
+    reasoning_effort = app_config.get("LLM_REASONING_EFFORT")
+    if reasoning_effort:
+        model_request_kwargs["reasoning_effort"] = reasoning_effort
+    model_request_config = ModelRequestConfig(**model_request_kwargs)  # type: ignore[call-arg]
 
     card = AgentCard(
         id=AGENT_ID,

@@ -28,6 +28,11 @@ _DEFAULTS: dict[str, Any] = {
     "MODEL_PROVIDER": os.getenv("MODEL_PROVIDER", "DeepSeek"),
     "LLM_TEMPERATURE": float(os.getenv("LLM_TEMPERATURE", "1.0")),
     "LLM_SEED": int(os.getenv("LLM_SEED", "42")),
+    # Left unset (None) by default and only forwarded to ModelRequestConfig
+    # when actually configured -- not every provider/model accepts this
+    # (DeepSeek's chat models don't expose it), so it must never be sent
+    # unless the deployment explicitly opted in.
+    "LLM_REASONING_EFFORT": os.getenv("LLM_REASONING_EFFORT") or None,
     "LLM_SSL_VERIFY": os.getenv("LLM_SSL_VERIFY", "false").lower() == "true",
     "HOST": os.getenv("A2UI_AGENT_HOST", "0.0.0.0"),
     "PORT": int(os.getenv("A2UI_AGENT_PORT", "8090")),
