@@ -27,6 +27,18 @@ class TestConfig:
         assert isinstance(config.get("LLM_TEMPERATURE"), float)
         assert isinstance(config.get("LLM_SEED"), int)
 
+    def test_llm_reasoning_effort_defaults_to_none(self):
+        # Not every provider/model accepts this (e.g. DeepSeek's chat models
+        # reject it outright) -- must default to unset, never a guessed value.
+        assert config.get("LLM_REASONING_EFFORT") is None
+
+    def test_llm_reasoning_effort_round_trips_when_set(self):
+        config.set_value("LLM_REASONING_EFFORT", "low")
+        try:
+            assert config.get("LLM_REASONING_EFFORT") == "low"
+        finally:
+            config.set_value("LLM_REASONING_EFFORT", None)
+
     def test_free_search_ddg_enabled_by_default(self):
         # config.py sets this env var (via os.environ.setdefault) on import so
         # WebFreeSearchTool works out of the box; importing the module already

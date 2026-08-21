@@ -70,3 +70,23 @@ class TestBuildAgent:
         model_request_config = agent.config.model_config_obj
         assert model_request_config.temperature == 0.42
         assert model_request_config.seed == 7
+
+    @pytest.mark.asyncio
+    async def test_omits_reasoning_effort_when_not_configured(self):
+        # Not every provider/model accepts this (e.g. DeepSeek's chat models
+        # reject it outright) -- unset must mean the field is left off
+        # ModelRequestConfig entirely, not sent as some guessed default.
+        config.set_value("LLM_REASONING_EFFORT", None)
+        agent = await build_agent()
+        model_request_config = agent.config.model_config_obj
+        assert "reasoning_effort" not in model_request_config.model_dump(exclude_unset=True)
+
+    @pytest.mark.asyncio
+    async def test_applies_configured_reasoning_effort(self):
+        config.set_value("LLM_REASONING_EFFORT", "low")
+        try:
+            agent = await build_agent()
+        finally:
+            config.set_value("LLM_REASONING_EFFORT", None)
+        model_request_config = agent.config.model_config_obj
+        assert model_request_config.reasoning_effort == "low"
