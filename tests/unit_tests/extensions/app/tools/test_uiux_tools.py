@@ -96,7 +96,7 @@ class TestAskPreferencesForm:
         assert {"check_in", "check_out"}.isdisjoint(component_ids)
 
     @pytest.mark.asyncio
-    async def test_hotel_stay_dates_get_separate_categories_in_correct_order(self):
+    async def test_hotel_stay_dates_render_side_by_side_in_correct_order(self):
         result = await tools.ask_preferences_form.invoke({"title": "Hotel booking preferences", "fields": []})
         components = result["genui"][-1]["updateComponents"]["components"]
         component_ids = [c["id"] for c in components]
@@ -105,12 +105,15 @@ class TestAskPreferencesForm:
         # pushes the first one down a slot) -- check-in must render before
         # check-out, not after.
         assert component_ids.index("check_in") < component_ids.index("check_out")
-        # Each date gets its own category heading (not a shared "Stay
-        # dates") -- the category IS the field's real visible label on this
-        # client, so the two category-title Text components must differ.
-        category_titles = [c["text"] for c in components if c.get("variant") == "h4"]
-        assert "Check-in date" in category_titles
-        assert "Check-out date" in category_titles
+        # A compact two-column row (one shared card), not two separate
+        # full-width cards -- each date's own caption (not a card-level h4
+        # heading) is what's visible now.
+        by_id = {c["id"]: c for c in components}
+        assert by_id["datesRow"]["component"] == "Row"
+        assert by_id["datesRow"]["children"] == ["check_inCol", "check_outCol"]
+        caption_texts = [c["text"] for c in components if c.get("variant") == "caption"]
+        assert "Check-in date" in caption_texts
+        assert "Check-out date" in caption_texts
 
     @pytest.mark.asyncio
     async def test_flight_travel_dates_get_separate_categories_in_correct_order(self):
@@ -205,47 +208,68 @@ class TestAskPreferencesForm:
     async def test_chinese_hotel_title_gets_chinese_date_labels(self):
         result = await tools.ask_preferences_form.invoke({"title": "预订酒店", "fields": []})
         components = result["genui"][-1]["updateComponents"]["components"]
-        category_titles = [c["text"] for c in components if c.get("variant") == "h4"]
-        assert "入住日期" in category_titles
-        assert "退房日期" in category_titles
-        assert "Check-in date" not in category_titles
+        caption_texts = [c["text"] for c in components if c.get("variant") == "caption"]
+        assert "入住日期" in caption_texts
+        assert "退房日期" in caption_texts
+        assert "Check-in date" not in caption_texts
 
     @pytest.mark.asyncio
     async def test_english_titles_keep_english_date_labels(self):
         for title, expected in (
             ("Bus ticket booking", ("Departure date", "Return date")),
             ("Flight booking preferences", ("Departure date", "Return date")),
-            ("Hotel booking preferences", ("Check-in date", "Check-out date")),
         ):
             result = await tools.ask_preferences_form.invoke({"title": title, "fields": []})
             components = result["genui"][-1]["updateComponents"]["components"]
             category_titles = [c["text"] for c in components if c.get("variant") == "h4"]
             for label in expected:
                 assert label in category_titles, (title, label)
+        # Hotel dates render as compact-row captions, not h4 category
+        # headings -- see test_hotel_stay_dates_render_side_by_side_in_correct_order.
+        result = await tools.ask_preferences_form.invoke({"title": "Hotel booking preferences", "fields": []})
+        components = result["genui"][-1]["updateComponents"]["components"]
+        caption_texts = [c["text"] for c in components if c.get("variant") == "caption"]
+        assert "Check-in date" in caption_texts
+        assert "Check-out date" in caption_texts
 
     @pytest.mark.asyncio
     async def test_hotel_title_auto_inserts_localized_guest_count_fields(self):
         # Regression test for the reported bug: a Chinese hotel request
-        # ("我想订酒店") must get "成人"/"儿童" category headings, not English
+        # ("我想订酒店") must get "成人"/"儿童" captions, not English
         # "Adults"/"Children" -- these are now code-inserted the same
         # deterministic way as check_in/check_out, not left to the model.
         result = await tools.ask_preferences_form.invoke({"title": "预订酒店", "fields": []})
         components = result["genui"][-1]["updateComponents"]["components"]
         component_ids = {c["id"] for c in components}
-        assert {"adults", "children"} <= component_ids
-        category_titles = [c["text"] for c in components if c.get("variant") == "h4"]
-        assert "成人" in category_titles
-        assert "儿童" in category_titles
-        assert "Adults" not in category_titles
-        assert "Children" not in category_titles
+        assert {"adults", "children", "rooms"} <= component_ids
+        caption_texts = [c["text"] for c in components if c.get("variant") == "caption"]
+        assert "成人" in caption_texts
+        assert "儿童" in caption_texts
+        assert "房间数" in caption_texts
+        assert "Adults" not in caption_texts
+        assert "Children" not in caption_texts
 
     @pytest.mark.asyncio
     async def test_english_hotel_title_gets_english_guest_count_labels(self):
         result = await tools.ask_preferences_form.invoke({"title": "Hotel booking preferences", "fields": []})
         components = result["genui"][-1]["updateComponents"]["components"]
-        category_titles = [c["text"] for c in components if c.get("variant") == "h4"]
-        assert "Adults" in category_titles
-        assert "Children" in category_titles
+        caption_texts = [c["text"] for c in components if c.get("variant") == "caption"]
+        assert "Adults" in caption_texts
+        assert "Children" in caption_texts
+        assert "Rooms" in caption_texts
+
+    @pytest.mark.asyncio
+    async def test_hotel_guest_count_fields_render_side_by_side_as_number_inputs(self):
+        result = await tools.ask_preferences_form.invoke({"title": "Hotel booking preferences", "fields": []})
+        components = result["genui"][-1]["updateComponents"]["components"]
+        by_id = {c["id"]: c for c in components}
+        assert by_id["guestsRow"]["component"] == "Row"
+        assert by_id["guestsRow"]["children"] == ["adultsCol", "childrenCol", "roomsCol"]
+        assert by_id["adults"]["component"] == "TextField"
+        assert by_id["adults"]["variant"] == "number"
+        assert by_id["adults"]["value"] == "2"
+        assert by_id["children"]["value"] == "0"
+        assert by_id["rooms"]["value"] == "1"
 
     @pytest.mark.asyncio
     async def test_flight_title_auto_inserts_localized_guest_count_fields(self):
@@ -267,13 +291,15 @@ class TestAskPreferencesForm:
         assert {"adults", "children"}.isdisjoint(component_ids)
 
     @pytest.mark.asyncio
-    async def test_model_authored_bilingual_category_on_auto_field_is_overridden(self):
+    async def test_model_authored_hotel_fields_are_discarded_and_rebuilt(self):
         # Regression test for the reported bug's second half: when the model
-        # pre-populates check_in/check_out itself (instead of leaving it to
-        # the auto-insert) with a bilingual/English category -- observed live
-        # as "Check-in date 入住日期" -- that must be forcibly overridden to
-        # the deterministic translation, not preserved via `existing.category
-        # or label` (which silently let the model's own text win).
+        # pre-populates check_in/adults itself (instead of leaving it to the
+        # auto-insert) with a bilingual/English label -- observed live as
+        # "Check-in date 入住日期" -- that must never reach the screen. The
+        # compact-row builder always discards any model-supplied
+        # check_in/check_out/adults/children/rooms field and rebuilds all
+        # five from scratch, rather than trying to merge/override whatever
+        # the model wrote.
         result = await tools.ask_preferences_form.invoke(
             {
                 "title": "预订酒店",
@@ -295,10 +321,13 @@ class TestAskPreferencesForm:
             }
         )
         components = result["genui"][-1]["updateComponents"]["components"]
-        category_titles = [c["text"] for c in components if c.get("variant") == "h4"]
-        assert "入住日期" in category_titles
-        assert "成人" in category_titles
-        assert not any("Check-in" in t or "Adults" in t for t in category_titles)
+        by_id = {c["id"]: c for c in components}
+        assert by_id["check_in"]["component"] == "DateTimeInput"
+        assert by_id["adults"]["component"] == "TextField"
+        caption_texts = [c["text"] for c in components if c.get("variant") == "caption"]
+        assert "入住日期" in caption_texts
+        assert "成人" in caption_texts
+        assert not any("Check-in" in t or "Adults" in t for t in caption_texts)
 
 
 class TestAllTools:

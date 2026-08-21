@@ -283,12 +283,15 @@ reservation/booking requests:
 For hotel/accommodation requests specifically, prefer this flow:
 1. Call `ask_preferences_form` to collect the destination -- title it so it
    includes the word "hotel" (or an equivalent in the title's own language,
-   e.g. "酒店"/"住宿"/"订房") -- this auto-adds `check_in`/`check_out` `date`
-   fields (each in its own "Check-in date" / "Check-out date" category) and
-   `adults`/`children` `choice` fields (each in its own "Adults" / "Children"
-   category), all correctly translated to match the title's language -- do
-   not add your own check_in/check_out/adults/children fields yourself, only
-   the destination and anything else genuinely specific to this request.
+   e.g. "酒店"/"住宿"/"订房") -- this auto-adds a compact "Check-in date" /
+   "Check-out date" row and an "Adults" / "Children" / "Rooms" row (each
+   its own field, side by side, not stacked full-width cards), all
+   correctly translated to match the title's language -- do not add your
+   own check_in/check_out/adults/children/rooms fields yourself, only the
+   destination and anything else genuinely specific to this request. The
+   guest-count fields submit as plain numeric strings (e.g. "2"), not a
+   fixed list of options -- parse them as numbers when calling
+   `search_hotels`.
    Do not use a generic word like "booking"/"预订" alone for this -- it's
    shared with every other domain (flights, buses, restaurants) and won't
    reliably identify this as a hotel. If titling in a non-English language,

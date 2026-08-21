@@ -1001,6 +1001,7 @@ def form(
     field_paths: dict[str, str],
     field_defaults: Optional[dict[str, Any]] = None,
     field_groups: Optional[list[tuple[str, list[dict[str, Any]]]]] = None,
+    extra_components: Optional[list[dict[str, Any]]] = None,
 ) -> list[dict[str, Any]]:
     """Build a create+update(+updateDataModel) sequence for a titled form.
 
@@ -1016,6 +1017,14 @@ def form(
     as empty. ``field_defaults`` (field id -> default value) seeds the data
     model directly via ``updateDataModel`` so defaults are real, submittable
     values even if the user never touches that field.
+
+    Each ``group_fields`` entry's own ``id`` ends up as a direct child of
+    that group's Column -- so to nest a field two levels deep (e.g. inside
+    a ``row()`` for a compact side-by-side layout), put only the *wrapping*
+    Row/Column in ``group_fields`` and pass the actual field widgets (and
+    anything else the wrapper's own ``children`` references) via
+    ``extra_components`` instead, so they still land in the tree without
+    also being listed as direct children of the group's own Column.
     """
     groups = field_groups or [("Preferences", fields)]
     group_card_ids = [f"group{index}Card" for index in range(len(groups))]
@@ -1023,16 +1032,25 @@ def form(
     for index, (category, group_fields) in enumerate(groups):
         content_id = f"group{index}Content"
         category_id = f"group{index}Title"
+        content_children = [field["id"] for field in group_fields]
+        # An empty category skips the heading entirely -- e.g. a compact
+        # row of fields (see the `extra_components` doc above) that already
+        # each show their own caption inline, where a card-level "h4" above
+        # them would be a redundant, unwanted second label.
+        heading = []
+        if category:
+            content_children.insert(0, category_id)
+            heading = [text(category_id, category, variant="h4")]
         group_components.extend(
             [
                 card(group_card_ids[index], content_id),
                 column(
                     content_id,
-                    [category_id, *[field["id"] for field in group_fields]],
+                    content_children,
                     align="stretch",
                     styles={"gap": "10px"},
                 ),
-                text(category_id, category, variant="h4"),
+                *heading,
                 *group_fields,
             ]
         )
@@ -1073,6 +1091,7 @@ def form(
             submit_label,
             styles={"color": "#FFFFFF", "width": "100%", "text-align": "center"},
         ),
+        *(extra_components or []),
     ]
     # updateDataModel must land BEFORE updateComponents. The submit button's
     # action.context binds one data-model path per field; the client

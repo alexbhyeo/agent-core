@@ -93,6 +93,85 @@ def _localized_guest_count_fields(
     return new_fields
 
 
+def _hotel_compact_search_rows(
+    title: str, parsed_fields: list["FormField"]
+) -> tuple[list[tuple[str, list[dict[str, Any]]]], list[dict[str, Any]], dict[str, str], dict[str, Any]]:
+    """Build the "Check-in/Check-out" and "Adults/Children/Rooms" rows for a
+    hotel form as two compact side-by-side cards (matching a typical hotel
+    search widget) instead of each field getting its own full-width card
+    the way every other auto-inserted field in this file does.
+
+    Strips any check_in/check_out/adults/children/rooms FormField the model
+    already added to `parsed_fields` -- these five ids always render this
+    way for a hotel form; the generic per-category loop below has no way to
+    lay fields out side by side, so they never go through it.
+
+    Returns (field_groups, extra_components, field_paths, field_defaults)
+    for the caller to merge into `genui.form()`'s own arguments -- see
+    `genui.form`'s docstring for why the row's own children need to travel
+    separately as `extra_components` rather than as ordinary group fields.
+    """
+    for auto_id in ("check_in", "check_out", "adults", "children", "rooms"):
+        parsed_fields[:] = [f for f in parsed_fields if f.id != auto_id]
+
+    chinese = _is_chinese_title(title)
+    today = datetime.now(timezone.utc).date()
+    default_check_in = today.isoformat()
+    default_check_out = (today + timedelta(days=1)).isoformat()
+
+    extra_components: list[dict[str, Any]] = []
+
+    def _mini_field(field_id: str, caption: str, widget: dict[str, Any]) -> str:
+        caption_id = f"{field_id}Caption"
+        col_id = f"{field_id}Col"
+        col = genui.column(col_id, [caption_id, field_id], styles={"gap": "4px"})
+        col["weight"] = 1  # share the row's width equally with its siblings
+        extra_components.append(col)
+        extra_components.append(genui.text(caption_id, caption, variant="caption"))
+        extra_components.append(widget)
+        return col_id
+
+    check_in_label, check_out_label = (
+        ("入住日期", "退房日期") if chinese else ("Check-in date", "Check-out date")
+    )
+    check_in_col = _mini_field(
+        "check_in", check_in_label, genui.date_input("check_in", value=default_check_in, min_date=default_check_in)
+    )
+    check_out_col = _mini_field(
+        "check_out",
+        check_out_label,
+        genui.date_input("check_out", value=default_check_out, min_date=default_check_in),
+    )
+    dates_row = genui.row("datesRow", [check_in_col, check_out_col], styles={"gap": "12px"})
+
+    adults_label, children_label, rooms_label = (
+        ("成人", "儿童", "房间数") if chinese else ("Adults", "Children", "Rooms")
+    )
+    adults_col = _mini_field("adults", adults_label, genui.text_field("adults", value="2", variant="number"))
+    children_col = _mini_field(
+        "children", children_label, genui.text_field("children", value="0", variant="number")
+    )
+    rooms_col = _mini_field("rooms", rooms_label, genui.text_field("rooms", value="1", variant="number"))
+    guests_row = genui.row("guestsRow", [adults_col, children_col, rooms_col], styles={"gap": "12px"})
+
+    field_groups = [("", [dates_row]), ("", [guests_row])]
+    field_paths = {
+        "check_in": "/check_in/value",
+        "check_out": "/check_out/value",
+        "adults": "/adults/value",
+        "children": "/children/value",
+        "rooms": "/rooms/value",
+    }
+    field_defaults: dict[str, Any] = {
+        "check_in": default_check_in,
+        "check_out": default_check_out,
+        "adults": "2",
+        "children": "0",
+        "rooms": "1",
+    }
+    return field_groups, extra_components, field_paths, field_defaults
+
+
 @tool(
     description=(
         "Get the current UTC date and time. Call this first if the user's request "
@@ -457,43 +536,19 @@ def ask_preferences_form(title: str, fields: list[FormField], submit_label: str 
                 existing.min_date = existing.min_date or default_outbound
         new_fields += _localized_guest_count_fields(title, field_by_id, default_adults=1)
         parsed_fields[0:0] = new_fields
-    elif is_hotel_form:
-        today = datetime.now(timezone.utc).date()
-        default_check_in = today.isoformat()
-        default_check_out = (today + timedelta(days=1)).isoformat()
-        field_by_id = {field.id: field for field in parsed_fields}
-        check_in_label, check_out_label = (
-            ("入住日期", "退房日期") if _is_chinese_title(title) else ("Check-in date", "Check-out date")
+    hotel_field_groups: list[tuple[str, list[dict[str, Any]]]] = []
+    hotel_extra_components: list[dict[str, Any]] = []
+    hotel_field_paths: dict[str, str] = {}
+    hotel_field_defaults: dict[str, Any] = {}
+    if is_hotel_form:
+        # Two compact side-by-side cards (dates, then adults/children/rooms)
+        # instead of a full-width card per field -- matches a typical hotel
+        # search widget's layout. See _hotel_compact_search_rows's own
+        # docstring for why this needs its own field_groups/extra_components
+        # rather than going through the generic per-category loop below.
+        hotel_field_groups, hotel_extra_components, hotel_field_paths, hotel_field_defaults = (
+            _hotel_compact_search_rows(title, parsed_fields)
         )
-        new_fields = []
-        for field_id, label, default_date in (
-            ("check_in", check_in_label, default_check_in),
-            ("check_out", check_out_label, default_check_out),
-        ):
-            existing = field_by_id.get(field_id)
-            if existing is None:
-                new_fields.append(
-                    FormField(
-                        id=field_id,
-                        type=FormFieldType.date,
-                        label=label,
-                        # Its own category, not a shared "Stay dates" -- the
-                        # category heading is the field's real visible label
-                        # (see FormField.category), so check-in and
-                        # check-out each get their own card.
-                        category=label,
-                        default_date=default_date,
-                        min_date=default_check_in,
-                    )
-                )
-            else:
-                existing.type = FormFieldType.date
-                existing.category = label
-                existing.label = label
-                existing.default_date = existing.default_date or default_date
-                existing.min_date = existing.min_date or default_check_in
-        new_fields += _localized_guest_count_fields(title, field_by_id, default_adults=2)
-        parsed_fields[0:0] = new_fields
     elif is_transport_form:
         today = datetime.now(timezone.utc).date()
         default_departure = today.isoformat()
@@ -531,8 +586,8 @@ def ask_preferences_form(title: str, fields: list[FormField], submit_label: str 
                 existing.min_date = existing.min_date or default_departure
         parsed_fields[0:0] = new_fields
     built_groups: dict[str, list[dict[str, Any]]] = {}
-    field_paths = {}
-    field_defaults: dict[str, Any] = {}
+    field_paths: dict[str, str] = dict(hotel_field_paths)
+    field_defaults: dict[str, Any] = dict(hotel_field_defaults)
     for f in parsed_fields:
         category = f.category.strip() if f.category and f.category.strip() else "Preferences"
         built_fields = built_groups.setdefault(category, [])
@@ -616,11 +671,15 @@ def ask_preferences_form(title: str, fields: list[FormField], submit_label: str 
         surface_id,
         title=title,
         fields=[field for group in built_groups.values() for field in group],
-        field_groups=list(built_groups.items()),
+        # Model-supplied fields (e.g. destination) first, then the hotel
+        # compact rows -- matches a typical hotel search widget's order:
+        # destination, then dates, then guests.
+        field_groups=list(built_groups.items()) + hotel_field_groups,
         submit_label=submit_label,
         action_name="submit_preferences_form",
         field_paths=field_paths,
         field_defaults=field_defaults,
+        extra_components=hotel_extra_components,
     )
     return {
         "text": f'I\'ve put a "{title}" form on your screen — fill it in and submit when ready.',
