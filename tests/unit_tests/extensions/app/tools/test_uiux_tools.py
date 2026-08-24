@@ -116,14 +116,33 @@ class TestAskPreferencesForm:
         assert "Check-out date" in caption_texts
 
     @pytest.mark.asyncio
-    async def test_flight_travel_dates_get_separate_categories_in_correct_order(self):
+    async def test_flight_travel_dates_render_side_by_side_in_correct_order(self):
         result = await tools.ask_preferences_form.invoke({"title": "Flight booking preferences", "fields": []})
         components = result["genui"][-1]["updateComponents"]["components"]
         component_ids = [c["id"] for c in components]
         assert component_ids.index("outbound_date") < component_ids.index("return_date")
-        category_titles = [c["text"] for c in components if c.get("variant") == "h4"]
-        assert "Departure date" in category_titles
-        assert "Return date" in category_titles
+        # Compact two-column row (same treatment as the hotel form), not two
+        # separate full-width cards -- each date's own caption (not a
+        # card-level h4 heading) is what's visible now.
+        by_id = {c["id"]: c for c in components}
+        assert by_id["datesRow"]["component"] == "Row"
+        assert by_id["datesRow"]["children"] == ["outbound_dateCol", "return_dateCol"]
+        caption_texts = [c["text"] for c in components if c.get("variant") == "caption"]
+        assert "Departure date" in caption_texts
+        assert "Return date" in caption_texts
+
+    @pytest.mark.asyncio
+    async def test_flight_guest_count_fields_render_side_by_side_as_number_inputs(self):
+        result = await tools.ask_preferences_form.invoke({"title": "Flight booking preferences", "fields": []})
+        components = result["genui"][-1]["updateComponents"]["components"]
+        by_id = {c["id"]: c for c in components}
+        assert by_id["guestsRow"]["component"] == "Row"
+        assert by_id["guestsRow"]["children"] == ["adultsCol", "childrenCol"]
+        assert by_id["adults"]["component"] == "TextField"
+        assert by_id["adults"]["variant"] == "number"
+        assert by_id["adults"]["value"] == "1"
+        assert by_id["children"]["value"] == "0"
+        assert "roomsCol" not in by_id
 
     @pytest.mark.asyncio
     async def test_purely_chinese_hotel_title_still_auto_inserts_stay_date_fields(self):
@@ -199,10 +218,10 @@ class TestAskPreferencesForm:
     async def test_chinese_flight_title_gets_chinese_date_labels(self):
         result = await tools.ask_preferences_form.invoke({"title": "预订机票", "fields": []})
         components = result["genui"][-1]["updateComponents"]["components"]
-        category_titles = [c["text"] for c in components if c.get("variant") == "h4"]
-        assert "出发日期" in category_titles
-        assert "返程日期" in category_titles
-        assert "Departure date" not in category_titles
+        caption_texts = [c["text"] for c in components if c.get("variant") == "caption"]
+        assert "出发日期" in caption_texts
+        assert "返程日期" in caption_texts
+        assert "Departure date" not in caption_texts
 
     @pytest.mark.asyncio
     async def test_chinese_hotel_title_gets_chinese_date_labels(self):
@@ -215,22 +234,25 @@ class TestAskPreferencesForm:
 
     @pytest.mark.asyncio
     async def test_english_titles_keep_english_date_labels(self):
-        for title, expected in (
-            ("Bus ticket booking", ("Departure date", "Return date")),
-            ("Flight booking preferences", ("Departure date", "Return date")),
-        ):
+        for title, expected in (("Bus ticket booking", ("Departure date", "Return date")),):
             result = await tools.ask_preferences_form.invoke({"title": title, "fields": []})
             components = result["genui"][-1]["updateComponents"]["components"]
             category_titles = [c["text"] for c in components if c.get("variant") == "h4"]
             for label in expected:
                 assert label in category_titles, (title, label)
-        # Hotel dates render as compact-row captions, not h4 category
-        # headings -- see test_hotel_stay_dates_render_side_by_side_in_correct_order.
-        result = await tools.ask_preferences_form.invoke({"title": "Hotel booking preferences", "fields": []})
-        components = result["genui"][-1]["updateComponents"]["components"]
-        caption_texts = [c["text"] for c in components if c.get("variant") == "caption"]
-        assert "Check-in date" in caption_texts
-        assert "Check-out date" in caption_texts
+        # Hotel and flight dates render as compact-row captions, not h4
+        # category headings -- see
+        # test_hotel_stay_dates_render_side_by_side_in_correct_order and
+        # test_flight_travel_dates_render_side_by_side_in_correct_order.
+        for title, expected in (
+            ("Hotel booking preferences", ("Check-in date", "Check-out date")),
+            ("Flight booking preferences", ("Departure date", "Return date")),
+        ):
+            result = await tools.ask_preferences_form.invoke({"title": title, "fields": []})
+            components = result["genui"][-1]["updateComponents"]["components"]
+            caption_texts = [c["text"] for c in components if c.get("variant") == "caption"]
+            for label in expected:
+                assert label in caption_texts, (title, label)
 
     @pytest.mark.asyncio
     async def test_hotel_title_auto_inserts_localized_guest_count_fields(self):
@@ -277,9 +299,11 @@ class TestAskPreferencesForm:
         components = result["genui"][-1]["updateComponents"]["components"]
         component_ids = {c["id"] for c in components}
         assert {"adults", "children"} <= component_ids
-        category_titles = [c["text"] for c in components if c.get("variant") == "h4"]
-        assert "成人" in category_titles
-        assert "儿童" in category_titles
+        assert "rooms" not in component_ids
+        caption_texts = [c["text"] for c in components if c.get("variant") == "caption"]
+        assert "成人" in caption_texts
+        assert "儿童" in caption_texts
+        assert "Adults" not in caption_texts
 
     @pytest.mark.asyncio
     async def test_transport_form_does_not_insert_guest_count_fields(self):

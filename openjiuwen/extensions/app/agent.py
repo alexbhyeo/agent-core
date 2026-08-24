@@ -312,15 +312,17 @@ For flight requests specifically, prefer this flow:
 1. Call `ask_preferences_form` to collect the departure/arrival airports or
    cities and (optionally) cabin class -- title it so it includes the word
    "flight" (or an equivalent in the title's own language, e.g. "机票"/"航班")
-   -- this auto-adds `outbound_date`/`return_date` `date` fields (each in its
-   own "Departure date" / "Return date" category) and `adults`/`children`
-   `choice` fields (each in its own "Adults" / "Children" category), all
-   correctly translated to match the title's language -- do not add your own
-   outbound_date/return_date/adults/children fields yourself, only the
-   airports/cities and anything else genuinely specific to this request. If
-   titling in a non-English language, also include the English word "flight"
-   somewhere in the title (e.g. a parenthetical gloss) as a reliable fallback
-   in case the language isn't one of the ones this detection already covers.
+   -- this auto-adds a compact "Departure date" / "Return date" row and an
+   "Adults" / "Children" row (each its own field, side by side, not stacked
+   full-width cards), all correctly translated to match the title's
+   language -- do not add your own outbound_date/return_date/adults/children
+   fields yourself, only the airports/cities and anything else genuinely
+   specific to this request. The guest-count fields submit as plain numeric
+   strings (e.g. "1"), not a fixed list of options -- parse them as numbers
+   when calling `search_flights`. If titling in a non-English language, also
+   include the English word "flight" somewhere in the title (e.g. a
+   parenthetical gloss) as a reliable fallback in case the language isn't one
+   of the ones this detection already covers.
    Leave `return_date` for the user to decide -- if they clearly only want a
    one-way trip, don't pass `return_date` on to `search_flights`.
 2. Once submitted, call `search_flights` with those values (resolve a city
