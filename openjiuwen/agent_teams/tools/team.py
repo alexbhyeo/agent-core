@@ -1345,6 +1345,63 @@ class TeamBackend:
         )
         return max(db_ts, md_max)
 
+    async def get_member_updated_at(self, member_name: str, field: str) -> int:
+        """Probe one member's md ``updated_at`` for change detection.
+
+        The identity body's prompt mtime probe. The md ``updated_at`` is the
+        frontmatter field that moves when the member's ``member_prompt.md``
+        (or ``card.md``) is re-written — the evolution party's hand-edit. It
+        reads from the resident workspace cache, so the probe never touches
+        disk on a warmed cache and ``0`` means "no md file / evolution off".
+        Single-member single-field counterpart of
+        :meth:`get_members_max_updated_at` (which is the team-wide MAX the
+        roster probe uses). ``field`` is ``"desc"`` or ``"prompt"``.
+
+        Returns:
+            Last md update timestamp (ms), or ``0`` when the cache is absent
+            or the md file is missing.
+        """
+        cache = self.workspace_cache
+        if cache is None:
+            return 0
+        return cache.get_member_updated_at(member_name, field)
+
+    async def get_member_updated_at_state(
+        self, member_name: str, field: str
+    ) -> tuple[int, bool]:
+        """Probe one member's md ``updated_at`` plus its presence flag.
+
+        Counterpart of :meth:`get_member_updated_at` that also returns whether
+        the frontmatter carried an explicit ``updated_at`` integer. The
+        identity-body re-announce path treats ``present=False`` (a blank
+        field) as an explicit "must update" signal distinct from a missing
+        file's ``(0, True)``. ``field`` is ``"desc"`` or ``"prompt"``.
+
+        Returns:
+            ``(updated_at_ms, present)`` — ``(0, True)`` when the cache is
+            absent or the md file is missing (no "must update" signal).
+        """
+        cache = self.workspace_cache
+        if cache is None:
+            return (0, True)
+        return cache.get_member_updated_at_state(member_name, field)
+
+    async def stamp_member_prompt_updated_at(
+        self, member_name: str, ts: int
+    ) -> None:
+        """Stamp ``ts`` into ``member_prompt.md``'s ``updated_at`` (meta only).
+
+        Thin forward to the workspace cache, which owns all md-file IO. Called
+        by the identity-body re-announce path right after a "must update"
+        decision so the comparison baseline and the file's ``updated_at``
+        share one timestamp (next probe is stable, no re-fire). No-op when
+        the cache is absent (evolution off / single-agent).
+        """
+        cache = self.workspace_cache
+        if cache is None:
+            return
+        cache.stamp_member_prompt_updated_at(member_name, ts)
+
     async def get_members_max_updated_at(self) -> int:
         """Probe ``max(DB updated_at, max(md updated_at))`` for the team.
 
