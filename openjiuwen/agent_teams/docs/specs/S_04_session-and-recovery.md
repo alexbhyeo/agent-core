@@ -23,8 +23,8 @@ present it writes `pending_create`. `TeamAgent._mark_team_built` and
 |---|---|
 | 类型 | spec |
 | 关联模块 | `openjiuwen/agent_teams/agent/session_manager.py`、`openjiuwen/agent_teams/agent/recovery_manager.py`、`openjiuwen/agent_teams/runtime/metadata.py`、`openjiuwen/agent_teams/context.py` |
-| 最近一次修订日期 | 2026-05-12 |
-| 关联 feature | `F_01_coordination-protocol-cleanup.md`、`F_05_lifecycle-finalize-relocation.md` |
+| 最近一次修订日期 | 2026-08-19 |
+| 关联 feature | `F_01_coordination-protocol-cleanup.md`、`F_05_lifecycle-finalize-relocation.md`、`F_83_session-ddl-under-write-lock.md` |
 
 ## 范围 / 边界
 
@@ -112,6 +112,8 @@ reset** contextvar——故意为之：
 `team_backend.db.create_cur_session_tables()`。该调用必须幂等：同一 session
 重复 `bind_session`（如 stop 后又 resume）不允许产生重复建表副作用。
 `SessionManager` 自身不缓存"已建表"标记，幂等性由 backend 实现保证。
+DDL 在 `DbSessions` 进程级写锁内执行、与 DAO 写同锁串行——不允许经
+`engine.begin()` 直连绕过锁（并发 bind 耗尽写池的修复，见 F_83）。
 
 ### I-6 Checkpoint 写入只走 namespace 入口
 
@@ -125,6 +127,7 @@ state["teams"][team_name] = {
     "model_allocator_state": Optional[dict],
     "lifecycle":             Optional["running" | "paused"],
     "db_state":              Optional["pending_create" | "created" | "cleaned"],
+    "checkpoints":           Optional[dict[str, dict]],  # {name: {count, description, created_by}} 命名 fork 快照
 }
 ```
 
@@ -305,6 +308,7 @@ class RecoveryManager:
 ```python
 TEAMS_KEY = "teams"
 TEAM_DB_STATE_KEY = "db_state"
+TEAM_CHECKPOINTS_KEY = "checkpoints"
 TEAM_DB_STATE_PENDING_CREATE = "pending_create"
 TEAM_DB_STATE_CREATED = "created"
 TEAM_DB_STATE_CLEANED = "cleaned"
@@ -313,9 +317,11 @@ def read_teams_bucket(session) -> dict[str, dict[str, Any]]: ...
 def read_team_namespace(session, team_name: str) -> dict[str, Any] | None: ...
 def read_team_names_in_session(session) -> list[str]: ...
 def read_team_db_state(session, team_name: str) -> str | None: ...
+def read_team_checkpoints(session, team_name: str) -> dict[str, dict] | None: ...
 def write_team_namespace(session, team_name: str, payload: dict[str, Any]) -> None: ...
 def merge_team_namespace(session, team_name: str, partial: dict[str, Any]) -> None: ...
 def merge_team_db_state(session, team_name: str, state: str) -> None: ...
+def merge_team_checkpoints(session, team_name: str, mapping: dict[str, dict]) -> None: ...
 def remove_team_namespace(session, team_name: str) -> bool: ...
 ```
 
@@ -432,8 +438,9 @@ session.state
     │   ├── spec                  TeamAgentSpec.model_dump(mode="json")
     │   ├── context               TeamRuntimeContext.model_dump(mode="json")
     │   ├── model_allocator_state Optional[dict]      ← persist_allocator_state
-    │   └── lifecycle             Optional["running" | "paused"]
-    │                                                  ← coordination 写入
+    │   ├── lifecycle             Optional["running" | "paused"]
+    │   │                                                  ← coordination 写入
+    │   └── checkpoints           Optional[dict[str, dict]]  ← 命名 fork 快照（{count, description, created_by}）
     └── <team_name_B>
         └── ...
 ```
@@ -447,6 +454,7 @@ session.state
 | `model_allocator_state`（初始）| 同上 | 同上 |
 | `model_allocator_state`（增量）| `recovery_manager.persist_allocator_state` → `merge_team_namespace` | round 中模型分配变更后 |
 | `lifecycle` | `coordination/kernel._persist_team_lifecycle` → `merge_team_namespace` | pause / resume 切换时 |
+| `checkpoints` | `TeamAgent._merge_checkpoints_into_session` → `merge_team_namespace` | `checkpoint()` 工具调用时（leader 镜像）；记录含 `{count, description, created_by}` |
 
 新增字段时，按"是否在 bind 时一次性给定"决定走 `write_team_namespace`（覆盖）
 还是 `merge_team_namespace`（增量）。**新增字段名进 namespace 之前**，先在

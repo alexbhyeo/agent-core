@@ -20,7 +20,7 @@ from typing import (
 )
 
 from openjiuwen.agent_teams.messager import Messager
-from openjiuwen.agent_teams.paths import team_home
+from openjiuwen.agent_teams.paths import team_workspace_dir
 from openjiuwen.agent_teams.schema.events import (
     EventMessage,
     TaskCancelledEvent,
@@ -138,7 +138,7 @@ class TeamTaskManager:
         self.team_name = team_name
         self.member_name = member_name
         self.messager = messager
-        self.plans_dir = Path(plans_dir) if plans_dir else team_home(team_name) / "team-workspace" / "plans"
+        self.plans_dir = Path(plans_dir) if plans_dir else team_workspace_dir(team_name) / "plans"
         self.team_plan_id = _safe_token(team_plan_id or get_session_id() or team_name, "team_plan")
         self.leader_member_name = str(leader_member_name or "").strip()
         self._dispatch_mode = dispatch_mode
@@ -154,6 +154,22 @@ class TeamTaskManager:
             self.plans_dir = Path(plans_dir)
         if team_plan_id is not None:
             self.team_plan_id = _safe_token(team_plan_id, "team_plan")
+
+    async def _validate_task_owner(self, member_name: str) -> TaskOpResult:
+        """Validate that a task owner exists and is not the team leader."""
+        owner = str(member_name or "").strip()
+        if not owner:
+            return TaskOpResult.success()
+        leader_member_name = await self._resolve_leader_member_name()
+        if leader_member_name and owner == leader_member_name:
+            return TaskOpResult.fail(
+                f"Member {owner} is the team leader and cannot be assigned team tasks; "
+                "assign the task to a non-leader member"
+            )
+        member = await self.db.member.get_member(owner, self.team_name)
+        if not member:
+            return TaskOpResult.fail(f"Member {owner} not found in team {self.team_name}")
+        return TaskOpResult.success()
 
     async def add_graph(self, specs: list[TaskGraphSpec]) -> TaskGraphResult:
         """Create a batch of tasks and their dependency edges atomically.
@@ -189,6 +205,10 @@ class TeamTaskManager:
         new_tasks: list[NewTaskSpec] = []
         edges: list[tuple[str, str]] = []
         for spec in specs:
+            if spec.assignee:
+                owner_result = await self._validate_task_owner(spec.assignee)
+                if not owner_result.ok:
+                    return TaskGraphResult.fail(owner_result.reason)
             task_id = spec.task_id or str(uuid.uuid4())
             # Always seed PENDING. A scheduled pre-assigned task rests at
             # PENDING(assignee) until the scheduler starts it; the refresh
@@ -223,16 +243,17 @@ class TeamTaskManager:
         for node in new_tasks:
             status = status_by_id.get(node.task_id, node.initial_status)
             await self._publish_task_created(node.task_id, status)
-            created.append(
-                TeamTaskBase(
-                    task_id=node.task_id,
-                    team_name=self.team_name,
-                    title=node.title,
-                    content=node.content,
-                    status=status,
-                    assignee=node.assignee,
-                )
+            task = TeamTaskBase(
+                task_id=node.task_id,
+                team_name=self.team_name,
+                title=node.title,
+                content=node.content,
+                status=status,
+                assignee=node.assignee,
             )
+            if await self._start_human_assigned_task_if_ready(task):
+                task = await self.get(node.task_id) or task
+            created.append(task)
         team_logger.debug(f"Added {len(created)} task(s) with {len(edges)} dependency edge(s)")
         return TaskGraphResult.success(created)
 
@@ -419,9 +440,9 @@ class TeamTaskManager:
         if not task:
             return TaskOpResult.fail(f"Task {task_id} not found")
 
-        # Validate the assignee is a real team member. The DB column has no
-        # FK to team_member, so a typo here would silently leave the task
-        # bound to a name nobody serves; surface it at this layer instead.
+        owner_result = await self._validate_task_owner(assignee)
+        if not owner_result.ok:
+            return owner_result
         member = await self.db.member.get_member(assignee, self.team_name)
         if not member:
             return TaskOpResult.fail(f"Member {assignee} not found in team {self.team_name}")
@@ -440,7 +461,8 @@ class TeamTaskManager:
 
         if task.assignee and task.assignee != assignee:
             return TaskOpResult.fail(
-                f"Task {task_id} is already claimed by {task.assignee}; reset the task before reassigning to {assignee}"
+                f"Task {task_id} is already claimed by {task.assignee}; "
+                f"reset the task before reassigning to {assignee}"
             )
 
         success = await self.db.task.claim_task(task_id, assignee, to_status=entry_status)
@@ -521,6 +543,19 @@ class TeamTaskManager:
         if task.assignee == member_name and task.status == TaskStatus.IN_PROGRESS.value:
             team_logger.debug(f"Task {task_id} already claimed by {member_name}; no-op")
             return TaskOpResult.success()
+        if task.assignee == member_name and task.status == TaskStatus.PENDING.value:
+            started = await self.db.task.start_task(task_id, member_name, to_status=TaskStatus.IN_PROGRESS)
+            if not started:
+                return TaskOpResult.fail(f"Task {task_id} could not be started for {member_name}")
+            await self._publish_task_event(
+                TaskClaimedEvent(
+                    team_name=self.team_name,
+                    task_id=task_id,
+                    member_name=member_name,
+                ),
+                error_label=f"Task claimed event for assigned task {task_id}",
+            )
+            return TaskOpResult.success()
 
         # Claim conflict must be reported before the state-transition check —
         # otherwise a task held by someone else surfaces as the misleading
@@ -580,6 +615,12 @@ class TeamTaskManager:
         member = await self.db.member.get_member(self.member_name, self.team_name)
         if not member:
             return TaskOpResult.fail(f"Member {self.member_name} not found in team {self.team_name}")
+        task = await self.db.task.get_task(task_id)
+        if task is not None and task.assignee != self.member_name:
+            return TaskOpResult.fail(
+                f"Task {task_id} is assigned to {task.assignee or '<unassigned>'}, "
+                f"{self.member_name} cannot complete it"
+            )
 
         # Verify gate: when the task carries reviewers, "done" means "ready for
         # review" — route IN_PROGRESS -> IN_REVIEW instead of completing. The
@@ -635,7 +676,7 @@ class TeamTaskManager:
                     "updated_at": _now_iso(),
                 },
             )
-        await self._publish_unblocked_events(unblocked_tasks)
+        await self._handle_unblocked_tasks(unblocked_tasks)
         await self._maybe_publish_task_list_drained()
         return TaskOpResult.success()
 
@@ -694,8 +735,6 @@ class TeamTaskManager:
             scheduled dispatch ``data`` snapshots the vote tally.
         """
         normalized = decision.strip().lower()
-        if normalized not in ("pass", "fail"):
-            return TaskOpResult.fail(f"verify_task decision must be 'pass' or 'fail', got '{decision}'")
 
         task = await self.get(task_id)
         if not task:
@@ -711,6 +750,26 @@ class TeamTaskManager:
             )
         if self.member_name == task.assignee:
             return TaskOpResult.fail(f"{self.member_name} cannot verify their own task {task_id}")
+
+        # Determine the caller's reviewer type from the task's structured
+        # reviewer list so inspector votes are validated as floats.
+        rt = self._resolve_reviewer_type(task, self.member_name)
+        if rt == "inspector":
+            try:
+                score = float(normalized)
+                if not (0.0 <= score <= 1.0):
+                    return TaskOpResult.fail(
+                        f"verify_task decision must be a number in [0.0, 1.0], got '{decision}'"
+                    )
+                normalized = f"{score:.2f}"
+            except ValueError:
+                return TaskOpResult.fail(
+                    f"verify_task decision must be a number for inspector reviewer, got '{decision}'"
+                )
+        elif normalized not in ("pass", "fail"):
+            return TaskOpResult.fail(f"verify_task decision must be 'pass' or 'fail', got '{decision}'")
+
+        team_logger.info("[verify_task] reviewer=%s task=%s decision=%s", self.member_name, task_id, normalized) 
 
         if self._dispatch_mode == "scheduled":
             return await self._record_review_vote(task, normalized, feedback)
@@ -751,18 +810,36 @@ class TeamTaskManager:
             ),
             error_label=f"Task review vote event for {task.task_id}",
         )
+        team_logger.info("[verify_vote] reviewer=%s task=%s decision=%s round=%d tally(pass=%d fail=%d of %d)", 
+                         self.member_name, task.task_id, decision, task.review_round,  
+                         tally["pass_count"], tally["fail_count"], tally["reviewer_count"]) 
         return TaskOpResult.success(data=tally)
+
+    @staticmethod
+    def _resolve_reviewer_type(task, reviewer_name: str) -> str:
+        """Look up one reviewer's type from the task's structured reviewer list."""
+        for detail in task.reviewer_details():
+            if detail.get("reviewer_id") == reviewer_name:
+                return detail.get("type", "verifier")
+        return "verifier"
 
     async def get_review_tally(self, task) -> dict[str, Any]:
         """Snapshot the current-round vote tally of one IN_REVIEW task.
 
-        Latest vote per reviewer wins; votes from members no longer on the
-        task's reviewer list are ignored. Feedback strings of the effective
-        ``fail`` votes are collected for the rework message. Shared by the
-        vote-recording path (event snapshot) and the scheduler's judge pass.
+        Groups reviewers by type: verifier and challenger form the binary
+        (pass/fail) pool; inspector votes are scored floats (0~1). Latest
+        vote per reviewer wins; votes from members no longer on the task's
+        reviewer list are ignored.
         """
         votes = await self.db.task.get_review_votes(task.task_id, task.review_round)
         reviewers = task.reviewers()
+        # Build reviewer_id → type map from the structured reviewer list.
+        type_map: dict[str, str] = {}
+        for detail in task.reviewer_details():
+            rid = detail.get("reviewer_id", "")
+            if rid:
+                type_map[rid] = detail.get("type", "verifier")
+
         latest_decision: dict[str, str] = {}
         latest_feedback: dict[str, str] = {}
         for vote in votes:
@@ -770,20 +847,67 @@ class TeamTaskManager:
                 continue
             latest_decision[vote.reviewer] = vote.decision
             latest_feedback[vote.reviewer] = vote.feedback or ""
-        fail_feedback = {
-            reviewer: latest_feedback[reviewer]
-            for reviewer, verdict in latest_decision.items()
-            if verdict == "fail" and latest_feedback[reviewer]
-        }
-        pass_count = sum(1 for verdict in latest_decision.values() if verdict == "pass")
+
+        # Binary pool: verifier + challenger (pass/fail votes)
+        verdict_pass = 0
+        verdict_fail = 0
+        verdict_total = 0
+        verdict_voted = 0
+        fail_feedback: dict[str, str] = {}
+
+        # Inspector pool: scored votes
+        inspector_scores: dict[str, float] = {}
+        inspector_count = 0
+        inspector_voted = 0
+
+        for name in reviewers:
+            rt = type_map.get(name, "verifier")
+            if rt == "inspector":
+                inspector_count += 1
+                if name in latest_decision:
+                    inspector_voted += 1
+                    try:
+                        inspector_scores[name] = float(latest_decision[name])
+                    except (ValueError, TypeError):
+                        pass
+            else:
+                # verifier or challenger
+                verdict_total += 1
+                if name in latest_decision:
+                    verdict_voted += 1
+                    d = latest_decision[name]
+                    if d == "pass":
+                        verdict_pass += 1
+                    elif d == "fail":
+                        verdict_fail += 1
+                        feedback = latest_feedback[name]
+                        if feedback:
+                            fail_feedback[name] = feedback
+
+        inspector_avg = (
+            sum(inspector_scores.values()) / len(inspector_scores)
+            if inspector_scores else None
+        )
+
         return {
             "task_id": task.task_id,
             "review_round": task.review_round,
-            "pass_count": pass_count,
-            "fail_count": len(latest_decision) - pass_count,
+            # Legacy fields — kept for backwards compatibility with render
+            # and event publishing; they reflect the binary pool only.
+            "pass_count": verdict_pass,
+            "fail_count": verdict_fail,
             "reviewer_count": len(reviewers),
             "voted": sorted(latest_decision),
             "fail_feedback": fail_feedback,
+            # New structured fields for settle_review_tally.
+            "verdict_pass_count": verdict_pass,
+            "verdict_fail_count": verdict_fail,
+            "verdict_total": verdict_total,
+            "verdict_voted": verdict_voted,
+            "inspector_count": inspector_count,
+            "inspector_voted": inspector_voted,
+            "inspector_scores": inspector_scores,
+            "inspector_avg": inspector_avg,
         }
 
     async def settle_review(self, task_id: str, decision: str, feedback: str = "") -> TaskOpResult:
@@ -835,7 +959,7 @@ class TeamTaskManager:
             ),
             error_label=f"Task verified event for {task.task_id}",
         )
-        await self._publish_unblocked_events(unblocked_tasks)
+        await self._handle_unblocked_tasks(unblocked_tasks)
         await self._maybe_publish_task_list_drained()
         return TaskOpResult.success()
 
@@ -1168,7 +1292,7 @@ class TeamTaskManager:
             TaskCancelledEvent(team_name=self.team_name, task_id=task_id, member_name=task.assignee),
             error_label=f"Task cancelled event for {task_id}",
         )
-        await self._publish_unblocked_events(unblocked_tasks)
+        await self._handle_unblocked_tasks(unblocked_tasks)
         await self._maybe_publish_task_list_drained()
         return task
 
@@ -1209,7 +1333,7 @@ class TeamTaskManager:
                 ),
                 error_label=f"Task cancelled event for {task.task_id}",
             )
-        await self._publish_unblocked_events(unblocked_tasks)
+        await self._handle_unblocked_tasks(unblocked_tasks)
         await self._maybe_publish_task_list_drained()
         return cancelled_tasks
 
@@ -1223,6 +1347,29 @@ class TeamTaskManager:
             team_logger.debug(f"Published: {error_label}")
         except Exception as e:
             team_logger.error(f"Failed to publish {error_label}: {e}")
+
+    async def _start_human_assigned_task_if_ready(self, task: TeamTaskBase) -> bool:
+        """Start a ready task already assigned to a live human member."""
+        if task.status != TaskStatus.PENDING.value or not task.assignee:
+            return False
+        if not await self.db.member.is_live_human_agent(self.team_name, task.assignee):
+            return False
+
+        result = await self.start_task(task.task_id)
+        if not result.ok:
+            team_logger.debug(
+                "Human-assigned task %s was not auto-started: %s",
+                task.task_id,
+                result.reason,
+            )
+            return False
+        return True
+
+    async def _handle_unblocked_tasks(self, unblocked_tasks: List[TeamTaskBase]) -> None:
+        """Handle tasks whose dependencies were just satisfied."""
+        for task in unblocked_tasks:
+            await self._start_human_assigned_task_if_ready(task)
+        await self._publish_unblocked_events(unblocked_tasks)
 
     async def _publish_unblocked_events(self, unblocked_tasks: List[TeamTaskBase]) -> None:
         """Notify the team about tasks that just transitioned to PENDING."""
@@ -1354,17 +1501,18 @@ class TeamTaskManager:
 
         return TaskOpResult.success()
 
-    async def set_reviewer(self, task_id: str, reviewer_names: list[str]) -> TaskOpResult:
+    async def set_reviewer(self, task_id: str, reviewer_entries: list[dict]) -> TaskOpResult:
         """Set a task's verify-gate reviewers (Leader only).
 
-        Persists the reviewer member-name list (empty clears the gate). Caller
-        (the tool boundary) validates that reviewers are real members and none
-        is the task's author. Independent of status — reviewers may be attached
-        before or during execution; the list is consulted at completion time.
+        Persists the structured reviewer list (type + reviewer_id + description)
+        as JSON. An empty list clears the gate. Caller (the tool boundary)
+        validates that reviewers are real members and none is the task's author.
+        Independent of status — reviewers may be attached before or during
+        execution; the list is consulted at completion time.
 
         Args:
             task_id: Task to (re)assign reviewers on.
-            reviewer_names: Reviewer member names; empty list clears reviewers.
+            reviewer_entries: Structured reviewer dicts; empty list clears.
 
         Returns:
             ``TaskOpResult`` describing the outcome.
@@ -1373,11 +1521,11 @@ class TeamTaskManager:
         if not task:
             return TaskOpResult.fail(f"Task {task_id} not found")
 
-        reviewer_json = json.dumps(list(reviewer_names)) if reviewer_names else None
+        reviewer_json = json.dumps(reviewer_entries) if reviewer_entries else None
         ok = await self.db.task.set_reviewer(task_id, reviewer_json)
         if not ok:
             return TaskOpResult.fail(f"Task {task_id} reviewer could not be set")
-        team_logger.info("Task %s reviewers set to %s", task_id, reviewer_names or "[]")
+        team_logger.info("Task %s reviewers set to %s", task_id, reviewer_entries or "[]")
         return TaskOpResult.success()
 
     async def set_max_review_rounds(self, task_id: str, max_review_rounds: int) -> TaskOpResult:
@@ -1478,6 +1626,10 @@ class TeamTaskManager:
         member_name = task.assignee
         if not member_name:
             return TaskOpResult.fail(f"Task {task_id} has no assignee; cannot start an unassigned task")
+        # Defensive guard for stale/manual rows; normal create/assign paths validate owners earlier.
+        owner_result = await self._validate_task_owner(member_name)
+        if not owner_result.ok:
+            return owner_result
 
         # Entry gate mirrors ``assign``: plan-mode owners land in the plan
         # gate and must get approval before executing.
@@ -1543,9 +1695,9 @@ class TeamTaskManager:
         if not task:
             return TaskOpResult.fail(f"Task {task_id} not found")
 
-        member = await self.db.member.get_member(new_assignee, self.team_name)
-        if not member:
-            return TaskOpResult.fail(f"Member {new_assignee} not found in team {self.team_name}")
+        owner_result = await self._validate_task_owner(new_assignee)
+        if not owner_result.ok:
+            return owner_result
 
         old_assignee = task.assignee
         if not old_assignee:

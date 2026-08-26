@@ -1,2 +1,0 @@
-List all team members and their status.
-**Constraint**: For one-off queries of the current roster and status only. The team roster is already provided in real time as a `<prompt-attachment type="team_members">` block at the end of each round's messages, so you do NOT need to call this to learn team composition; also do NOT call repeatedly to poll member status — status changes are pushed to you immediately.

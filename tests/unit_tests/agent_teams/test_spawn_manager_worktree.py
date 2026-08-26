@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import os
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
@@ -78,6 +79,11 @@ class _FakeTeamBackend:
     async def get_member(self, member_name: str) -> SimpleNamespace | None:
         return await self.db.member.get_member(member_name, self.team_name)
 
+    async def get_team_info(self) -> None:
+        # Design-v5 U11: team-level B-class values come from ``team_info``;
+        # no team row in these worktree tests → None (ctx carries no values).
+        return None
+
     def get_external_cli_agent(self, member_name: str) -> None:
         return None
 
@@ -116,6 +122,7 @@ def _member(**overrides) -> SimpleNamespace:
         "team_name": "code-team",
         "role": TeamRole.TEAMMATE.value,
         "status": MemberStatus.READY.value,
+        "display_name": "Dev One",
         "desc": "developer",
         "prompt": None,
         "options": None,
@@ -171,12 +178,15 @@ def _spawn_manager(member: SimpleNamespace, manager: _FakeWorktreeManager, proje
     )
     build_context = BuildContext(project_dir=project_dir)
     build_context.mode = "code.team"
+    build_context_seed = {"mode": "code.team"}
+    if project_dir is not None:
+        build_context_seed["project_dir"] = project_dir
     spec = TeamAgentSpec(
         agents={"leader": DeepAgentSpec()},
         team_name=member.team_name,
         worktree=WorktreeConfig(enabled=True),
         build_context=build_context,
-        build_context_seed={"project_dir": project_dir, "mode": "code.team"},
+        build_context_seed=build_context_seed,
     )
     ctx = TeamRuntimeContext(role=TeamRole.LEADER, member_name="leader", team_spec=team_spec)
     configurator = SimpleNamespace(
@@ -254,9 +264,9 @@ async def test_creates_teammate_worktree_under_session_system_dir(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_does_not_reuse_foreign_session_worktree(tmp_path):
+async def test_foreign_session_worktree_is_recreated_for_current_session(tmp_path):
     project_dir = _project(tmp_path)
-    _, managed_root, slug = _expected_scope(project_dir)
+    project_hash, managed_root, slug = _expected_scope(project_dir)
     foreign = tmp_path / "foreign-session-worktree"
     foreign.mkdir()
     member = _member(
@@ -272,6 +282,46 @@ async def test_does_not_reuse_foreign_session_worktree(tmp_path):
     assert ctx is not None
     assert ctx.worktree_path == os.path.join(managed_root, slug)
     assert manager.create_calls == [(slug, project_dir)]
+    worktree = get_member_worktree(member)
+    assert worktree is not None
+    assert worktree.path == ctx.worktree_path
+    assert worktree.session_id == "session-1"
+    assert worktree.project_hash == project_hash
+    assert worktree.managed_root == managed_root
+
+
+@pytest.mark.asyncio
+async def test_foreign_session_worktree_requires_project_dir_to_recreate(tmp_path):
+    project_dir = _project(tmp_path)
+    foreign = tmp_path / "foreign-session-worktree"
+    foreign.mkdir()
+    member = _member(
+        options=build_member_options(
+            worktree=_stored_worktree(path=str(foreign), project_dir=project_dir, session_id="old-session")
+        )
+    )
+    manager = _FakeWorktreeManager()
+    spawn_manager = _spawn_manager(member, manager, None)
+
+    with pytest.raises(RuntimeError, match="build_context.project_dir"):
+        await spawn_manager.build_context_from_db("dev-one")
+
+    assert manager.create_calls == []
+
+
+@pytest.mark.asyncio
+async def test_session_can_disable_teammate_worktree_even_when_member_requests_it(tmp_path):
+    project_dir = _project(tmp_path)
+    member = _member(options=build_member_options(worktree_isolation="worktree"))
+    manager = _FakeWorktreeManager()
+    spawn_manager = _spawn_manager(member, manager, project_dir)
+    spawn_manager._configurator.spec.build_context.disable_teammate_worktree = True
+
+    ctx = await spawn_manager.build_context_from_db("dev-one")
+
+    assert ctx is not None
+    assert ctx.worktree_path is None
+    assert manager.create_calls == []
 
 
 @pytest.mark.asyncio
@@ -340,7 +390,7 @@ async def test_active_cleanup_removes_clean_non_contributing_worktree(tmp_path, 
     worktree = get_member_worktree(member)
     assert worktree is not None
     assert worktree.path is None
-    assert managed_root.endswith("/worktrees")
+    assert Path(managed_root).name == "worktrees"  # cross-platform (no "/" join)
 
 
 @pytest.mark.asyncio

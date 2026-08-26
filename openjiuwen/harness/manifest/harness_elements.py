@@ -35,8 +35,12 @@ from openjiuwen.harness.rails.skills.skill_create_rail import SkillCreateRail
 from openjiuwen.harness.rails.subagent.verification_rail import VerificationRail
 from openjiuwen.harness.rails.sys_operation_rail import SysOperationRail
 from openjiuwen.harness.rails.task_completion_rail import TaskCompletionRail
+from openjiuwen.harness.schema.build_context import parent_sys_operation
 from openjiuwen.harness.schema.config import DeepAgentConfig, SubAgentConfig
-from openjiuwen.harness.subagents.browser_agent import build_browser_agent_config
+from openjiuwen.harness.subagents.browser_agent import (
+    DEFAULT_BROWSER_AGENT_MAX_ITERATIONS,
+    build_browser_agent_config,
+)
 from openjiuwen.harness.subagents.code_agent import build_code_agent_config
 from openjiuwen.harness.subagents.explore_agent import build_explore_agent_config
 from openjiuwen.harness.subagents.plan_agent import build_plan_agent_config
@@ -93,25 +97,12 @@ def _parent_model(context: Any) -> Any:
 class ProgressiveToolInput(ConstructionInput):
     """Construction inputs for progressive tool disclosure."""
 
-    planning_tool_names: list[str] | None = param_field(
-        default=None,
-        description="Alias for progressive_tool_default_visible_tools.",
-    )
-    executor_tool_names: list[str] | None = param_field(
-        default=None,
-        description="Alias for progressive_tool_always_visible_tools.",
-    )
-    default_visible_tools: list[str] | None = param_field(
-        default=None,
-        description="Tools visible by default under progressive disclosure.",
-    )
-    always_visible_tools: list[str] | None = param_field(
-        default=None,
-        description="Tools always kept visible.",
-    )
-    max_loaded_tools: int | None = param_field(
-        default=None,
-        description="Maximum number of concurrently loaded tools.",
+    search_limit: int = param_field(
+        default=5,
+        description=(
+            "Server-side maximum number of matching tools returned by tool_search "
+            "(capped at 20; not exposed to the model)."
+        ),
     )
 
 
@@ -125,16 +116,7 @@ def _build_progressive_tool_rail(params: dict[str, Any], context: Any) -> Progre
         language=getattr(context, "language", None) or "cn",
     )
     config.progressive_tool_enabled = True
-    if p.get("planning_tool_names") is not None:
-        config.progressive_tool_default_visible_tools = list(p["planning_tool_names"])
-    if p.get("executor_tool_names") is not None:
-        config.progressive_tool_always_visible_tools = list(p["executor_tool_names"])
-    if p.get("default_visible_tools") is not None:
-        config.progressive_tool_default_visible_tools = list(p["default_visible_tools"])
-    if p.get("always_visible_tools") is not None:
-        config.progressive_tool_always_visible_tools = list(p["always_visible_tools"])
-    if p.get("max_loaded_tools") is not None:
-        config.progressive_tool_max_loaded_tools = int(p["max_loaded_tools"])
+    config.tool_search_limit = p.get("search_limit", 5)
     return ProgressiveToolRail(config)
 
 
@@ -208,6 +190,36 @@ class SkillCreateInput(ConstructionInput):
     auto_trigger: bool = param_field(default=True, description="Whether threshold auto-trigger is on.")
     tool_call_threshold: int = param_field(default=10, description="Tool-call count threshold.")
     tool_diversity_threshold: int = param_field(default=5, description="Tool diversity threshold.")
+    trajectory_span_processor: Any = context_field(
+        attr="trajectory_span_processor",
+        description="Shared observability trajectory processor.",
+    )
+
+    @classmethod
+    def resolve(cls, params: dict[str, Any] | None, context: Any):
+        """Reject removed threshold knobs instead of silently dropping them."""
+        explicit = set(params or {}) & {"tool_call_threshold", "tool_diversity_threshold"}
+        if explicit:
+            names = ", ".join(sorted(explicit))
+            raise TypeError(f"SkillCreateRail does not support: {names}")
+        return super().resolve(params, context)
+
+
+def _build_skill_create_rail(params: dict[str, Any], context: Any) -> SkillCreateRail:
+    """Build SkillCreateRail with the process-shared trajectory processor.
+
+    Class-based manifest adapters only forward spec parameters.  Skill creation
+    also needs a live processor carried by ``BuildContext``, so resolve the
+    source-tagged input model before constructing the rail rather than falling
+    back to a private processor instance.
+    """
+    resolved = SkillCreateInput.resolve(params, context)
+    return SkillCreateRail(
+        resolved.skills_dir,
+        trajectory_span_processor=resolved.trajectory_span_processor,
+        language=resolved.language,
+        auto_trigger=resolved.auto_trigger,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -266,7 +278,7 @@ harness_element(
     name=SKILL_CREATE,
     description="Skill-creation evolution rail.",
     input_model=SkillCreateInput,
-    builder=SkillCreateRail,
+    builder=_build_skill_create_rail,
 )
 
 
@@ -293,18 +305,36 @@ class SubAgentInput(ConstructionInput):
     )
 
 
-def _common_kwargs(inp: SubAgentInput) -> dict[str, Any]:
-    """Build the shared ``build_*_agent_config`` kwargs from resolved inputs."""
+def _common_kwargs(inp: SubAgentInput, context: Any) -> dict[str, Any]:
+    """Build the shared ``build_*_agent_config`` kwargs from resolved inputs.
+
+    ``sys_operation`` comes from the parent agent so the sub-agent stays inside
+    the same filesystem boundary; when it is absent (a member rebuilt from a
+    serializable seed publishes no live handle) the sub-agent falls back to the
+    fresh LOCAL sys_operation ``create_deep_agent`` mints for it.
+
+    Args:
+        inp: Resolved construction inputs for this sub-agent.
+        context: Build context carrying the parent's published handles.
+
+    Returns:
+        Keyword arguments shared by every ``build_*_agent_config`` call.
+    """
     return {
         "workspace": inp.workspace_root,
         "language": inp.language,
         "max_iterations": inp.max_iterations,
+        "sys_operation": parent_sys_operation(context),
     }
 
 
 class BrowserSubAgentInput(SubAgentInput):
     """Browser sub-agent inputs: per-instance browser identity."""
 
+    max_iterations: int = param_field(
+        default=DEFAULT_BROWSER_AGENT_MAX_ITERATIONS,
+        description="Maximum task-loop iterations for the browser sub-agent.",
+    )
     browser_key: str = param_field(default="", description="Browser identity key.")
     browser_port: int = param_field(default=0, description="Managed Chrome debug port; 0 auto-allocates.")
     browser_profile: str = param_field(default="", description="Managed browser profile name.")
@@ -332,7 +362,7 @@ def _browser_instance_dict(inp: BrowserSubAgentInput) -> dict[str, Any] | None:
 def build_explore_subagent(factory_kwargs: dict[str, Any], context: Any) -> Any:
     """Build explore sub-agent config; parent model from extras when present."""
     inp = SubAgentInput.resolve(factory_kwargs, context)
-    spec = build_explore_agent_config(model=_parent_model(context), **_common_kwargs(inp))
+    spec = build_explore_agent_config(model=_parent_model(context), **_common_kwargs(inp, context))
     spec.factory_kwargs = {"auto_create_workspace": False}
     return spec
 
@@ -340,7 +370,7 @@ def build_explore_subagent(factory_kwargs: dict[str, Any], context: Any) -> Any:
 def build_plan_subagent(factory_kwargs: dict[str, Any], context: Any) -> Any:
     """Build plan sub-agent config; parent model from extras when present."""
     inp = SubAgentInput.resolve(factory_kwargs, context)
-    spec = build_plan_agent_config(model=_parent_model(context), **_common_kwargs(inp))
+    spec = build_plan_agent_config(model=_parent_model(context), **_common_kwargs(inp, context))
     spec.factory_kwargs = {"auto_create_workspace": False}
     return spec
 
@@ -355,7 +385,7 @@ def build_browser_subagent(factory_kwargs: dict[str, Any], context: Any) -> Any:
             SUBAGENT_BROWSER,
         )
         return None
-    spec = build_browser_agent_config(model, **_common_kwargs(inp))
+    spec = build_browser_agent_config(model, **_common_kwargs(inp, context))
     instance_dict = _browser_instance_dict(inp)
     if instance_dict is None:
         if not str(os.getenv("BROWSER_DRIVER") or "").strip():
@@ -376,8 +406,11 @@ def build_code_subagent(factory_kwargs: dict[str, Any], context: Any) -> Any:
             SUBAGENT_CODE,
         )
         return None
-    kwargs = _common_kwargs(inp)
-    kwargs["sys_operation"] = factory_kwargs.get("sys_operation")
+    kwargs = _common_kwargs(inp, context)
+    # An explicitly configured sys_operation wins; otherwise keep the parent's
+    # (already filled in by _common_kwargs) rather than resetting it to None.
+    if "sys_operation" in factory_kwargs:
+        kwargs["sys_operation"] = factory_kwargs["sys_operation"]
     return build_code_agent_config(model, **kwargs)
 
 
@@ -391,13 +424,13 @@ def build_research_subagent(factory_kwargs: dict[str, Any], context: Any) -> Any
             SUBAGENT_RESEARCH,
         )
         return None
-    return build_research_agent_config(model, **_common_kwargs(inp))
+    return build_research_agent_config(model, **_common_kwargs(inp, context))
 
 
 def build_verification_subagent(factory_kwargs: dict[str, Any], context: Any) -> Any:
     """Build verification sub-agent config; parent model from extras when present."""
     inp = SubAgentInput.resolve(factory_kwargs, context)
-    return build_verification_agent_config(model=_parent_model(context), **_common_kwargs(inp))
+    return build_verification_agent_config(model=_parent_model(context), **_common_kwargs(inp, context))
 
 
 def build_general_purpose_subagent(factory_kwargs: dict[str, Any], context: Any) -> Any:
@@ -419,7 +452,7 @@ def build_general_purpose_subagent(factory_kwargs: dict[str, Any], context: Any)
         skills=[],
         rails=[SysOperationRail()],
         workspace=getattr(context, "workspace", None),
-        sys_operation=None,
+        sys_operation=parent_sys_operation(context),
         language=language,
         restrict_to_work_dir=False,
         max_iterations=inp.max_iterations,

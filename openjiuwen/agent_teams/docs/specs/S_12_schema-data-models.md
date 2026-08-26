@@ -14,8 +14,8 @@ does not.
 |---|---|
 | 类型 | spec |
 | 关联模块 | `openjiuwen/agent_teams/schema/blueprint.py`、`openjiuwen/agent_teams/schema/deep_agent_spec.py`、`openjiuwen/agent_teams/schema/team.py`、`openjiuwen/agent_teams/schema/events.py`、`openjiuwen/agent_teams/schema/status.py`、`openjiuwen/agent_teams/schema/stream.py`、`openjiuwen/agent_teams/schema/task.py` |
-| 最近一次修订日期 | 2026-07-16 |
-| 关联 feature | `F_05_lifecycle-finalize-relocation.md`（`MemberStatus.STOPPED` 新增）、`F_24_agent-time-awareness.md`（`TaskSummary.updated_at` 新增）、`F_38_team-teammate-worktree-isolation-agenttool.md`（`TeamRuntimeContext.worktree_path`）、`F_59_condition-named-task-state-machine-with-verify-gate.md`（条件命名 `TaskStatus` 状态机 + verify 闸）、`F_62_scheduled-dispatch-runtime-and-review-voting.md`（票表 + 轮数列 + `TASK_REVIEW_VOTE` + dispatch 能力上限）、`F_63_scheduler-message-templating-and-delivery-render.md`（消息表 `meta` 投递载荷列）、`F_65_runtime-idle-clock-stall-nudge.md`（`TeamAgentState.idle_since` 运行时 idle 时钟 + 两个停滞阈值 spec 字段）。其余条目见 `docs/features/` |
+| 最近一次修订日期 | 2026-08-12 |
+| 关联 feature | `F_05_lifecycle-finalize-relocation.md`（`MemberStatus.STOPPED` 新增）、`F_24_agent-time-awareness.md`（`TaskSummary.updated_at` 新增）、`F_38_team-teammate-worktree-isolation-agenttool.md`（`TeamRuntimeContext.worktree_path`）、`F_59_condition-named-task-state-machine-with-verify-gate.md`（条件命名 `TaskStatus` 状态机 + verify 闸）、`F_62_scheduled-dispatch-runtime-and-review-voting.md`（票表 + 轮数列 + `TASK_REVIEW_VOTE` + dispatch 能力上限）、`F_63_scheduler-message-templating-and-delivery-render.md`（消息表 `meta` 投递载荷列）、`F_65_runtime-idle-clock-stall-nudge.md`（`TeamAgentState.idle_since` 运行时 idle 时钟 + 两个停滞阈值 spec 字段）、`F_69_cwd-workspace-project-root-separation.md`（`DeepAgentSpec.cwd` / `project_root` 与 workspace 分离）、`F_78_steering-batch-quota-hook.md`（`TeamAgentSpec.steer_batch_size`）、`F_79_team-scoped-skill-library-and-visibility.md`（team 成员的 `skills` / `enable_skill_discovery` 落 build_spec 前被清空）。其余条目见 `docs/features/` |
 
 ## 范围 / 边界
 
@@ -97,8 +97,9 @@ Spec 上：
 
 `_ensure_builtin_infra_registered()` 是延迟登记，幂等：第一次调用注入内置
 `inprocess` / `pyzmq` / `sqlite` / `postgresql` / `mysql` / `memory`，后续
-no-op。`RailSpec` 和 `BuiltinToolSpec` 走同样模式（`_RAIL_TYPE_REGISTRY` /
-`_TOOL_TYPE_REGISTRY`），由 `_ensure_builtin_*_registered` 延迟填充。
+no-op。`RailSpec` 和 `BuiltinToolSpec` 走同样模式，但注册表已换成 provider 形态
+（`_RAIL_PROVIDER_REGISTRY` / `_TOOL_PROVIDER_REGISTRY`，见 [[F_32]]），由
+`ensure_builtin_elements_registered()` 延迟填充。
 
 ### I-5 `model_pool` 与 `model_router` 互斥
 
@@ -224,7 +225,7 @@ STOPPED / RESTARTING / ERROR 不能覆盖。
 ### I-16 Session checkpoint 状态按 team 分桶
 
 session checkpoint 全局状态根上有一个 `teams` namespace：
-`state["teams"][team_name] = {spec, context, model_allocator_state, lifecycle}`。
+`state["teams"][team_name] = {spec, context, model_allocator_state, lifecycle, checkpoints}`。
 同一 session 可承载多个 team 的状态。
 
 读写一律走 `runtime/metadata.py` 的 `read_team_namespace` /
@@ -349,7 +350,7 @@ session checkpoint 全局状态根上有一个 `teams` namespace：
 | `enable_task_planning` | `bool` | `False` |
 | `restrict_to_sandbox` | `bool` | `False` |
 | `auto_create_workspace` | `bool` | `True` |
-| `completion_timeout` | `float` | `600.0` |
+| `completion_timeout` | `Optional[float]` | `600.0`（NativeHarness 的慢轮次告警阈值；`None` 禁用告警） |
 | `progressive_tool` | `Optional[ProgressiveToolSpec]` | `None` |
 | `approval_required_tools` | `Optional[list[str]]` | `None` |
 
@@ -389,14 +390,22 @@ tool / rail / sys_operation 与 `DeepAgentSpec.build()` 同模式。
 | `type` | `str`（注册表 key） |
 | `params` | `dict[str, Any]` |
 
-`build(*, language, workspace=None) -> AgentRail`：从 `_RAIL_TYPE_REGISTRY`
-解析；构造时若 `language` 在 `__init__` 签名里则自动注入；`type=="skill_use"`
-且未传 `skills_dir` 时从 workspace 的 `skills` 节点解析 + 默认 CLI 目录
-（`~/.openjiuwen/workspace/skills`、`~/.claude/skills`）。
+`build(*, language, workspace=None, context=None) -> AgentRail`：先
+`ensure_builtin_elements_registered()`，再从 `_RAIL_PROVIDER_REGISTRY` 取 provider
+（class registry `_RAIL_TYPE_REGISTRY` 已删，见 [[F_32]]）；`context=None` 时合成一个
+只带 `language` + `workspace` 的最小 `BuildContext`。`type=="core.skill_use"` 且未传
+`skills_dir` 时由 provider 从 workspace 的 `skills` 节点解析 + 默认 CLI 目录
+（`~/.openjiuwen/workspace/skills`、`~/.claude/skills`）——**这是单 agent / subagent
+路径**，[[F_79]] 未改动它。
 
-注册：`register_rail_type(name, cls)`。内置：`task_planning` / `skill_use` /
-`subagent` / `filesystem` + 可选 `context_engineering` / `token_tracking` /
-`tool_tracking` / `ask_user` / `confirm_interrupt`（importable 时登记）。
+注册：`@harness_element` 声明（`harness/manifest/builtin_elements.py`）。内置 `core.*`
+rail 见该模块；team 侧另有 `agent_teams/rails/elements.py` 声明的 7 个 `core.team.*`。
+
+**team 成员例外**：`AgentConfigurator` 在写 `build_spec` 时把 `skills` 置空、
+`enable_skill_discovery` 置 `False`，使通用 `core.skill_use` 的自动挂载条件不成立，
+改挂 `core.team.skill_use`（`TeamSkillUseRail`）。`agent_spec.skills` 不丢弃——它作为
+成员 `skills-visibility.json` 的 seed allow-list 进 team rail 的 params。见 [[F_79]]
+与 [[S_13]]。
 
 #### `BuiltinToolSpec`
 
@@ -416,6 +425,12 @@ tool / rail / sys_operation 与 `DeepAgentSpec.build()` 同模式。
 
 `build() -> Workspace`。`stable_base` 的路径重写**不在 `build()` 内部完成**，由
 `agent_configurator` 在装配过程中完成。
+
+**workspace ≠ cwd**（见 [[F_69]]）：`WorkspaceSpec` 只描述"这个 agent 的产物目录"。
+shell 执行点与相对路径基准是 `DeepAgentSpec.cwd`，项目身份锚点是
+`DeepAgentSpec.project_root`，两者都缺省为 workspace 根（单 agent 下三者同值）。
+team 成员由 `agent_configurator` 把 cwd 指向项目目录或隔离 worktree，workspace 保持
+成员私有——**不要**再通过改写 `root_path` 来搬动成员的工作目录。
 
 #### 其余叶子 Spec
 
@@ -750,14 +765,18 @@ CANCELLED    -> (terminal)
 ### 评审投票数据面（F_62）
 
 - **动态票表 `team_review_vote_{session}`**（`TeamTaskReviewVoteBase`，
-  `models._get_review_vote_model`；表名刻意避开 `team_task_` 前缀以免被任务表迁移扫描误判）：
+  `models._get_review_vote_model`；表名避开 `team_task_` 前缀：早期迁移函数靠前缀全扫判型，
+  `review_vote` 不进 task 分支；2026-08-24 后迁移只扫当前 session 的
+  `task`/`dependency`/`message` 3 张候选表（见 F_83 § 后续修复），`review_vote` 不在
+  候选集，表名约定保留为历史一致）：
   `id`（自增 PK）、`team_name`（FK）、`task_id`、`review_round`、`reviewer`、`decision`
   （pass/fail）、`feedback`（可空）、`created_at`。复合索引 `(task_id, review_round)`。
   **追加写**：改票 = 再插一行，tally 取每 reviewer 最新一票（`get_review_votes` 按 `id` 升序）；
   旧轮票由 `review_round` 分区自然作废，全量留痕可审计。
 - **任务行新列**：`review_round INT NOT NULL DEFAULT 0`（`submit_for_review` CAS 原子自增）、
   `max_review_rounds INT NULL`（per-task 轮数上限）。迁移在
-  `engine._ensure_dynamic_table_indexes`（ALTER ADD COLUMN，幂等）。
+  `engine._ensure_dynamic_table_indexes`（ALTER ADD COLUMN，幂等；仅对当前 session 已
+  存在的老表跑，新建表跳过——见 F_83 § 后续修复）。
 - **`team_info` 新列**：`dispatch_mode TEXT NOT NULL DEFAULT 'autonomous'` 与
   `enable_task_verification BOOLEAN NOT NULL DEFAULT 0`——build_team 选定的**实例级生效值**，
   冷恢复回填 `TeamBackend`。静态表迁移 `engine._ensure_team_info_capability_columns`。
@@ -771,8 +790,9 @@ CANCELLED    -> (terminal)
 ### 自主停滞阈值（F_65）
 
 - **spec 配置**（`TeamAgentSpec`，仅自主模式消费，调度模式忽略）：
-  `stale_claim_idle_timeout: int = 600`（秒，>0——成员 idle 超此值且仍持
-  `{PLANNING, IN_PROGRESS}` 任务即自催，连续 3 个窗口无效则由该成员自报 leader）、
+  `stale_claim_idle_timeout: int = 600`（秒，>0——成员 idle 超此值且名下有该推的任务即自催，
+  连续 3 个窗口无效则由该成员自报 leader。"该推的任务" = 持有的 `{PLANNING, IN_PROGRESS}`，
+  一个活跃任务都没有时回落到名下最早的一个 `PENDING(assignee=self)`，见 F_69）、
   `stale_pending_idle_timeout: int = 600`（秒，>0——leader idle 超此值、且存在无 assignee
   的 `PENDING`、且 roster 里有非 leader 成员 READY，三者同时成立才自催）。
   校验在独立的 `_validate_stall_settings`（与 `_validate_review_settings` 分开：前者管停滞
@@ -782,6 +802,15 @@ CANCELLED    -> (terminal)
   （`task.updated_at`）在 pause 期间冻结而墙钟继续走，用它度量停滞必然在
   pause→resume 后报出假停滞。理由与不变量见 `S_03` 不变量 20 与
   `F_65_runtime-idle-clock-stall-nudge.md`。
+
+### steering 消费配额（F_78）
+
+- **spec 配置**（`TeamAgentSpec`，仅非 leader 成员消费）：`steer_batch_size: int = 2`
+  （条，>0——一次模型调用最多吸收几条排队的 steering 输入，取不走的原封留在队列里由后续模型
+  调用取走）。校验在独立的 `_validate_steer_batch_size`。`0` 被拒而不是当作"不限"：运行时
+  的 `drain_steering` 保证队列非空时至少取 1 条，配 `0` 会**悄悄变成 1**，比直接报错难查。
+- **无新表 / 无新列**：队列是进程内 `asyncio.Queue`（`LoopQueues.steering`），配额只影响
+  每次取多少，不改变任何持久化状态。leader 不受此配额约束，理由见 `S_09` 不变量 29。
 
 ### 消息投递载荷 `meta`（F_63）
 
@@ -817,6 +846,7 @@ state["teams"][team_name] = {
     "context": ...,               # TeamRuntimeContext.model_dump()
     "model_allocator_state": ...  # allocator 的 round-robin 游标 / 已分配 model_id 等
     "lifecycle": ...,             # TeamLifecycle 字符串
+    "checkpoints": ...,           # {name: {count, description, created_by}} 命名 fork 快照
 }
 ```
 

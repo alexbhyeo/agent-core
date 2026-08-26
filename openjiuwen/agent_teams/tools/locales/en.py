@@ -5,14 +5,14 @@
 
 Key convention
 --------------
-- ``tool_name._desc``            — ToolCard description (lives in ``descs/en/<tool>.md``)
+- ``tool_name._desc``            — ToolCard description (lives in ``descs/en/<domain>/<tool>.md``)
 - ``tool_name.param``            — top-level param description
 - ``tool_name.nested.param``     — nested schema param (e.g. task item)
 """
 
 STRINGS: dict[str, str] = {
     # ===== build_team ==========================================================
-    # build_team._desc lives in descs/en/build_team.md
+    # build_team._desc lives in descs/en/team/build_team.md
     "build_team.display_name": "Human-readable display label for the team (e.g. 'Backend Platform Squad')",
     "build_team.team_desc": (
         "Team goal, delivery scope, and global directives. "
@@ -33,16 +33,30 @@ STRINGS: dict[str, str] = {
         "explicitly out of scope"
     ),
     "build_team.enable_task_verification": (
-        "Whether task verification is expected for this instance; accepts true / false / "
-        "omitted (inherit the TeamAgentSpec setting). When on, assign 0..N reviewers per task "
-        "by your own judgement when creating tasks (critical deliverables should carry "
-        "reviewers; trivial chores may skip them); a reviewed task only completes after "
-        "verification passes"
+        "Whether the verify gate runs for this instance; accepts true / false / "
+        "omitted (inherit the TeamAgentSpec setting). When on, a teammate completing a task "
+        "that carries reviewers moves it to IN_REVIEW for a verdict; when off it completes "
+        "directly and any reviewer written into create_task / update_task is ignored. "
+        "The parameter is inert when the user's config is false — the value that actually "
+        "took effect comes back as task_verification in the result"
+    ),
+    # ===== checkpoint ==========================================================
+    # checkpoint._desc lives in descs/en/member/checkpoint.md
+    "checkpoint.name": "Semantic snapshot name (e.g. code-ready). Used by later fork calls to reference this snapshot",
+    "checkpoint.description": "Optional description of why this checkpoint was taken",
+    "checkpoint.duplicate": (
+        "⚠️ Snapshot save FAILED: the name '{name}' is already taken by "
+        "{created_by} ({description}). Your snapshot was NOT created, so a "
+        "later fork will not inherit your context. Call checkpoint AGAIN with "
+        "a different name (e.g. '{name}-v2', or append a number / business "
+        "suffix) to actually save it — do not substitute a plain-text "
+        "explanation for the call. Only skip re-calling if your goal was to "
+        "inherit that existing snapshot rather than save your own."
     ),
     # ===== clean_team ==========================================================
-    # clean_team._desc lives in descs/en/clean_team.md
+    # clean_team._desc lives in descs/en/team/clean_team.md
     # ===== spawn_teammate ======================================================
-    # spawn_teammate._desc lives in descs/en/spawn_teammate.md
+    # spawn_teammate._desc lives in descs/en/member/spawn_teammate.md
     "spawn_teammate.member_name": (
         "[PUBLIC] Unique member name (semantic slug, e.g. 'backend-dev-1', "
         "DNS-label-style kebab-case). **Must start with a lowercase ASCII "
@@ -84,8 +98,29 @@ STRINGS: dict[str, str] = {
         "Keys are tool names, values are permission levels: 'allow', 'ask', or 'deny'. "
         "Example: {\"bash\": \"deny\", \"write_file\": \"ask\"}"
     ),
+    "spawn_teammate.fork": (
+        "Inherit context from an existing member to skip repeated file reading "
+        "and searching. true: inherit the caller's full current context. "
+        "A string (e.g. 'code-ready'): inherit from the named checkpoint snapshot. "
+        "Omit for a fresh empty context. All inherited SystemMessages are stripped "
+        "during capture — the source member's role identity never leaks to the new member"
+    ),
+    "spawn_teammate.fork_source": (
+        "Name of the member whose context to fork from. Defaults to the leader. "
+        "Set to a teammate name (e.g. 'understander') to fork from that member. "
+        "The source member must already be spawned and running in-process"
+    ),
+    "spawn_teammate.fork_mode": (
+        "Which side of the checkpoint to keep. Options: 'full' (the source's "
+        "whole context, default for fork=true), 'before' (messages before the "
+        "checkpoint, default for a named fork), 'after' (messages from the "
+        "checkpoint onward), 'keep_before_compact_after' (keep before, compress "
+        "after into a summary), 'keep_after_compact_before' (keep after verbatim, "
+        "compress before into a summary). Only effective with a named "
+        "checkpoint fork"
+    ),
     # ===== spawn_human_agent ===================================================
-    # spawn_human_agent._desc lives in descs/en/spawn_human_agent.md
+    # spawn_human_agent._desc lives in descs/en/member/spawn_human_agent.md
     "spawn_human_agent.member_name": (
         "[PUBLIC] Unique name for the human member (semantic slug, e.g. "
         "'product-owner', DNS-label-style kebab-case). **Must start with a "
@@ -108,7 +143,7 @@ STRINGS: dict[str, str] = {
         "by the framework template, so do not provide them here"
     ),
     # ===== spawn_bridge_agent ==================================================
-    # spawn_bridge_agent._desc lives in descs/en/spawn_bridge_agent.md
+    # spawn_bridge_agent._desc lives in descs/en/member/spawn_bridge_agent.md
     "spawn_bridge_agent.member_name": (
         "[PUBLIC] Unique name for the bridge member (semantic slug, e.g. "
         "'remote-claude-1', DNS-label-style kebab-case). **Must start with a "
@@ -158,7 +193,7 @@ STRINGS: dict[str, str] = {
         "by this field"
     ),
     # ===== spawn_external_cli ===================================================
-    # spawn_external_cli._desc lives in descs/en/spawn_external_cli.md
+    # spawn_external_cli._desc lives in descs/en/member/spawn_external_cli.md
     "spawn_external_cli.member_name": (
         "[PUBLIC] Unique name for the CLI member (semantic slug, e.g. "
         "'cli-coder-1', DNS-label-style kebab-case). **Must start with a "
@@ -192,7 +227,7 @@ STRINGS: dict[str, str] = {
         "it by name"
     ),
     # ===== shutdown_member =====================================================
-    # shutdown_member._desc lives in descs/en/shutdown_member.md
+    # shutdown_member._desc lives in descs/en/member/shutdown_member.md
     "shutdown_member.member_name": (
         "member_name of the member to request shutdown for (semantic slug, not display label)"
     ),
@@ -202,7 +237,7 @@ STRINGS: dict[str, str] = {
         "or cannot complete a normal shutdown sequence"
     ),
     # ===== approve_plan ========================================================
-    # approve_plan._desc lives in descs/en/approve_plan.md
+    # approve_plan._desc lives in descs/en/member/approve_plan.md
     "approve_plan.plan_id": "Member plan submission ID to approve or reject one exact plan revision.",
     "approve_plan.approved": (
         "Whether to approve the current plan. true means proceed to implementation; false means revise it"
@@ -220,7 +255,7 @@ STRINGS: dict[str, str] = {
     "submit_plan.plan_path": "Path to the member-authored Markdown plan file; the system copies "
                              "it to a managed snapshot for Leader review",
     # ===== approve_tool ========================================================
-    # approve_tool._desc lives in descs/en/approve_tool.md
+    # approve_tool._desc lives in descs/en/member/approve_tool.md
     "approve_tool.member_name": (
         "member_name of the member who initiated the tool approval request (semantic slug, not display label)"
     ),
@@ -243,21 +278,19 @@ STRINGS: dict[str, str] = {
         "accept continued use of that tool type"
     ),
     # ===== list_members ========================================================
-    # list_members._desc lives in descs/en/list_members.md
+    # list_members._desc lives in descs/en/member/list_members.md
     # ===== create_task ========================================================
-    # create_task._desc lives in descs/en/create_task.md
+    # create_task._desc lives in descs/en/task/create_task.md
     "create_task.tasks": "Task list — wrap single tasks in an array too",
     "create_task.task.task_id": "Custom task ID for dependency reference (auto-generated if omitted)",
     "create_task.task.title": "Task title — concise description of the goal",
     "create_task.task.content": "Task details including goals and acceptance criteria",
-    # Only the scheduled create_task variant exposes this property; the
-    # description lives under the shared create_task.* key namespace so both
-    # variants read the same strings for the properties they have in common.
+    # Both create_task variants expose assignee. Autonomous treats it as
+    # optional; scheduled requires it.
     "create_task.task.assignee": (
-        "Member name that carries this task (required); the member must already exist. "
-        "Members never claim, so an unowned task would never run — a dependency-free task "
-        "is started by the scheduling runtime, and a blocked one transfers automatically "
-        "once its dependencies complete"
+        "Member name that carries this task; the member must already exist and must not be the leader. "
+        "Optional in autonomous mode (omitted tasks enter the shared claim pool); required in scheduled mode "
+        "because members never claim there"
     ),
     "create_task.task.depends_on": (
         "Prerequisite task IDs; may reference tasks created in this same call "
@@ -269,9 +302,15 @@ STRINGS: dict[str, str] = {
         "on the dependent task"
     ),
     "create_task.task.reviewer": (
-        "Reviewer member names for this task (optional, may be several); they must already exist "
-        "and none may be the assignee. A task with reviewers enters in_review when the assignee "
-        "completes, and only reaches completed once a reviewer passes it"
+        "Reviewer entries for this task (optional, may be several); each entry is an object "
+        "with type/instruction. type: verifier / inspector / challenger. "
+        "reviewer_id is auto-generated by the system — do not provide it."
+    ),
+    "create_task.task.reviewer_type": "Reviewer type: verifier / inspector / challenger",
+    "create_task.task.reviewer_id": "Reviewer identifier (auto-generated, do not provide)",
+    "create_task.task.reviewer_instruction": (
+        "Supplementary instruction (verifier: verification guidance; "
+        "inspector: scoring rubric; challenger: not needed)"
     ),
     "create_task.task.max_review_rounds": (
         "Review-round ceiling for this task's rework loop (optional, integer >= 1, requires "
@@ -280,7 +319,7 @@ STRINGS: dict[str, str] = {
         "escalates to you instead"
     ),
     # ===== view_task ===========================================================
-    # view_task._desc lives in descs/en/view_task.md
+    # view_task._desc lives in descs/en/task/view_task.md
     "view_task.action": (
         "View mode: 'list' (default, summary of all tasks), "
         "'get' (single task detail, requires task_id), "
@@ -294,17 +333,25 @@ STRINGS: dict[str, str] = {
         "Omit to list all."
     ),
     # ===== update_task =========================================================
-    # update_task._desc lives in descs/en/update_task.md
+    # update_task._desc lives in descs/en/task/update_task.md
     "update_task.task_id": "Task ID to update, or '*' to cancel all tasks",
     "update_task.status": "Set to 'cancelled' to cancel the task",
     "update_task.title": "New task title",
     "update_task.content": "New task content",
     "update_task.assignee": (
-        "member_name to assign this task to (only when currently unassigned). A notification is sent to the assignee"
+        "member_name to assign or reassign this task to; the target must already exist and must not be the leader. "
+        "A notification is sent to the assignee"
     ),
     "update_task.reviewer": (
-        "Set this task's reviewer member names (an empty list clears the verify gate); reviewers must "
-        "already exist and none may be the assignee. Once set, the assignee's completion enters in_review"
+        "Set this task's reviewer entries (empty list clears the verify gate); each entry is an "
+        "object with type/instruction. type: verifier / inspector / challenger. "
+        "reviewer_id is auto-generated — do not provide it."
+    ),
+    "update_task.reviewer_type": "Reviewer type: verifier / inspector / challenger",
+    "update_task.reviewer_id": "Reviewer identifier (auto-generated, do not provide)",
+    "update_task.reviewer_instruction": (
+        "Supplementary instruction (verifier: verification guidance; "
+        "inspector: scoring rubric; challenger: not needed)"
     ),
     "update_task.max_review_rounds": (
         "Set this task's review-round ceiling (integer >= 1; the task must carry reviewers, or set "
@@ -317,27 +364,28 @@ STRINGS: dict[str, str] = {
     "update_task.error_human_agent_locked_cancel": (
         "Task {task_id} is claimed by a human member still on the team; it "
         "cannot be cancelled. Use send_message to coordinate with that human. "
-        "If they truly cannot continue, shutdown_member removes them from the "
-        "team, after which the task can be cancelled or reassigned"
+        "If they truly cannot continue, shutdown_member (without force) removes "
+        "them from the team, after which the task can be cancelled or reassigned"
     ),
     "update_task.error_human_agent_locked_reassign": (
         "Task {task_id} is claimed by a human member still on the team; it "
         "cannot be reassigned to {new_assignee} and must be completed by that "
-        "human. If they truly cannot continue, shutdown_member removes them "
-        "from the team, after which the task can be reassigned"
+        "human. If they truly cannot continue, shutdown_member (without force) "
+        "removes them from the team, after which the task can be reassigned"
     ),
     "update_task.error_human_agent_locked_edit": (
         "Task {task_id} is claimed by a human member still on the team; its "
         "title/content cannot be edited. Use send_message to coordinate with "
-        "that human. If they truly cannot continue, shutdown_member removes "
-        "them from the team, after which the task can be cancelled or reassigned"
+        "that human. If they truly cannot continue, shutdown_member (without "
+        "force) removes them from the team, after which the task can be "
+        "cancelled or reassigned"
     ),
     # ===== claim_task =========================================================
-    # claim_task._desc lives in descs/en/claim_task.md
+    # claim_task._desc lives in descs/en/task/claim_task.md
     "claim_task.task_id": "The ID of the task to claim or complete",
     "claim_task.status": "New status: 'claimed' (start work) or 'completed' (mark done)",
     # ===== member_complete_task ===============================================
-    # member_complete_task._desc lives in descs/en/member_complete_task.md
+    # member_complete_task._desc lives in descs/en/task/member_complete_task.md
     "member_complete_task.task_id": (
         "ID of the task to mark completed (must be a task the leader has assigned to you)"
     ),
@@ -345,15 +393,14 @@ STRINGS: dict[str, str] = {
         "Optional completion note describing your result or any follow-up the team should know about"
     ),
     # ===== verify_task ========================================================
-    # verify_task._desc lives in descs/en/verify_task.md
+    # verify_task._desc lives in descs/en/task/verify_task.md
     "verify_task.task_id": "ID of the task to verify (must be a task assigned to you to review, currently in_review)",
     "verify_task.decision": (
-        "Verdict: 'pass' (accept — task moves to completed) or 'fail' "
-        "(send back — task returns to in_progress for the author to rework)"
+        "Verdict: verifier/challenger cast 'pass'/'fail'; inspector casts a 0–1 float score (e.g. '0.85')"
     ),
     "verify_task.feedback": "Review feedback (directed to the author on a fail to guide rework; optional on pass)",
     # ===== send_message ========================================================
-    # send_message._desc lives in descs/en/send_message.md
+    # send_message._desc lives in descs/en/message/send_message.md
     "send_message.to": (
         'Recipient: member_name for a point-to-point DM (e.g. "backend-dev-1"), '
         "visible only to you and that member; "
@@ -361,11 +408,16 @@ STRINGS: dict[str, str] = {
         "as separate messages to each member, cost is linear in recipient count and "
         "MORE expensive than broadcast for the same audience, use only when truly needed "
         'and cannot mix with "*"/"user"; '
-        '"user" (teammates only, to reply to the user); '
-        '"*" to broadcast on the team channel, visible to all members'
+        '"user" (teammates only, to reply to the user; leader calls are rejected); '
+        '"*" to broadcast on the team channel, visible to all members — one broadcast '
+        "wakes every member for a full LLM turn, so cost scales linearly with team size; "
+        "reserve it for announcements everyone must see and use it sparingly"
     ),
     "send_message.content": "Message content with clear action guidance or information",
     "send_message.summary": "5-10 word summary for message preview and logging",
+    "send_message.error_leader_to_user": (
+        "Leader cannot send_message to 'user'. Reply to the user directly in your assistant output instead."
+    ),
     "send_message.error_content_too_long": (
         "'content' is too long ({actual} chars, limit {limit}): a body this size is an "
         "artifact, not a message. Write it to a file under the shared team workspace "
@@ -374,7 +426,7 @@ STRINGS: dict[str, str] = {
         "messages to get around this limit."
     ),
     # ===== send_message_scheduled (scheduled-mode member variant) ==============
-    # send_message_scheduled._desc lives in descs/en/send_message_scheduled.md
+    # send_message_scheduled._desc lives in descs/en/message/send_message_scheduled.md
     # ``content`` / ``summary`` are reused verbatim from the send_message keys
     # above — only the recipient semantics differ, so only ``to`` is redefined.
     "send_message_scheduled.to": (
@@ -388,7 +440,7 @@ STRINGS: dict[str, str] = {
     # / param schema via ``harness.prompts.tools`` providers — no entries
     # in this dict.
     # ===== workspace_meta =====================================================
-    # workspace_meta._desc lives in descs/en/workspace_meta.md
+    # workspace_meta._desc lives in descs/en/workspace/workspace_meta.md
     "workspace_meta.action": (
         "Operation type: lock (acquire file lock), "
         "unlock (release file lock), "
@@ -397,8 +449,8 @@ STRINGS: dict[str, str] = {
     ),
     "workspace_meta.path": "Relative path of the target file (required for lock/unlock/history)",
     # ===== swarmflow / structured_output ======================================
-    # swarmflow._desc lives in descs/en/swarmflow.md
-    # structured_output._desc lives in descs/en/structured_output.md (dynamic schema, no fixed params)
+    # swarmflow._desc lives in descs/en/workflow/swarmflow.md
+    # structured_output._desc lives in descs/en/common/structured_output.md (dynamic schema, no fixed params)
     "swarmflow.script_path": (
         "Path to a swarmflow script file on disk — a Python module with a top-level META (pure literal) "
         "and async def run(args), whose body uses primitives imported via from swarmflow import "
@@ -447,7 +499,7 @@ STRINGS: dict[str, str] = {
     ),
     # ===== async control tools (list / output / cancel) =======================
     # async_tasks_list._desc / async_task_output._desc / async_task_cancel._desc
-    # live in descs/en/*.md
+    # live in descs/en/async_task/*.md
     "async_task_output.task_id": "Id of the background task to query (the task_id returned by the launching tool).",
     "async_task_output.block": (
         "Whether to block until the task reaches a terminal state: when true, poll until "

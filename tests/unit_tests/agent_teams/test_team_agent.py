@@ -43,6 +43,7 @@ class _FakeCoordination:
         self.finalized = False
         self.enqueued_inputs: list[Any] = []
         self.mailbox_enqueued = False
+        self.task_poll_enqueued = False
 
     async def start(self, session=None) -> None:
         self.started = True
@@ -53,6 +54,9 @@ class _FakeCoordination:
 
     async def enqueue_initial_mailbox_poll(self) -> None:
         self.mailbox_enqueued = True
+
+    async def enqueue_initial_task_poll(self) -> None:
+        self.task_poll_enqueued = True
 
     async def finalize_round(self) -> None:
         self.finalized = True
@@ -66,16 +70,18 @@ def test_team_agent_leader_policy() -> None:
     ).build()
 
     assert leader.role == TeamRole.LEADER
-    # TeamLeader policy is injected by TeamPolicyRail as a PromptSection
+    # TeamLeader identity is injected by TeamPolicyRail as a PromptSection
     # before each model call, not stored in deep_config.system_prompt
-    # (which stays None).
+    # (which stays None). Since F_76 the leader's only prefix section is the
+    # bootstrap — the collaboration policy is disclosed by build_team.
     policy_rail = next(
         r for r in leader.harness.inner_agent._pending_rails if isinstance(r, TeamPolicyRail)
     )
-    role_section = next(
-        s for s in policy_rail._static_sections if s.name == TeamSectionName.ROLE
+    bootstrap_section = next(
+        s for s in policy_rail._static_sections if s.name == TeamSectionName.BOOTSTRAP
     )
-    assert "TeamLeader" in role_section.render("cn")
+    assert "TeamLeader" in bootstrap_section.render("cn")
+    assert "build_team" in bootstrap_section.render("cn")
 
 
 @pytest.mark.level0

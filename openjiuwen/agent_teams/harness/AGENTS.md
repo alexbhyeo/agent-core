@@ -19,6 +19,29 @@ harness/
 └── async_tools.py     # 异步后台工具框架（AsyncTool / AsyncToolRuntime / render_result_text）
 ```
 
+## 输入队列：steering 与 follow-up
+
+两条队列，同一个语义——**攒住的东西整批喂给下一次模型调用**：
+
+- `send(immediate=True)` 推进当前 round 的 steering 队列，inner loop 在下一次 model call
+  之前 drain；
+- `send(immediate=False)` 进 follow-up 队列，round 结束时**整批** drain 出来驱动下一轮
+  （[[F_71]]）。曾经是 `pop(0)` 一条一轮——两条队列本该同义却不同义，代价是每条排队输入
+  各烧一个完整 round，而且成员对最旧那条动手时看不见后面还排着什么。
+
+**steering 侧每次取多少由 rail 现场定**（[[F_78]]）：drain 之前触发
+`BEFORE_STEERING_DRAIN`（队列为空则不触发），rail 写 `SteeringDrainInputs.limit`；不写就是
+全取，即无 rail 意见时的原行为。team 的非 leader 成员由 `TeamPolicyRail` 限到
+`steer_batch_size` 条（默认 2）——那条队列装的是信箱消息，每条各说各的、一条都不能丢，
+攒多了拼成一个巨型 turn 会把模型顶崩。取不走的原封留在队列里，inner loop 本来就在
+`has_pending_steering()` 为真时继续迭代，后续 model call 依次取完；**队列非空时至少取 1 条**，
+否则 loop 会空转到 `max_iterations` 耗尽。
+
+两条批次都**不在本层拼接**：整批以列表往下走（`InputEvent.input_data` 每条一个 text frame），
+由 inner `ReActAgent._admit_user_message` 先把列表交给 `ON_USER_MESSAGE` rail、rail 增删完
+才拼成一条 user message。拼早了 rail 就只能对着正文做字符串解析——team 侧正是靠这个整条剔除
+被后来者覆盖的任务看板。
+
 ## pause / abort / resume（两个正交动词）
 
 停止点一律落在 **inner ReAct iteration 边界**。`abort` 丢弃当前 round（→ IDLE，下次 `send` 起
@@ -57,6 +80,12 @@ TeamAgent 依赖**。详见 `docs/features/F_35`（起步版）、`F_41`（统�
 **NativeHarness 集成**：`async_tool_runtime`（lazy property，`inject=self._inject_async_completion`）
 + `launch_async_tool(...)`（透传 `format_completed` / `format_failed` 给 `async_tool_runtime.launch`）
 + `stop()` 调 `cancel_all()`。
+
+**AgentTemplate 快照**：`DeepAgentSpec.agent_template_spec` 是可序列化的普通映射。
+`NativeHarness._prepare()` 初始化基础 rails 后将其还原为 `AgentTemplateSpec`，再经
+`DeepAgent.load_agent_template_spec()` 挂载；同一 harness 只加载一次，新建 harness 从其 spec
+快照重新加载。基础 rails 必须先初始化，因为模板 Skill 绑定并 reload 已存在的
+`SkillUseRail`；整个 prepare 仍发生在任何模型调用之前。见 `S_23` / `F_81`。
 
 **工具拿 harness 的方式**：照 `sessions_spawn` 形状——`AsyncTool` 持 `parent_agent`，由
 `TeamToolRail.init(agent)` 的 `agent`(NativeHarness) 在装配期注入（invoke 时 harness 早已 start）。

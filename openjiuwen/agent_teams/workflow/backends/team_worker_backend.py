@@ -11,10 +11,12 @@ For every ``agent(prompt, schema=...)`` the engine issues, the backend:
    executors, NOT teammates, so they get no team-DB roster row);
 2. derives a worker ``DeepAgentSpec`` from the team's *teammate* spec (or the
    leader spec when no teammate is configured) — so a worker is "a teammate
-   without team tools": it keeps teammate capabilities (model / tools / skills /
-   workspace / sys_operation / todo planning) but, being built straight from the
-   raw spec, carries none of the team collaboration tools (those are injected
-   per-member by the configurator, not present on the raw spec);
+   without team tools": it keeps teammate capabilities (model / tools / Skill
+   view / workspace / sys_operation / todo planning) but, being built straight
+   from the raw spec, carries none of the team collaboration tools (those are
+   injected per-member by the configurator, not present on the raw spec). Its
+   Skill view is the one shared library narrowed by its own visibility
+   declaration, mounted here rather than inherited from the raw spec;
 3. builds a :class:`TeamHarness` over that spec and runs it for ONE non-streaming
    execution via :meth:`TeamHarness.run_once` (a plain ``DeepAgent.invoke`` — no
    supervisor, no steer); the worker ends by calling ``structured_output``, whose
@@ -31,6 +33,7 @@ control-flow helper already tolerates).
 The actual harness execution lives in :meth:`_execute_worker` so tests can
 override it without standing up a real LLM.
 """
+
 from __future__ import annotations
 
 import re
@@ -40,7 +43,6 @@ from openjiuwen.agent_teams.kv_cache import kv_cache_hooks
 from openjiuwen.agent_teams.schema.team import TeamRole
 from openjiuwen.agent_teams.schema.deep_agent_spec import WorkspaceSpec
 from openjiuwen.agent_teams.tools.locales import make_translator
-from openjiuwen.agent_teams.workspace_layout import ensure_team_member_workspace_link
 from openjiuwen.agent_teams.tools.structured_output_tool import (
     StructuredOutputFinishRail,
     StructuredOutputTool,
@@ -114,6 +116,7 @@ class TeamWorkerBackend(AgentBackend):
         on_human_prompt: Callable[[str, str, str], None] | None = None,
         on_human_replied: Callable[[str, str, str | None], None] | None = None,
         run_id: str | None = None,
+        workflow_name: str | None = None,
     ) -> None:
         super().__init__()
         self._model = model
@@ -129,13 +132,31 @@ class TeamWorkerBackend(AgentBackend):
         self._on_human_prompt = on_human_prompt
         self._on_human_replied = on_human_replied
         self._run_id = run_id
+        self._workflow_name = workflow_name
         self._run_prefix = self._run_id_prefix(run_id)
         self._worktrees = SwarmflowWorkerWorktrees(
             team_name=team_name,
             build_context=build_context,
             session_id=session_id,
         )
-        self._t = make_translator(language if language in ("cn", "en") else "cn")
+        # Bind the team's resident WorkspaceCache when the build context
+        # exposes a workspace manager, so worker prompts (swarmflow_worker /
+        # structured_output) resolve evolved values; None (no team workspace)
+        # keeps the framework defaults. The worker path has no TeamBackend
+        # object (it runs outside the member shell), so manager-direct access
+        # is the one declared exception to the "read cache off the backend"
+        # contract.
+        cache = None
+        if build_context is not None:
+            from openjiuwen.agent_teams.rails.team_context import get_workspace_manager
+
+            ws_mgr = get_workspace_manager(build_context)
+            if ws_mgr is not None:
+                cache = ws_mgr.workspace_cache
+        self._t = make_translator(
+            language if language in ("cn", "en") else "cn",
+            ws_cache=cache,
+        )
         self._counter = 0
         # Stateful agent_session / human_session manager, built on first use so a
         # workflow that only uses single-shot agent() never pays for it.
@@ -183,6 +204,19 @@ class TeamWorkerBackend(AgentBackend):
                 budget_rail=budget_rail,
             )
             return AgentResult(text=text, tokens=budget_rail.call_tokens)
+        except Exception as e:
+            # Attach this call's rail tally so a failed/budget-exhausted agent's
+            # real consumption still reaches the AGENT_FAILED event tokens (the
+            # ledger already billed it; without this the run's token sum would
+            # drop it while Team budget stayed correct).
+            call_tokens = budget_rail.call_tokens or None
+            if isinstance(e, BackendError):
+                if e.tokens is None:
+                    e.tokens = call_tokens
+            elif call_tokens is not None:
+                # Wrap a non-backend error so _attempt_calls can still read .tokens
+                e = BackendError(str(e), tokens=call_tokens)
+            raise
         finally:
             await self._worktrees.finalize(member_name)
 
@@ -209,14 +243,37 @@ class TeamWorkerBackend(AgentBackend):
                 messager=self._messager,
                 session_id=self._session_id,
                 run_id=self._run_id,
+                workflow_name=self._workflow_name,
                 on_human_prompt=self._on_human_prompt,
                 on_human_replied=self._on_human_replied,
             )
         return self._session_mgr
 
-    async def open_session(self, *, kind: str, instructions: str | None, opts: dict) -> str:
+    async def capture_fork(self, session_id: str, *, keep_rounds: int | None, fork_mode: str) -> dict | None:
+        """Snapshot a session's context for forking (see :class:`AvatarSessionManager`)."""
+        return await self._sessions().capture_fork(session_id, keep_rounds=keep_rounds, fork_mode=fork_mode)
+
+    async def ensure_member_name(self, *, kind: str, opts: dict) -> str:
+        """Reserve a session's member identity without building its avatar."""
+        return await self._sessions().ensure_member_name(kind=kind, opts=opts)
+
+    async def open_session(
+        self,
+        *,
+        kind: str,
+        instructions: str | None,
+        opts: dict,
+        fork_data: dict | None = None,
+        member_name: str | None = None,
+    ) -> str:
         """Open a stateful session (see :class:`AvatarSessionManager`)."""
-        return await self._sessions().open_session(kind=kind, instructions=instructions, opts=opts)
+        return await self._sessions().open_session(
+            kind=kind,
+            instructions=instructions,
+            opts=opts,
+            fork_data=fork_data,
+            member_name=member_name,
+        )
 
     async def send_turn(
         self,
@@ -310,9 +367,7 @@ class TeamWorkerBackend(AgentBackend):
         )
 
         if self._worker_base_spec is None:
-            raise BackendError(
-                "TeamWorkerBackend requires a worker_base_spec to build a worker harness"
-            )
+            raise BackendError("TeamWorkerBackend requires a worker_base_spec to build a worker harness")
 
         try:
             # Worker = teammate without team tools: per-call model (else inherit),
@@ -324,17 +379,16 @@ class TeamWorkerBackend(AgentBackend):
                 team_name=self._team_name,
                 member_name=member_name,
                 system_prompt=(
-                    self._t("swarmflow_worker", key="schema")
-                    if has_schema
-                    else self._t("swarmflow_worker", key="free")
+                    self._t("swarmflow_worker", key="schema") if has_schema else self._t("swarmflow_worker", key="free")
                 ),
                 model=model,
                 extra_tools=tools,
                 description="swarmflow worker",
             )
             # Worker gets its own workspace, not the teammate's.
-            worker_workspace = self._setup_worker_workspace(member_name)
-            worker_spec = worker_spec.model_copy(update={"workspace": worker_workspace})
+            worker_workspace, worker_cwd = self._setup_worker_workspace(member_name)
+            worker_spec = worker_spec.model_copy(update={"workspace": worker_workspace, "cwd": worker_cwd})
+            worker_spec = self._apply_worker_skill_visibility(worker_spec, member_name)
             worker_build_context = derive_member_build_context(
                 self._build_context,
                 team_name=self._team_name,
@@ -392,51 +446,128 @@ class TeamWorkerBackend(AgentBackend):
     # Worker workspace setup
     # ------------------------------------------------------------------
 
-    def _setup_worker_workspace(self, member_name: str) -> WorkspaceSpec:
+    def _setup_worker_workspace(self, member_name: str) -> tuple[WorkspaceSpec, str | None]:
         """Compute, link, and mount the worker's independent workspace.
 
         Mirrors the layout used by ``agent_configurator`` for stable_base
         members: each worker gets its own workspace at
-        ``{agent_teams_home}/{team_name}/workspaces/{member}_workspace/``.
-        It lives under the team home, which ``agent_configurator`` already
-        registers for team cleanup — so the worker workspace is removed with
-        the team and needs no per-worker cleanup registration. Also mounts the
-        team shared workspace into the worker's tree (``.team/{team_name}/``).
+        the member link position ``workspaces/{member}_workspace`` (a junction
+        to ``.agent_teams/<team>#<member>`` for dynamic workers, a real
+        in-team dir for the leader). It lives under the team home, which
+        ``agent_configurator`` already registers for team cleanup — so the
+        worker workspace is removed with the team and needs no per-worker
+        cleanup registration. Also mounts the team shared workspace into the
+        worker's tree (``.team/{team_name}/``).
+
+        The workspace is always the worker's own directory. With
+        ``agent(options={"isolation": "worktree"})`` only the *cwd* moves into
+        the owner-scoped worktree — otherwise the worker's artifacts and its
+        Skill visibility declaration would live inside an ephemeral checkout and
+        vanish with it.
 
         Returns:
-            A ``WorkspaceSpec`` with the worker's resolved root_path.
+            The worker's ``WorkspaceSpec`` and its cwd (the worktree path when
+            isolated, else ``None`` meaning "use the workspace root").
         """
         worktree = self._worktrees.get(member_name)
-        workspace_is_worktree = worktree is not None
-        # Compute worker's workspace path. With ``agent(options={"isolation": "worktree"})``,
-        # the worker starts directly inside the owner-scoped worktree.
-        ws_root = (
-            worktree.worktree_path
-            if worktree is not None
-            else ensure_team_member_workspace_link(self._team_name, member_name)
-        )
+        worker_cwd = worktree.worktree_path if worktree is not None else None
+        ws_root = self._member_workspace_root(member_name)
 
         if self._worker_base_spec.workspace is not None:
             # Inherit language / stable_base from the base spec, only override root_path.
             worker_workspace = self._worker_base_spec.workspace.model_copy(
-                update={"root_path": ws_root, "stable_base": not workspace_is_worktree}
+                update={"root_path": ws_root, "stable_base": True}
             )
         else:
             # Base spec has no workspace — create a fresh one for this worker.
             worker_workspace = WorkspaceSpec(
                 root_path=ws_root,
                 language=self._language,
-                stable_base=not workspace_is_worktree,
+                stable_base=True,
             )
 
         # Mount team workspace into worker workspace so it can access shared
         # files via .team/{team_name}/ — mirrors agent_configurator.
         from openjiuwen.agent_teams.rails.team_context import get_workspace_manager
+
         workspace_manager = get_workspace_manager(self._build_context)
         if workspace_manager is not None:
             workspace_manager.mount_into_workspace(ws_root)
 
-        return worker_workspace
+        return worker_workspace, worker_cwd
+
+    def _apply_worker_skill_visibility(self, worker_spec: Any, member_name: str) -> Any:
+        """Give the worker the team Skill rail instead of the generic one.
+
+        A worker derives from the raw teammate spec, so it inherits that spec's
+        ``skills`` list and would have the DeepAgent factory auto-add the
+        generic ``SkillUseRail`` over its own workspace ``skills/`` node plus
+        every mounted team directory. Workers own no Skill library either: they
+        read the one shared library narrowed by their own visibility
+        declaration, exactly like a teammate. The inherited ``skills`` names are
+        not lost — they seed that declaration the first time it is written.
+
+        Args:
+            worker_spec: The derived worker ``DeepAgentSpec``.
+            member_name: The minted worker identity.
+
+        Returns:
+            A spec copy with Skill discovery replaced by the team Skill rail.
+        """
+        from openjiuwen.agent_teams.skill.rail_spec import (
+            build_team_skill_rail_spec,
+            complete_declared_team_skill_rails,
+        )
+
+        team_workspace_path = self._team_workspace_path()
+        # The base spec may already declare a bare team Skill rail (an embedder
+        # blueprint owns the exposure mode but cannot know the minted worker
+        # identity); complete it before deciding whether one has to be added.
+        declared_rails = complete_declared_team_skill_rails(
+            list(worker_spec.rails or []),
+            team_name=self._team_name,
+            member_name=member_name,
+            config_skills=worker_spec.skills,
+            team_workspace_path=team_workspace_path,
+        )
+        declared_rails = list(declared_rails)
+        skill_rail_spec = build_team_skill_rail_spec(
+            team_name=self._team_name,
+            member_name=member_name,
+            config_skills=worker_spec.skills,
+            declared_rails=declared_rails,
+            team_workspace_path=team_workspace_path,
+        )
+        if skill_rail_spec is not None:
+            declared_rails.append(skill_rail_spec)
+        return worker_spec.model_copy(
+            update={
+                "rails": declared_rails,
+                "skills": [],
+                "enable_skill_discovery": False,
+            },
+        )
+
+    def _team_workspace_path(self) -> str | None:
+        """Return the shared team workspace root, or None when there is none."""
+        from openjiuwen.agent_teams.rails.team_context import get_workspace_manager
+
+        workspace_manager = get_workspace_manager(self._build_context)
+        if workspace_manager is None:
+            return None
+        return workspace_manager.workspace_path
+
+    def _member_workspace_root(self, member_name: str) -> str:
+        """Resolve the worker's workspace root.
+
+        Returns the member link path (``workspaces/<member>_workspace`` — the
+        legacy ``team_member_workspace_dir`` shape restored by 301, a junction
+        to the flattened real directory for dynamic workers, the in-team real
+        dir for the leader).
+        """
+        from openjiuwen.agent_teams.workspace_layout import ensure_team_member_workspace_link
+
+        return ensure_team_member_workspace_link(self._team_name, member_name)
 
     # ------------------------------------------------------------------
     # Helpers

@@ -22,6 +22,7 @@ from openjiuwen.agent_teams.kv_cache import kv_cache_hooks
 from openjiuwen.agent_teams.schema.status import MemberStatus
 from openjiuwen.agent_teams.schema.team import TeamRole
 from openjiuwen.core.common.logging import team_logger
+from openjiuwen.harness.prompts import resolve_language as _resolve_language
 from openjiuwen.core.session.agent_team import Session as AgentTeamSession
 
 if TYPE_CHECKING:
@@ -93,7 +94,12 @@ class CoordinationKernel:
         if role == TeamRole.LEADER and blueprint.spec.dispatch_mode == "scheduled":
             from openjiuwen.agent_teams.agent.scheduling import TeamScheduler
 
-            self._scheduler = TeamScheduler(host, blueprint=blueprint, infra=infra)
+            self._scheduler = TeamScheduler(
+                host,
+                blueprint=blueprint,
+                infra=infra,
+                build_context=host.build_context,
+            )
 
     @property
     def event_bus(self) -> Optional[EventBus]:
@@ -190,6 +196,27 @@ class CoordinationKernel:
             await infra.workspace_manager.initialize(remote_url=remote_url)
             infra.workspace_initialized = True
 
+        # Seed the team-workspace framework baselines (system prompt templates
+        # + tool descriptions). These are static framework-source copies that
+        # do not depend on the team DB row or on the workspace manager, so they
+        # are written here on start — idempotently (evolved files are never
+        # overwritten; missing ones are seeded; framework upgrades land).
+        # Writing at ``coordination.start`` (before the first tool call) lets
+        # the read-side cache serve every member that runs in this process.
+        # Skipped when the evolution mechanism is off — no file, no cache prime.
+        team_name = host.team_name
+        evolution_enabled = blueprint.spec.evolution_enabled if blueprint and blueprint.spec else True
+        if team_name and evolution_enabled:
+            config_language = blueprint.spec.language if blueprint and blueprint.spec else None
+            resolved_language = _resolve_language(config_language)
+            from openjiuwen.agent_teams.team_workspace.assembler import WorkspaceAssembler
+
+            cache = infra.workspace_manager.workspace_cache if infra.workspace_manager else None
+            WorkspaceAssembler(cache=cache).write_system_and_tool_prompts(
+                team_name=team_name,
+                language=resolved_language,
+            )
+
         # Wire up the team memory toolkit once the harness and workspace
         # are ready. init_toolkit is idempotent; calling it on every start
         # is safe.
@@ -206,6 +233,11 @@ class CoordinationKernel:
                     query=host.state.pending_user_query or "",
                 )
 
+        # Re-baseline the leader's member activity view before reporting
+        # READY: that first status update is what can produce this cycle's
+        # team-idle edge, so it must be evaluated against the roster the
+        # database actually holds. No-op for every other role.
+        await host.seed_member_registry()
         await host.update_status(MemberStatus.READY)
         # Re-base the idle clock before the poll timers come back. A member
         # that was already idle when the team paused keeps its idle stamp
@@ -632,6 +664,31 @@ class CoordinationKernel:
             InnerEventMessage(event_type=InnerEventType.POLL_MAILBOX),
         )
 
+    async def enqueue_initial_task_poll(self) -> None:
+        """Queue the member's one startup board survey (F_69).
+
+        The counterpart of ``enqueue_initial_mailbox_poll``: the mailbox
+        sweep picks up messages sent while the member was down, this one
+        picks up *work* assigned while it was down. A task assigned at
+        creation time is announced only by a transient ``TASK_CLAIMED``
+        event, which a member that has not started yet — ``spawn_member``
+        leaves it ``UNSTARTED`` — can never receive.
+
+        Leader-excluded for the same reason as the mailbox poll: its board
+        survey renders the whole board (or an all-done prompt on an empty
+        one), which is not what a leader coming up should be handed. Queued
+        after the mailbox poll so the member reads its messages first and
+        the board second.
+        """
+        host = self._host
+        if host.role == TeamRole.LEADER:
+            return
+        if self._event_bus is None:
+            return
+        await self._event_bus.enqueue(
+            InnerEventMessage(event_type=InnerEventType.INITIAL_POLL_TASK),
+        )
+
     async def drain_agent_task(self) -> None:
         """Hard-cancel the in-flight round. Stop / teardown paths only."""
         await self._host.stream_controller.drain_agent_task()
@@ -686,7 +743,7 @@ class CoordinationKernel:
 
     async def wake_mailbox_if_interrupt_cleared(self) -> None:
         host = self._host
-        if host.role != TeamRole.TEAMMATE:
+        if not host.role.is_coordinated_member:
             return
         if host.has_pending_interrupt():
             return

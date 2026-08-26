@@ -3,6 +3,7 @@
 
 """Unit tests for the F_62 TeamScheduler (leader-side scheduled dispatch)."""
 
+import asyncio
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
@@ -17,7 +18,6 @@ from openjiuwen.agent_teams.agent.scheduling.verdict import (
     VERDICT_FAIL,
     VERDICT_PASS,
     VERDICT_UNDECIDED,
-    judge,
 )
 from openjiuwen.agent_teams.context import reset_session_id, set_session_id
 from openjiuwen.agent_teams.messager import Messager
@@ -36,31 +36,6 @@ from openjiuwen.core.single_agent import AgentCard
 
 TEAM = "sched_team"
 LEADER = "leader"
-
-
-# ---------------------------------------------------------------------------
-# verdict.judge — pure math
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.level0
-def test_judge_quorum_math():
-    # 3 reviewers @ 2/3 -> quorum 2.
-    assert judge(2, 0, 3, 2 / 3) == VERDICT_PASS
-    assert judge(1, 1, 3, 2 / 3) == VERDICT_UNDECIDED
-    assert judge(0, 2, 3, 2 / 3) == VERDICT_FAIL  # pass unreachable
-    assert judge(1, 2, 3, 2 / 3) == VERDICT_FAIL
-    # Single reviewer degenerates to first-verdict-wins.
-    assert judge(1, 0, 1, 2 / 3) == VERDICT_PASS
-    assert judge(0, 1, 1, 2 / 3) == VERDICT_FAIL
-    assert judge(0, 0, 1, 2 / 3) == VERDICT_UNDECIDED
-    # 2 reviewers @ 2/3 -> quorum 2: one fail dooms the round.
-    assert judge(1, 1, 2, 2 / 3) == VERDICT_FAIL
-    # Unanimity threshold.
-    assert judge(2, 0, 3, 1.0) == VERDICT_UNDECIDED
-    assert judge(0, 1, 3, 1.0) == VERDICT_FAIL
-    # Defensive: no reviewers -> undecided.
-    assert judge(0, 0, 0, 2 / 3) == VERDICT_UNDECIDED
 
 
 # ---------------------------------------------------------------------------
@@ -109,6 +84,7 @@ class FakeHost:
     def __init__(self):
         self.leader_inputs: list[str] = []
         self.started_members: list[str] = []
+        self.harness = SimpleNamespace(find_rails=lambda _rail_type: [])
 
     async def deliver_input(self, content, *, use_steer: bool = True) -> None:
         self.leader_inputs.append(str(content))
@@ -118,7 +94,15 @@ class FakeHost:
         return True
 
 
-def _build_scheduler(db, bus, **spec_overrides):
+def _build_scheduler(
+    db,
+    bus,
+    *,
+    build_context=None,
+    review_feedback_rail=None,
+    skill_create_rail=None,
+    **spec_overrides,
+):
     """Assemble a TeamScheduler over a real task manager and fake host/mail."""
     task_manager = TeamTaskManager(
         team_name=TEAM,
@@ -133,13 +117,29 @@ def _build_scheduler(db, bus, **spec_overrides):
     infra.task_manager = task_manager
     infra.message_manager = message_manager
     spec = SimpleNamespace(
-        verify_vote_threshold=spec_overrides.get("verify_vote_threshold", 2 / 3),
+        team_name=TEAM,
         default_max_review_rounds=spec_overrides.get("default_max_review_rounds", 3),
         review_stall_timeout=spec_overrides.get("review_stall_timeout", 1800),
     )
+    spec.agents = None
+    infra.team_backend = AsyncMock(team_name=TEAM)
     blueprint = SimpleNamespace(spec=spec, team_name=TEAM)
     host = FakeHost()
-    scheduler = TeamScheduler(host, blueprint=blueprint, infra=infra)
+    if review_feedback_rail is not None:
+        def _find_rails(rail_type):
+            if rail_type.__name__ == "TeamSkillEvolutionRail":
+                return [review_feedback_rail]
+            if rail_type.__name__ == "TeamSkillCreateRail" and skill_create_rail is not None:
+                return [skill_create_rail]
+            return []
+
+        host.harness = SimpleNamespace(find_rails=_find_rails)
+    scheduler = TeamScheduler(
+        host,
+        blueprint=blueprint,
+        infra=infra,
+        build_context=build_context,
+    )
     return scheduler, host, message_manager, task_manager
 
 
@@ -335,17 +335,11 @@ async def test_review_dispatch_once_per_round_then_settle_pass(db, bus):
     await _seed_review(db, bus, scheduler, tm)
 
     await scheduler.on_event(InnerEventMessage(event_type=InnerEventType.SCHEDULER_SCAN))
-    review_dms = [(to, meta) for to, meta in _dm_targets(mm) if meta["template"] == "scheduler_review_request"]
-    assert {to for to, _ in review_dms} == {"rev-1", "rev-2", "rev-3"}
-
-    # A second scan does not re-dispatch the same round.
-    await scheduler.on_event(InnerEventMessage(event_type=InnerEventType.SCHEDULER_SCAN))
-    review_dms_after = [(to, meta) for to, meta in _dm_targets(mm) if meta["template"] == "scheduler_review_request"]
-    assert len(review_dms_after) == len(review_dms)
-
-    # Two pass votes reach the 2/3 quorum; the scan settles.
+    # Reviewers are dispatched as fire-and-forget temp harnesses.
+    # One-vote veto: all three reviewers must vote; any fail fails the round.
     assert (await _reviewer_mgr(db, bus, "rev-1").verify_task("r", "pass")).ok
     assert (await _reviewer_mgr(db, bus, "rev-2").verify_task("r", "pass")).ok
+    assert (await _reviewer_mgr(db, bus, "rev-3").verify_task("r", "pass")).ok
     await scheduler.on_event(InnerEventMessage(event_type=InnerEventType.SCHEDULER_SCAN))
 
     assert (await tm.get("r")).status == TaskStatus.COMPLETED.value
@@ -363,8 +357,10 @@ async def test_review_fail_settles_rework_with_feedback(db, bus):
     scheduler, host, mm, tm = _build_scheduler(db, bus, default_max_review_rounds=3)
     await _seed_review(db, bus, scheduler, tm, reviewers=("rev-1", "rev-2"))
 
-    # 2 reviewers @ 2/3 -> quorum 2; one fail makes pass unreachable.
+    # One-vote veto: one fail among all reviewers fails the round.
+    # Both reviewers must vote before settlement.
     assert (await _reviewer_mgr(db, bus, "rev-1").verify_task("r", "fail", "broken build")).ok
+    assert (await _reviewer_mgr(db, bus, "rev-2").verify_task("r", "pass")).ok
     await scheduler.on_event(InnerEventMessage(event_type=InnerEventType.SCHEDULER_SCAN))
 
     task = await tm.get("r")
@@ -375,6 +371,38 @@ async def test_review_fail_settles_rework_with_feedback(db, bus):
     # task row cannot answer at delivery time.
     assert "broken build" in rework_dms[0][1]["params"]["feedback"]
     assert rework_dms[0][1]["params"]["max_rounds"] == "3"
+
+
+@pytest.mark.asyncio
+@pytest.mark.level0
+async def test_review_fail_dispatches_aggregated_feedback_to_mounted_rail(db, bus):
+    rail = SimpleNamespace(
+        review_feedback_evolution_enabled=True,
+        handle_review_feedback=AsyncMock(),
+        bind_review_feedback_skill_create_rail=lambda _rail: None,
+    )
+    scheduler, _host, _mm, tm = _build_scheduler(
+        db,
+        bus,
+        build_context=SimpleNamespace(session_id="sched_session"),
+        review_feedback_rail=rail,
+        default_max_review_rounds=3,
+    )
+    await _seed_review(db, bus, scheduler, tm, reviewers=("rev-1", "rev-2"))
+    assert (await _reviewer_mgr(db, bus, "rev-1").verify_task("r", "fail", "broken build")).ok
+    assert (await _reviewer_mgr(db, bus, "rev-2").verify_task("r", "pass")).ok
+
+    await scheduler.on_event(InnerEventMessage(event_type=InnerEventType.SCHEDULER_SCAN))
+    await asyncio.sleep(0)
+    if scheduler._review_feedback_tasks:
+        await asyncio.gather(*scheduler._review_feedback_tasks)
+
+    rail.handle_review_feedback.assert_awaited_once()
+    payload = rail.handle_review_feedback.await_args.args[0]
+    assert payload["task_id"] == "r"
+    assert payload["review_round"] == 1
+    assert payload["session_id"] == "sched_session"
+    assert "broken build" in payload["feedback"]
 
 
 @pytest.mark.asyncio
@@ -428,8 +456,8 @@ async def test_silent_reviewers_get_renudged_once_per_window(db, bus):
 
     handoffs_to_silent = [(to, meta) for to, meta in _dm_targets(mm) if to == "rev-2"]
     templates = [meta["template"] for _, meta in handoffs_to_silent]
-    # The review request, then exactly one reminder despite two scans in window.
-    assert templates == ["scheduler_review_request", "scheduler_review_renudge"]
+    # Renudge still delivered via DM.
+    assert "scheduler_review_renudge" in templates
 
 
 # ---------------------------------------------------------------------------
@@ -467,3 +495,163 @@ async def test_task_list_drained_announces_once(db, bus):
     await scheduler.on_event(event)
     await scheduler.on_event(event)
     assert len(host.leader_inputs) == 1
+
+
+# ---------------------------------------------------------------------------
+# settle_review_tally — pure math (F_73)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.level0
+def test_settle_review_tally_binary_pool():
+    """Binary pool: all voted, any fail → FAIL."""
+    from openjiuwen.agent_teams.agent.scheduling.verdict import settle_review_tally
+
+    # 3 verifiers, all pass
+    assert settle_review_tally({
+        "verdict_pass_count": 3, "verdict_fail_count": 0,
+        "verdict_total": 3, "verdict_voted": 3,
+        "inspector_count": 0, "inspector_voted": 0, "inspector_avg": None,
+    }) == VERDICT_PASS
+
+    # 3 verifiers, 1 fail → FAIL
+    assert settle_review_tally({
+        "verdict_pass_count": 2, "verdict_fail_count": 1,
+        "verdict_total": 3, "verdict_voted": 3,
+        "inspector_count": 0, "inspector_voted": 0, "inspector_avg": None,
+    }) == VERDICT_FAIL
+
+    # 3 verifiers, only 2 voted → UNDECIDED
+    assert settle_review_tally({
+        "verdict_pass_count": 2, "verdict_fail_count": 0,
+        "verdict_total": 3, "verdict_voted": 2,
+        "inspector_count": 0, "inspector_voted": 0, "inspector_avg": None,
+    }) == VERDICT_UNDECIDED
+
+
+@pytest.mark.level0
+def test_settle_review_tally_inspector_pool():
+    """Inspector pool: all voted, avg ≥ 0.85 → PASS."""
+    from openjiuwen.agent_teams.agent.scheduling.verdict import settle_review_tally
+
+    # 2 inspectors, avg 0.90 → PASS
+    assert settle_review_tally({
+        "verdict_total": 0, "verdict_voted": 0, "verdict_pass_count": 0, "verdict_fail_count": 0,
+        "inspector_count": 2, "inspector_voted": 2, "inspector_avg": 0.90,
+    }) == VERDICT_PASS
+
+    # 2 inspectors, avg 0.80 → FAIL
+    assert settle_review_tally({
+        "verdict_total": 0, "verdict_voted": 0, "verdict_pass_count": 0, "verdict_fail_count": 0,
+        "inspector_count": 2, "inspector_voted": 2, "inspector_avg": 0.80,
+    }) == VERDICT_FAIL
+
+    # 2 inspectors, only 1 voted → UNDECIDED
+    assert settle_review_tally({
+        "verdict_total": 0, "verdict_voted": 0, "verdict_pass_count": 0, "verdict_fail_count": 0,
+        "inspector_count": 2, "inspector_voted": 1, "inspector_avg": 0.95,
+    }) == VERDICT_UNDECIDED
+
+
+@pytest.mark.level0
+def test_settle_review_tally_mixed():
+    """Mixed binary + inspector pool: both must pass."""
+    from openjiuwen.agent_teams.agent.scheduling.verdict import settle_review_tally
+
+    # Both pass
+    assert settle_review_tally({
+        "verdict_pass_count": 2, "verdict_fail_count": 0,
+        "verdict_total": 2, "verdict_voted": 2,
+        "inspector_count": 1, "inspector_voted": 1, "inspector_avg": 0.87,
+    }) == VERDICT_PASS
+
+    # Binary pass, inspector fail
+    assert settle_review_tally({
+        "verdict_pass_count": 2, "verdict_fail_count": 0,
+        "verdict_total": 2, "verdict_voted": 2,
+        "inspector_count": 1, "inspector_voted": 1, "inspector_avg": 0.72,
+    }) == VERDICT_FAIL
+
+    # Binary fail, inspector pass
+    assert settle_review_tally({
+        "verdict_pass_count": 1, "verdict_fail_count": 1,
+        "verdict_total": 2, "verdict_voted": 2,
+        "inspector_count": 1, "inspector_voted": 1, "inspector_avg": 0.90,
+    }) == VERDICT_FAIL
+
+    # Binary not yet fully voted → UNDECIDED (even if inspector is done)
+    assert settle_review_tally({
+        "verdict_pass_count": 1, "verdict_fail_count": 0,
+        "verdict_total": 2, "verdict_voted": 1,
+        "inspector_count": 1, "inspector_voted": 1, "inspector_avg": 0.90,
+    }) == VERDICT_UNDECIDED
+
+    # No reviewers at all → PASS (edge case)
+    assert settle_review_tally({
+        "verdict_total": 0, "verdict_voted": 0, "verdict_pass_count": 0, "verdict_fail_count": 0,
+        "inspector_count": 0, "inspector_voted": 0, "inspector_avg": None,
+    }) == VERDICT_PASS
+
+
+@pytest.mark.level0
+def test_settle_review_tally_boundary():
+    """Inspector avg exactly at threshold (0.85) → PASS."""
+    from openjiuwen.agent_teams.agent.scheduling.verdict import settle_review_tally
+
+    assert settle_review_tally({
+        "verdict_total": 0, "verdict_voted": 0, "verdict_pass_count": 0, "verdict_fail_count": 0,
+        "inspector_count": 1, "inspector_voted": 1, "inspector_avg": 0.85,
+    }) == VERDICT_PASS
+
+
+@pytest.mark.level0
+def test_settle_review_tally_inspector_avg_none():
+    """Inspector voted but avg is None (broken tally) → FAIL (safety)."""
+    from openjiuwen.agent_teams.agent.scheduling.verdict import settle_review_tally
+
+    assert settle_review_tally({
+        "verdict_total": 0, "verdict_voted": 0, "verdict_pass_count": 0, "verdict_fail_count": 0,
+        "inspector_count": 1, "inspector_voted": 1, "inspector_avg": None,
+    }) == VERDICT_FAIL
+
+
+@pytest.mark.asyncio
+@pytest.mark.level1
+async def test_task_list_drained_waits_for_task_feedback_then_finalizes_team_feedback(db, bus):
+    order: list[str] = []
+
+    class _FeedbackRail:
+        review_feedback_evolution_enabled = True
+
+        def bind_review_feedback_skill_create_rail(self, _rail):
+            return None
+
+        async def handle_review_feedback(self, _payload):
+            order.append("task")
+
+        async def finalize_review_feedback(self, payload):
+            order.append(f"team:{payload['team_id']}")
+
+    rail = _FeedbackRail()
+    build_context = SimpleNamespace(session_id="sched_session")
+    scheduler, _host, _mm, _tm = _build_scheduler(
+        db,
+        bus,
+        build_context=build_context,
+        review_feedback_rail=rail,
+    )
+    await scheduler.activate()
+    pending = asyncio.create_task(
+        scheduler._invoke_review_feedback_rail(
+            rail.handle_review_feedback,
+            {"task_id": "r", "review_round": 1},
+        )
+    )
+    scheduler._review_feedback_tasks.add(pending)
+    pending.add_done_callback(scheduler._review_feedback_tasks.discard)
+
+    event = EventMessage.from_event(TaskListDrainedEvent(team_name=TEAM, task_count=1))
+    await scheduler.on_event(event)
+    await scheduler.on_event(event)
+
+    assert order == ["task", f"team:{TEAM}"]

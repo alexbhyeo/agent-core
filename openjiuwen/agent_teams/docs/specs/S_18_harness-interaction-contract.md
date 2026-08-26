@@ -1,6 +1,6 @@
 # S_18 Harness 交互契约（HarnessProtocol / MemberRuntime）
 
-最近一次修订日期：2026-07-09
+最近一次修订日期：2026-08-13
 
 本 spec 定义 agent_teams harness 层的对外交互契约。阶段 1（NativeHarness 接管 task
 loop）的实现细节见 [[F_27_native-harness-task-loop]]；阶段 B（NativeHarness 收编
@@ -32,13 +32,18 @@ TeamHarness/StreamController）的决策见 [[F_28_native-harness-team-adoption]
 | `start` | `async (*, session: Session \| None = None)` | 初始化并启动 supervisor；可注入外部 session |
 | `stop` | `async ()` | 取消在途工作、关闭输出、转 TERMINATED |
 | `outputs` | `() -> AsyncIterator[OutputSchema]` | queue-backed 输出迭代器（单消费者，`_END` sentinel 终止） |
-| `send` | `async (content, *, immediate=False) -> str` | 提交输入，immediate=True 注入当前 round；返回 seq id |
+| `send` | `async (content, *, immediate=False) -> str` | 提交输入，immediate=True 注入当前 round，False 进 follow-up 队列（整批驱动下一轮，见下）；返回 seq id |
 | `abort` | `async (*, immediate=False)` | 中止当前 round → IDLE。graceful（False）在 iteration 边界停；immediate（True）硬取消 + 回退最近边界 |
 | `pause` | `async ()` | 在最近的 inner ReAct iteration 边界暂停 → PAUSED，round 保留可续 |
 | `resume` | `async (*, query=None)` | 从保留的 context 原地续跑 paused round（不追加新的 user turn）。`query` 驱动**冷恢复**（harness 已重建、context 来自 checkpoint）；warm 恢复忽略它 |
 
 `abort` 与 `pause` 是**两个正交动词**：abort 丢弃当前 round（下次 `send` 起全新 round），
 pause 停在干净边界并保留 round（`resume` 原地续）。
+
+`DeepAgentSpec.completion_timeout` 在 NativeHarness 中是非终止性的慢轮次告警阈值：正数到期后
+周期记录 warning，但不取消 scheduler task；`None` 表示不限时且不启动告警 task。普通
+DeepAgent 的同名配置仍是单轮硬超时；超时时 task-loop 负责取消对应 scheduler task 并返回
+标准 `result_type="error"` 结果，避免输出层把裸 `{"error": ...}` 序列化为空回答。
 
 `MemberRuntime` 额外声明：`subscribe(*, on_state=None, on_round=None)`（单一订阅入口，
 两回调 keyword-only 且可选，只注册非 None 的，kwargs 按回调声明参数 narrow）、
@@ -66,6 +71,12 @@ supervisor 协程 + control channel 串行化所有状态转换（唯一 state w
 
 - IDLE →(send) RUNNING
 - RUNNING →(round 完成无后继) IDLE / (有 follow_up·pending·remaining) RUNNING
+  - **一轮消费全部排队的 follow-up，不是一条一轮**（[[F_71]]）：round 结束时把队列整批
+    drain 掉，合起来驱动下一轮，与 steering 队列的语义对齐。一条一轮会让成员先对最旧的
+    那条动手、更新的排在后面干等；对互相覆盖的输入（任务看板是全量快照）就是照着已经
+    过期的那份干活。整批还**不在 harness 层拼接**——它作为列表往下走（`InputEvent` 的
+    `input_data` 每条一个 text frame），inner loop 先把这串输入交给 `ON_USER_MESSAGE`
+    rail，rail 剔除完再拼成一条 user message。拼早了 rail 就只剩解析正文一条路。
 - RUNNING →(pause，model 阶段：硬取消 + 回退上一 iteration 边界) PAUSED
 - RUNNING →(pause，tool/boundary 阶段：cooperative) PAUSING →(到达 iteration 边界) PAUSED
 - RUNNING →(abort immediate=True：硬取消 + 回退边界) IDLE / (abort immediate=False：边界停) IDLE

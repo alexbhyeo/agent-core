@@ -69,6 +69,16 @@ class TestDeepAgentColdBuild:
         assert any(isinstance(r, TaskCompletionRail) for r in parts.rails)
         assert any(isinstance(r, AskUserRail) for r in parts.rails)
 
+    def test_resolve_parts_accepts_unlimited_completion_timeout(self) -> None:
+        """None is preserved from the serializable spec to runtime config."""
+        parts = DeepAgentSpec(
+            card=AgentCard(name="unlimited_completion_timeout"),
+            completion_timeout=None,
+            auto_create_workspace=False,
+        ).resolve_parts()
+
+        assert parts.config.completion_timeout is None
+
     def test_build_publishes_parent_model_without_mutating_caller_extras(self) -> None:
         """build injects core.subagent.* with parent model; caller extras stay untouched."""
         caller = BuildContext(language="en", extras={"marker": "keep"})
@@ -92,6 +102,39 @@ class TestDeepAgentColdBuild:
         assert agent.deep_config.subagents is not None
         assert len(agent.deep_config.subagents) == 1
         assert agent.deep_config.subagents[0].model is agent.deep_config.model
+
+    def test_build_hands_subagents_the_parent_sys_operation(self, tmp_path: Path) -> None:
+        """core.subagent.* specs share the parent's sys_operation, not a fresh one.
+
+        A spec without one makes create_deep_agent mint a LOCAL sys_operation for
+        the sub-agent, which ignores the parent's sandbox and restricts the
+        sub-agent to its own narrower workspace.
+        """
+        spec = DeepAgentSpec(
+            card=AgentCard(name="cold_sub_sysop"),
+            model=_fake_model_spec(),
+            workspace=WorkspaceSpec(root_path=str(tmp_path / "workspace"), language="en"),
+            sys_operation=_sys_operation_spec(tmp_path, suffix="cold_sub_sysop"),
+            language="en",
+            auto_create_workspace=False,
+            subagents=[
+                SubAgentSpec(
+                    agent_card=AgentCard(name="explore", description="explore"),
+                    system_prompt="",
+                    factory_name="core.subagent.explore_agent",
+                    factory_kwargs={"language": "en", "max_iterations": 5},
+                ),
+            ],
+        )
+
+        parts = spec.resolve_parts()
+
+        assert parts.config.sys_operation is not None
+        assert parts.config.subagents is not None
+        explore_spec = parts.config.subagents[0]
+        assert explore_spec.sys_operation is parts.config.sys_operation
+        # create_subagent only adopts spec.sys_operation when workspace is set too.
+        assert explore_spec.workspace is not None
 
     @pytest.mark.asyncio
     async def test_sys_operation_rail_registers_fs_tools_after_init(self, tmp_path: Path) -> None:

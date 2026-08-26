@@ -67,6 +67,12 @@ _wf_depth: ContextVar[int] = ContextVar("wf_depth", default=0)
 # Max nesting of ``workflow()`` calls along one path. 1 = a script may call a
 # sub-workflow, but that sub-workflow may not call another (recursion guard).
 _MAX_WORKFLOW_DEPTH = 1
+# Frozen parent-phase, set by ``phase()``; survives concurrent sibling branch races.
+_parent_phase: ContextVar[str | None] = ContextVar("wf_parent_phase", default=None)
+# Per-task display name (``▸ {name} #{N}``), immune to parallel branch races.
+_wf_display_name: ContextVar[str | None] = ContextVar("wf_display_name", default=None)
+# Per-task current phase, replaces ``rt.current_phase`` — immune to parallel branch races.
+_current_phase: ContextVar[str | None] = ContextVar("wf_current_phase", default=None)
 # Max items in a single ``parallel()`` / ``pipeline()`` call. Exceeding it raises
 # rather than silently truncating — a bounded fan-out keeps one call from
 # spawning an unbounded agent fleet by accident.
@@ -83,12 +89,14 @@ class _BackendCallResult:
         error_detail:  Short error description when ``succeeded`` is False.
         raw_text:      The LLM's original text reply before coercion — used as
                        ``outcome`` in ``AGENT_COMPLETED`` progress events.
+        tokens:        Tokens billed by this call (``AgentResult.tokens``); ``None`` on skip / failure.
     """
 
     result: Any = None
     succeeded: bool = False
     error_detail: str | None = None
     raw_text: str | None = None
+    tokens: int | None = None
 
 
 def _task_id():
@@ -211,6 +219,68 @@ def _check_budget(rt) -> None:
         )
 
 
+def _branch_disambig(path: tuple) -> str:
+    """Serial-disambig over ALL branch segments for ``correlation_id`` uniqueness.
+
+    ``("par", k, i)`` → ``p{i}``, ``("pipe", k, i, s)`` → ``i{i}s{s}``, joined with ``.``.
+    Non-branch segments skipped. Empty when no branch (serial / top-level).
+    """
+    parts = []
+    for seg in path:
+        if not isinstance(seg, tuple) or len(seg) < 3:
+            continue
+        tag = seg[0]
+        if tag == "par" and len(seg) == 3:
+            parts.append(f"p{seg[2]}")
+        elif tag == "pipe" and len(seg) == 4:
+            parts.append(f"i{seg[2]}s{seg[3]}")
+    return ".".join(parts)
+
+
+def _deepest_branch_i(path: tuple) -> int | None:
+    """Deepest branch ``i`` (drop ``s``) for sub-workflow display name ``#N``. ``None`` if no branch.
+
+    Separate from :func:`_branch_disambig`: single-layer ``#N`` for display, vs multi-segment serial for correlation_id.
+    """
+    i = None
+    for seg in path:
+        if not isinstance(seg, tuple):
+            continue
+        if seg and seg[0] == "par" and len(seg) == 3:
+            i = seg[2]
+        elif seg and seg[0] == "pipe" and len(seg) == 4:
+            i = seg[2]  # drop s
+    return i
+
+
+def _budget_snapshot(ledger) -> dict:
+    """Freeze a ``BudgetLedger`` into the wire shape ``{total, spent, remaining, scope, exhausted}``."""
+    return {
+        "total": ledger.total,
+        "spent": ledger.spent,
+        "remaining": ledger.remaining(),
+        "scope": "leader",
+        "exhausted": ledger.exhausted,
+    }
+
+
+def _resolved_nested_phase(explicit: str | None = None) -> str | None:
+    """Return ``explicit`` nested phase, or the per-task display name when inside a sub-workflow."""
+    return explicit if explicit is not None else _wf_display_name.get()
+
+
+def _emit_log(rt, message: str, *, nested_phase: str | None = None) -> None:
+    """Emit a LOG progress event with author phase and optional nested display name."""
+    rt.progress_sink(
+        WorkflowProgressEvent(
+            kind=ProgressKind.LOG,
+            phase=_current_phase.get(),
+            nested_phase=_resolved_nested_phase(nested_phase),
+            message=message,
+        )
+    )
+
+
 def _emit_agent_started(
     rt,
     opts: dict,
@@ -219,51 +289,64 @@ def _emit_agent_started(
     node_type: str,
     agent_id: str | None = None,
     correlation_id: str | None = None,
+    nested_phase: str | None = None,
 ) -> None:
     rt.progress_sink(
         WorkflowProgressEvent(
             kind=ProgressKind.AGENT_STARTED,
-            phase=opts.get("phase") or rt.current_phase,
+            phase=opts.get("phase") or _current_phase.get(),
             label=opts.get("label"),
             prompt=prompt,
             model=opts.get("model"),
             agent_id=agent_id,
             node_type=node_type,
             correlation_id=correlation_id,
+            nested_phase=_resolved_nested_phase(nested_phase),
         )
     )
 
 
 def _emit_agent_completed(
-    rt, opts: dict, outcome_text: str | None, *, agent_id: str | None = None
+    rt, opts: dict, outcome_text: str | None, *, agent_id: str | None = None,
+    tokens: int | None = None, budget_snapshot: dict | None = None,
+    nested_phase: str | None = None,
 ) -> None:
     """Emit an AGENT_COMPLETED progress event.
 
-    ``outcome_text`` is a human-readable summary of the agent's result —
-    the LLM's raw text reply (preferred), or a preamble + complete JSON
-    fallback when raw text is unavailable and the result is structured.
+    ``outcome_text``: LLM raw text (preferred) or JSON fallback.
+    ``tokens``: per-call tokens from ``AgentResult.tokens`` (``None`` on cache-hit).
+    ``budget_snapshot``: frozen ``_budget_snapshot(rt.budget)`` at emit time.
+    ``nested_phase``: defaults to ``_wf_display_name`` when inside a sub-workflow.
     """
     rt.progress_sink(
         WorkflowProgressEvent(
             kind=ProgressKind.AGENT_COMPLETED,
-            phase=opts.get("phase") or rt.current_phase,
+            phase=opts.get("phase") or _current_phase.get(),
             label=opts.get("label"),
             outcome=_preview(outcome_text),
             agent_id=agent_id,
+            tokens=tokens,
+            budget=budget_snapshot,
+            nested_phase=_resolved_nested_phase(nested_phase),
         )
     )
 
 
 def _emit_agent_failed(
-    rt, opts: dict, message: str, *, agent_id: str | None = None
+    rt, opts: dict, message: str, *, agent_id: str | None = None,
+    tokens: int | None = None, budget_snapshot: dict | None = None,
+    nested_phase: str | None = None,
 ) -> None:
     rt.progress_sink(
         WorkflowProgressEvent(
             kind=ProgressKind.AGENT_FAILED,
-            phase=opts.get("phase") or rt.current_phase,
+            phase=opts.get("phase") or _current_phase.get(),
             label=opts.get("label"),
             message=message,
             agent_id=agent_id,
+            tokens=tokens,
+            budget=budget_snapshot,
+            nested_phase=_resolved_nested_phase(nested_phase),
         )
     )
 
@@ -386,7 +469,10 @@ async def agent(
         # Prefer stored raw_text; if absent (old journal), fall back to
         # preamble + structured data via _preview()
         outcome_text = _outcome_from_result(cached.get("raw_text"), result)
-        _emit_agent_completed(rt, opts, outcome_text, agent_id=ks)
+        _emit_agent_completed(
+            rt, opts, outcome_text, agent_id=ks,
+            tokens=None, budget_snapshot=_budget_snapshot(rt.budget),
+        )
         return result
 
     _check_abort(rt)  # entry gate: a paused run starts no new agent()
@@ -394,8 +480,10 @@ async def agent(
 
     if rt.spawn_count >= rt.spawn_limit:
         rt.log_sink(f"[wf] spawn limit {rt.spawn_limit} reached; skipping {opts.get('label')!r}")
-        _emit_agent_failed(rt, opts, f"spawn limit {rt.spawn_limit} reached; skipping {opts.get('label')!r}",
-                           agent_id=ks)
+        _emit_agent_failed(
+            rt, opts, f"spawn limit {rt.spawn_limit} reached; skipping {opts.get('label')!r}",
+            agent_id=ks, tokens=None, budget_snapshot=_budget_snapshot(rt.budget),
+        )
         return None
 
     gate = _resolve_agent_gate(rt)
@@ -412,7 +500,10 @@ async def agent(
         msg = f"agent {label!r} failed after {attempts} attempts"
         if call_result.error_detail:
             msg = f"{msg}: {call_result.error_detail}"
-        _emit_agent_failed(rt, opts, msg, agent_id=ks)
+        _emit_agent_failed(
+            rt, opts, msg, agent_id=ks,
+            tokens=call_result.tokens, budget_snapshot=_budget_snapshot(rt.budget),
+        )
         return None
 
     _check_abort(rt)  # pre-journal guard: a call finished mid-pause does not persist
@@ -431,7 +522,10 @@ async def agent(
         ),
     )
     outcome_text = _outcome_from_result(call_result.raw_text, call_result.result)
-    _emit_agent_completed(rt, opts, outcome_text, agent_id=ks)
+    _emit_agent_completed(
+        rt, opts, outcome_text, agent_id=ks,
+        tokens=call_result.tokens, budget_snapshot=_budget_snapshot(rt.budget),
+    )
     return call_result.result
 
 
@@ -457,6 +551,11 @@ async def _attempt_calls(rt, opts, json_schema, model, make_call) -> _BackendCal
     attempts = rt.retries + 1
     last_err: Exception | None = None
     label = opts.get("label") or "agent"
+    # Accumulate tokens burned across every retry attempt: each failed call
+    # attaches its budget_rail tally to the raised BackendError (backend) or
+    # turn delta (session), so a budget-exhausted/failed agent's real
+    # consumption reaches the AGENT_FAILED event instead of being dropped.
+    burned_tokens = 0
     for attempt in range(1, attempts + 1):
         try:
             if timeout is not None:
@@ -466,12 +565,20 @@ async def _attempt_calls(rt, opts, json_schema, model, make_call) -> _BackendCal
                 res = await make_call()
         except Exception as e:  # backend / timeout error -> retry, then skip
             last_err = e
+            # This attempt burned real tokens before failing (budget-exhausted,
+            # backend error, etc.). Accumulate so the final failed result can
+            # attribute the agent's full cost, not just the last attempt's.
+            burned_tokens += getattr(e, "tokens", 0) or 0
             rt.log_sink(
                 f"[wf] agent {label!r} attempt {attempt}/{attempts} failed: {str(e)}"
             )
             continue
-        # No token accounting here: the backend already billed this call to the
-        # shared ledger as its model calls returned (``AgentBackend.bind_budget``).
+        # Token accounting here: the backend already billed this call to the
+        # shared ledger as its model calls returned (``AgentBackend.bind_budget``);
+        # ``res.tokens`` is the per-call total, threaded through so the emitter
+        # can attach it to the AGENT_COMPLETED progress event. The skipped branch
+        # leaves ``tokens`` at its default ``None`` — there was no call, so
+        # nothing was billed.
         if res.skipped:
             detail = "backend declined (skipped)"
             rt.log_sink(f"[wf] agent {label!r} skipped")
@@ -479,7 +586,9 @@ async def _attempt_calls(rt, opts, json_schema, model, make_call) -> _BackendCal
         if json_schema is not None:
             try:
                 coerced = coerce(res.structured, json_schema, model)
-                return _BackendCallResult(result=coerced, succeeded=True, raw_text=res.text)
+                return _BackendCallResult(
+                    result=coerced, succeeded=True, raw_text=res.text, tokens=res.tokens
+                )
             except Exception as e:  # validation failure -> retry
                 last_err = e
                 rt.log_sink(
@@ -487,10 +596,15 @@ async def _attempt_calls(rt, opts, json_schema, model, make_call) -> _BackendCal
                     f"validation failed: {str(e)}"
                 )
                 continue
-        return _BackendCallResult(result=res.text, succeeded=True, raw_text=res.text)
+        return _BackendCallResult(
+            result=res.text, succeeded=True, raw_text=res.text, tokens=res.tokens
+        )
     detail = str(last_err) if last_err else "unknown error"
     rt.log_sink(f"[wf] agent {label!r} failed after {attempts} attempts: {detail}")
-    return _BackendCallResult(result=None, succeeded=False, error_detail=detail)
+    return _BackendCallResult(
+        result=None, succeeded=False, error_detail=detail,
+        tokens=burned_tokens if burned_tokens > 0 else None,
+    )
 
 
 def _rehydrate(rec: dict, model) -> Any:
@@ -587,7 +701,7 @@ class AgentSession:
 
     __slots__ = (
         "_label", "_phase", "_instructions", "_options", "_human", "_node_type",
-        "_history", "_sid", "_in_flight",
+        "_history", "_sid", "_member_name", "_in_flight", "_fork_data",
     )
 
     def __init__(
@@ -599,6 +713,8 @@ class AgentSession:
         options: dict | None = None,
         _human: bool = False,
         _node_type: str = "agent_session",
+        _fork_data: dict | None = None,
+        _history: list[dict] | None = None,
     ) -> None:
         self._label = label
         self._phase = phase
@@ -606,9 +722,11 @@ class AgentSession:
         self._options = dict(options or {})
         self._human = _human
         self._node_type = _node_type
-        self._history: list[dict] = []
+        self._history: list[dict] = list(_history) if _history else []
         self._sid: str | None = None
+        self._member_name: str | None = None
         self._in_flight = False
+        self._fork_data = _fork_data
 
     @overload
     async def send(self, prompt: str, *, notify: Literal[True], options: dict | None = ...) -> None:
@@ -642,9 +760,8 @@ class AgentSession:
         rt = _rt.get()
         if notify and schema is not None:
             raise WorkflowError("send(notify=True) is text-only; don't also pass a schema")
-        # Phase is run-global orchestration state: the active phase() wins, so a
-        # session naturally spans phases; fall back to the session's own default.
-        phase_val = rt.current_phase if rt.current_phase is not None else self._phase
+        # Per-task current phase; fall back to the session's own default.
+        phase_val = _current_phase.get() if _current_phase.get() is not None else self._phase
         opts = _build_opts(
             rt,
             {"label": self._label, "phase": phase_val, "schema": schema},
@@ -668,13 +785,23 @@ class AgentSession:
                 correlation_id=correlation_id,
             )
 
+            # Reserve the member identity on the FIRST turn regardless of cache
+            # hit, so a fully-hit resume still knows this session's member name
+            # (fork() needs it to locate the parent's persisted context). Only
+            # runs once — no avatar, no LLM, no spawn/budget slot.
+            if self._member_name is None and not self._human:
+                await self._ensure_member_name(rt, opts)
+
             cached = rt.journal.get_cached(ks, sig)
             if cached is not None:  # resume hit — no backend, no harness, no person
                 await rt.journal.use(ks, cached)
                 result = _rehydrate(cached, model_cls)
                 self._append_history(prompt, result, model_cls)
                 outcome_text = _outcome_from_result(cached.get("raw_text"), result)
-                _emit_agent_completed(rt, opts, outcome_text, agent_id=ks)
+                _emit_agent_completed(
+                    rt, opts, outcome_text, agent_id=ks,
+                    tokens=None, budget_snapshot=_budget_snapshot(rt.budget),
+                )
                 return None if notify else result
 
             _check_abort(rt)  # entry gate: a paused run starts no new turn
@@ -695,7 +822,10 @@ class AgentSession:
                 msg = f"{who} session {label!r} failed after {attempts} attempts"
                 if call_result.error_detail:
                     msg = f"{msg}: {call_result.error_detail}"
-                _emit_agent_failed(rt, opts, msg, agent_id=ks)
+                _emit_agent_failed(
+                    rt, opts, msg, agent_id=ks,
+                    tokens=call_result.tokens, budget_snapshot=_budget_snapshot(rt.budget),
+                )
                 return None
 
             result = call_result.result
@@ -715,7 +845,10 @@ class AgentSession:
             )
             self._append_history(prompt, result, model_cls)
             outcome_text = _outcome_from_result(call_result.raw_text, result)
-            _emit_agent_completed(rt, opts, outcome_text, agent_id=ks)
+            _emit_agent_completed(
+                rt, opts, outcome_text, agent_id=ks,
+                tokens=call_result.tokens, budget_snapshot=_budget_snapshot(rt.budget),
+            )
             return None if notify else result
         finally:
             self._in_flight = False
@@ -727,6 +860,64 @@ class AgentSession:
         rt = _rt.get()
         sid, self._sid = self._sid, None
         await rt.backend.close_session(sid)
+
+    async def fork(
+        self,
+        *,
+        fork_mode: str = "full",
+        keep_rounds: int | None = None,
+        label: str | None = None,
+        phase: str | None = None,  # pylint: disable=huawei-redefined-outer-name
+        instructions: str | None = None,
+        options: dict | None = None,
+    ) -> "AgentSession":
+        """Fork this session into a fresh, independent session (context inherited).
+
+        The five ``fork_mode`` values mirror the team fork modes (``full`` /
+        ``before`` / ``after`` / ``keep_before_compact_after`` /
+        ``keep_after_compact_before``); ``keep_rounds`` is the split point in
+        **rounds** (each prior ``send()`` is one round) for the truncating /
+        compacting modes. Every mode but ``full`` requires ``keep_rounds`` —
+        omitting it raises (there is no truncation without a split point).
+        ``keep_rounds`` beyond the parent's actual round count is not an error;
+        the backend warns and silently falls back to a full-context fork (the
+        team fork's "wrong name → full" guard). The parent context is captured
+        **eagerly** here (the fork point), so later ``send()``s on this session
+        do not affect the child.
+
+        The child inherits this session's ``_history`` mirror (resume-signature
+        consistency) and, when the backend returns a ``fork_data`` snapshot, a
+        full context including ToolMessage. A fork of a ``human_session`` is
+        rejected. The child is ``_node_type="agent_session_fork"`` when the
+        parent has history (so a fork turn is observable as a branch), else a
+        plain ``agent_session`` (a parent that never sent has nothing to
+        inherit).
+        """
+        if self._human:
+            raise WorkflowError("fork() is only supported on agent_session")
+        if fork_mode != "full" and keep_rounds is None:
+            raise WorkflowError(
+                "fork() requires keep_rounds unless fork_mode='full'"
+                f" (fork_mode={fork_mode!r} has no split point without it)"
+            )
+        fork_data = None
+        if self._member_name is not None:
+            rt = _rt.get()
+            fork_data = await rt.backend.capture_fork(
+                self._member_name,
+                keep_rounds=keep_rounds,
+                fork_mode=fork_mode,
+            )
+        return AgentSession(
+            label=label if label is not None else self._label,
+            phase=phase if phase is not None else self._phase,
+            instructions=instructions if instructions is not None else self._instructions,
+            options={**self._options, **(options or {})},
+            _human=False,
+            _node_type="agent_session_fork" if self._history else "agent_session",
+            _history=[dict(m) for m in self._history],
+            _fork_data=fork_data,
+        )
 
     async def _drive(self, rt, req: _TurnRequest):
         """Open the session lazily, then run one turn through the retry helper.
@@ -763,19 +954,33 @@ class AgentSession:
         )
 
     def _correlation_id(self, opts: dict) -> str:
-        """Deterministic id for a session turn: ``{phase}:{label}:{turn}``.
+        """Deterministic turn id with optional branch disambig.
 
-        Applies to both agent and human sessions. The script flow is
-        deterministic, so this is stable across a resume — the same
-        interaction point yields the same id, which keeps a person's reply
-        valid even if the run was interrupted while waiting. ``turn`` is this
-        session's send index (``len(history) // 2``); it advances on every send
-        (hit or miss) because history is appended each turn, so replay matches.
+        Serial: ``{phase}:{label}:{turn}``. With branch: ``{phase}#{disambig}:{label}:{turn}``.
+        Disambig serial-concats all branch segments (``p{i}``/``i{i}s{s}``, ``.``-joined).
+        Stable across resume; turn = ``len(history) // 2``.
         """
         phase = opts.get("phase") or "_"
         label = opts.get("label") or "human"
         turn = len(self._history) // 2
-        return f"{phase}:{label}:{turn}"
+        disambig = _branch_disambig(_path.get())
+        phase_seg = f"{phase}#{disambig}" if disambig else phase
+        return f"{phase_seg}:{label}:{turn}"
+
+    async def _ensure_member_name(self, rt, opts) -> None:
+        """Reserve this session's member identity (once), no avatar built.
+
+        Runs on the first turn regardless of cache hit so a fully-hit resume
+        still knows the member name ``fork()`` needs to locate the parent's
+        persisted context. Pure in-process backend bookkeeping (a counter
+        increment) — no harness, no LLM, no spawn/budget slot.
+        """
+        if self._member_name is not None:
+            return
+        self._member_name = await rt.backend.ensure_member_name(
+            kind="agent",
+            opts=opts,
+        )
 
     async def _ensure_open(self, rt, opts) -> None:
         """Open the backend session on the first real turn (one avatar per session)."""
@@ -783,10 +988,16 @@ class AgentSession:
             return
         if not self._human:
             rt.spawn_count += 1  # the avatar is this session's one spawned agent
+        # Reuse the identity already reserved on the first turn (cache-hit or
+        # miss) so we never re-mint a name and drift the counter across a resume.
+        if not self._human:
+            await self._ensure_member_name(rt, opts)
         self._sid = await rt.backend.open_session(
             kind="human" if self._human else "agent",
             instructions=self._instructions,
             opts=opts,
+            fork_data=self._fork_data,
+            member_name=self._member_name,
         )
 
     def _append_history(self, prompt: str, result: Any, model_cls) -> None:
@@ -968,19 +1179,13 @@ pmap = map_parallel  # alias
 # ─────────────────────── phase / log / budget ───────────────────────
 def phase(title: str) -> None:
     rt = _rt.get()
-    rt.current_phase = title
+    _current_phase.set(title)
+    _parent_phase.set(title)
     rt.progress_sink(WorkflowProgressEvent(kind=ProgressKind.PHASE, phase=title))
 
 
 def log(message: Any) -> None:
-    rt = _rt.get()
-    rt.progress_sink(
-        WorkflowProgressEvent(
-            kind=ProgressKind.LOG,
-            phase=rt.current_phase,
-            message=str(message),
-        )
-    )
+    _emit_log(_rt.get(), str(message))
 
 
 class _Budget:
@@ -1010,34 +1215,58 @@ budget = _Budget()
 
 # ─────────────────────── inline sub-workflow ───────────────────────
 async def workflow(name_or_path: str, args: Any = None) -> Any:
-    """Run a sub-workflow inline and return its ``run()`` result.
+    """Run a sub-workflow inline, return its ``run()`` result.
 
-    Safe to fan out concurrently via ``parallel`` / ``pipeline``: depth is tracked
-    per execution path (a ContextVar copied per Task), so concurrent sibling
-    ``workflow()`` calls each get their own depth budget and all run. Only genuine
-    recursion — a sub-workflow's ``run()`` calling ``workflow()`` again on the same
-    path — is capped at ``_MAX_WORKFLOW_DEPTH`` (returns ``None``, logged).
+    Safe to fan out via ``parallel``/``pipeline`` — depth tracked per Task (ContextVar).
+    Emits child ``PHASE`` (``phase_type="child"``, display name ``▸ {name} #{N}``,
+    ``parent_phase`` from enclosing ``phase()``) so Monitor builds a child card.
+    Sets ``_wf_display_name`` (per-task ContextVar) so ``agent()``/``log()``
+    pick up the display name without touching ``_current_phase``.
     """
     rt = _rt.get()
+    parent_phase = _parent_phase.get() or _current_phase.get()
     depth = _wf_depth.get()
     if depth >= _MAX_WORKFLOW_DEPTH:
-        rt.log_sink(
-            f"[wf] nested workflow depth > {_MAX_WORKFLOW_DEPTH} not allowed; skipping"
+        _emit_log(
+            rt,
+            f"[wf] nested workflow depth > {_MAX_WORKFLOW_DEPTH} not allowed; skipping",
         )
         return None
     from .loader import load_workflow_source  # lazy: avoid import cycle
 
     loaded = load_workflow_source(name_or_path)
+    name = loaded.meta.get("name", str(name_or_path)) if isinstance(loaded.meta, dict) else str(name_or_path)
+    # Display name: deepest branch segment i (drop s); pure #N, NOT _branch_disambig.
+    display_name = f"▸ {name}"
+    branch_i = _deepest_branch_i(_path.get())
+    if branch_i is not None:
+        display_name = f"▸ {name} #{branch_i}"
     k = _next_ordinal()
+    # Emit child PHASE declaration BEFORE pushing the wf segment + resetting seq,
+    # so a progress consumer (Monitor) can open a separate child card. ``phase``
+    # is the script's original phase name; ``nested_phase`` carries the display
+    # name; ``parent_phase`` links back to the enclosing author phase.
+    rt.log_sink(f"[wf] child phase declared: {display_name}, parent: {parent_phase}, name: {name}")
+    rt.progress_sink(WorkflowProgressEvent(
+        kind=ProgressKind.PHASE,
+        phase=name,
+        phase_type="child",
+        nested_phase=display_name,
+        parent_phase=parent_phase,
+    ))
     tok_d = _wf_depth.set(depth + 1)
-    tok_p = _path.set(_path.get() + (("wf", k, loaded.meta.get("name", str(name_or_path))),))
+    tok_p = _path.set(_path.get() + (("wf", k, name),))
     tok_s = _seq.set(_fresh_holder())
+    saved_parent = _parent_phase.set(parent_phase)
+    phase_name = _wf_display_name.set(display_name)
     try:
         return await _invoke_loaded(loaded, args)
     finally:
         _seq.reset(tok_s)
         _path.reset(tok_p)
         _wf_depth.reset(tok_d)
+        _parent_phase.reset(saved_parent)
+        _wf_display_name.reset(phase_name)
 
 
 # ─────────────────────── list helpers (JS idioms) ───────────────────────
