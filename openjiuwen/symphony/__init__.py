@@ -8,9 +8,11 @@ from types import ModuleType
 from typing import TYPE_CHECKING
 
 from openjiuwen.symphony.evaluation import EvaluationContext, EvaluationSuite, EvaluationWindow, Evaluator
+from openjiuwen.symphony.graph_engine import SymphonyGraphEngine
 from openjiuwen.symphony.interfaces import (
     AtomicCapabilityProvider,
     CapabilityProvider,
+    SkillGraphUpdater,
     SymphonyLLM,
 )
 from openjiuwen.symphony.models import (
@@ -36,6 +38,8 @@ from openjiuwen.symphony.orchestration import (
     CapabilityGraph,
     GraphArtifactStatus,
     GraphBuildResult,
+    GraphMutationDelta,
+    GraphMutationResult,
     OrchestrationConfig,
     OrchestrationPlan,
     OrchestrationProgress,
@@ -93,6 +97,8 @@ __all__ = [
     "FingerprintSettings",
     "GraphArtifactStatus",
     "GraphBuildResult",
+    "GraphMutationDelta",
+    "GraphMutationResult",
     "IONameVocabulary",
     "ImprovementSuggestion",
     "MetricResult",
@@ -109,10 +115,12 @@ __all__ = [
     "ScanResult",
     "SemanticProfile",
     "SkillFolderScanner",
+    "SkillGraphUpdater",
     "SkillManifestParser",
     "SourceSnapshot",
     "SuggestionPriority",
     "SymphonyLLM",
+    "SymphonyGraphEngine",
     "SymphonyRuntime",
     "agent",
     "discovery",
