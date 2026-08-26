@@ -591,7 +591,7 @@ async def test_edit_file_tool_partial_read_still_rejects_external_modification(s
         "new_string": "line2-edited",
     })
     assert res.success is False
-    assert "modified externally" in res.error
+    assert "modified since read" in res.error
 
 
 @pytest.mark.asyncio
@@ -873,7 +873,7 @@ async def test_read_file_tool_rejects_large_text_without_explicit_limit(sys_op, 
 
     assert result.success is False
     assert "exceeds maximum allowed size" in result.error
-    assert "offset and limit" in result.error
+    assert "offset/limit" in result.error
 
 
 @pytest.mark.asyncio
@@ -1090,18 +1090,23 @@ class TestWriteFileToolHistoryPath(unittest.TestCase):
         path = tool._build_history_path(session)
         assert "default" in path
 
-    def test_workspace_path_is_base_dir(self):
-        """Workspace ContextVar is used as the base directory."""
+    def test_jiuwenswarm_data_dir_is_base_dir(self):
+        """JIUWENSWARM_DATA_DIR is used as the base directory, not the project workspace."""
         session = self._make_session("s1", agent_id="a")
         workspace = tempfile.mkdtemp()
+        data_dir = tempfile.mkdtemp()
         try:
             set_workspace(workspace)
+            os.environ["JIUWENSWARM_DATA_DIR"] = data_dir
             tool = WriteFileTool(MagicMock())
             path = tool._build_history_path(session)
-            assert path.startswith(os.path.realpath(workspace))
+            assert path.startswith(os.path.realpath(data_dir))
+            assert not path.startswith(os.path.realpath(workspace))
             assert ".agent_history" in path
         finally:
+            os.environ.pop("JIUWENSWARM_DATA_DIR", None)
             shutil.rmtree(workspace, ignore_errors=True)
+            shutil.rmtree(data_dir, ignore_errors=True)
 
     def test_filename_pattern(self):
         """Filename follows file_ops_{agent_id}_{session_id}.json pattern."""
@@ -1137,18 +1142,23 @@ class TestEditFileToolHistoryPath(unittest.TestCase):
         path = tool._build_history_path(session)
         assert "default" in path
 
-    def test_workspace_path_is_base_dir(self):
-        """Workspace ContextVar is used as the base directory."""
+    def test_jiuwenswarm_data_dir_is_base_dir(self):
+        """JIUWENSWARM_DATA_DIR is used as the base directory, not the project workspace."""
         session = self._make_session("s1", agent_id="a")
         workspace = tempfile.mkdtemp()
+        data_dir = tempfile.mkdtemp()
         try:
             set_workspace(workspace)
+            os.environ["JIUWENSWARM_DATA_DIR"] = data_dir
             tool = EditFileTool(MagicMock())
             path = tool._build_history_path(session)
-            assert path.startswith(os.path.realpath(workspace))
+            assert path.startswith(os.path.realpath(data_dir))
+            assert not path.startswith(os.path.realpath(workspace))
             assert ".agent_history" in path
         finally:
+            os.environ.pop("JIUWENSWARM_DATA_DIR", None)
             shutil.rmtree(workspace, ignore_errors=True)
+            shutil.rmtree(data_dir, ignore_errors=True)
 
     def test_filename_pattern(self):
         """Filename follows file_ops_{agent_id}_{session_id}.json pattern."""

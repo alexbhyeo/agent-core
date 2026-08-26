@@ -115,6 +115,8 @@ class TeamEvent:
     # Collaboration events
     PLAN_APPROVAL = "plan_approval"
     TOOL_APPROVAL_RESULT = "tool_approval_result"
+    # A member saved a named checkpoint (fork coordination — leader announces it)
+    CHECKPOINT_CREATED = "checkpoint_created"
 
     # Reliability events
     ANOMALY_DETECTED = "anomaly_detected"
@@ -243,6 +245,19 @@ class ToolApprovalResultEvent(BaseEventMessage):
     approved: bool = Field(..., description="Whether the tool call was approved")
     feedback: str = Field(default="", description="Leader feedback for the teammate")
     auto_confirm: bool = Field(default=False, description="Whether to auto-confirm future same-name tool calls")
+
+
+class CheckpointCreatedEvent(BaseEventMessage):
+    """Event published when a member saves a named checkpoint.
+
+    The leader announces it as a framework event (``<team-event
+    kind="checkpoint">``) so fork coordination never relies on the leader
+    guessing a checkpoint name. ``member_name`` (from the base) is the
+    creator.
+    """
+    name: str = Field(..., description="Checkpoint snapshot name, referenced by fork")
+    message_count: int = Field(..., description="Context length at snapshot time")
+    description: str = Field(default="", description="Optional snapshot description")
 
 
 class MessageEvent(BaseEventMessage):
@@ -447,6 +462,17 @@ class WorkflowProgressTeamEvent(BaseEventMessage):
     answer: Optional[str] = Field(
         default=None, description="Person's raw reply text, on human_replied"
     )
+    tokens: Optional[int] = Field(default=None, description="Per-agent token usage from the result loop.")
+    budget: Optional[dict] = Field(
+        default=None, description="Leader shared-pool snapshot {total,spent,remaining,scope,exhausted}."
+    )
+    phase_type: Optional[str] = Field(default=None, description='"child" for nested-workflow child phase declarations.')
+    nested_phase: Optional[str] = Field(
+        default=None, description="Display name (▸ name #N) inside a sub-workflow; prefer over phase for card matching."
+    )
+    parent_phase: Optional[str] = Field(
+        default=None, description="Parent author phase name when this is a child phase declaration."
+    )
 
 
 class WorktreeCreatedEvent(BaseEventMessage):
@@ -519,6 +545,7 @@ _EVENT_TYPE_MAP: Dict[str, Type[BaseEventMessage]] = {  # event_type -> model cl
     TeamEvent.MEMBER_CANCELED: MemberCanceledEvent,
     TeamEvent.PLAN_APPROVAL: PlanApprovalEvent,
     TeamEvent.TOOL_APPROVAL_RESULT: ToolApprovalResultEvent,
+    TeamEvent.CHECKPOINT_CREATED: CheckpointCreatedEvent,
     TeamEvent.MESSAGE: MessageEvent,
     TeamEvent.BROADCAST: BroadcastEvent,
     TeamEvent.TASK_CREATED: TaskCreatedEvent,

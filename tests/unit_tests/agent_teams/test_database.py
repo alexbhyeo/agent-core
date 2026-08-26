@@ -180,7 +180,7 @@ class TestTeamDatabaseInit:
                         (task_id, "team", "t", "c", status),
                     )
 
-                _ensure_dynamic_table_indexes(conn)
+                _ensure_dynamic_table_indexes(conn, ["team_task_legacy"], {"team_task_legacy"})
 
                 columns = {col["name"] for col in inspect(conn).get_columns("team_task_legacy")}
                 statuses = {
@@ -225,7 +225,7 @@ class TestTeamDatabaseInit:
                     "VALUES ('t1', 'team', 't', 'c', 'pending')"
                 )
 
-                _ensure_dynamic_table_indexes(conn)
+                _ensure_dynamic_table_indexes(conn, ["team_task_prevote"], {"team_task_prevote"})
 
                 columns = {col["name"] for col in inspect(conn).get_columns("team_task_prevote")}
                 row = conn.exec_driver_sql(
@@ -2547,6 +2547,39 @@ class TestSessionTables:
     """Test session-specific table creation and deletion"""
 
     @pytest.mark.asyncio
+    @pytest.mark.level0
+    async def test_new_database_only_gets_its_own_session_tables(self, db_config):
+        """A fresh database must not inherit the tables of unrelated sessions.
+
+        The dynamic model factories register one table set per session id into
+        the process-global ``SQLModel.metadata``, and nothing ever removes
+        them. Schema creation therefore has to be scoped to the static tables
+        plus the bound session: creating everything in the registry would give
+        each database the tables of every session the process had ever seen,
+        and would make ``initialize()`` slower with every session created.
+        """
+        seen_suffixes = []
+        for index in range(3):
+            session_id = f"leak_probe_session_{index}"
+            token = set_session_id(session_id)
+            database = TeamDatabase(db_config)
+            try:
+                await database.initialize()
+                async with database.engine.begin() as conn:
+                    names = set(await conn.run_sync(lambda c: inspect(c).get_table_names()))
+            finally:
+                await database.close()
+                reset_session_id(token)
+
+            suffix = _sanitize_session_id_for_table(session_id)
+            seen_suffixes.append(suffix)
+            assert f"team_task_{suffix}" in names, f"own session tables missing: {sorted(names)}"
+            assert {"team_info", "team_member"} <= names, f"static tables missing: {sorted(names)}"
+
+            foreign = {n for n in names if any(f"_{s}" in n for s in seen_suffixes[:-1])}
+            assert not foreign, f"database carries tables of earlier sessions: {sorted(foreign)}"
+
+    @pytest.mark.asyncio
     @pytest.mark.level1
     async def test_create_cur_session_tables_success(self, db):
         """Test that create_cur_session_tables creates dynamic tables"""
@@ -3595,7 +3628,7 @@ async def test_dynamic_index_migration_rewrites_legacy_message_table(db):
         for col in legacy_cols:
             await conn.exec_driver_sql(f"CREATE INDEX ix_{table}_{col} ON {table} ({col})")
 
-        await conn.run_sync(_ensure_dynamic_table_indexes)
+        await conn.run_sync(_ensure_dynamic_table_indexes, ["team_message_legacy00"], {"team_message_legacy00"})
 
         names = set(
             (
@@ -3649,7 +3682,7 @@ async def test_dynamic_index_migration_rewrites_legacy_task_table(db):
         for col in ("team_name", "status", "assignee", "updated_at"):
             await conn.exec_driver_sql(f"CREATE INDEX ix_{table}_{col} ON {table} ({col})")
 
-        await conn.run_sync(_ensure_dynamic_table_indexes)
+        await conn.run_sync(_ensure_dynamic_table_indexes, ["team_task_legacy00"], {"team_task_legacy00"})
 
         names = set(
             (

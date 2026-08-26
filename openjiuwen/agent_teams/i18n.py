@@ -25,6 +25,8 @@ from __future__ import annotations
 
 from typing import Literal
 
+from openjiuwen.agent_teams.constants import USER_PSEUDO_MEMBER_NAME
+
 Language = Literal["cn", "en"]
 
 _DEFAULT_LANGUAGE: Language = "cn"
@@ -45,6 +47,26 @@ STRINGS: dict[str, dict[str, str]] = {
         # tools/team.py
         "team.shutdown_request_content": "当前任务已全部完成，请结束流程",
         "team.cancel_request_content": "当前任务有变动，请停止执行当前任务，重新尝试认领合适任务",
+        "team.shutdown_human_active_tasks": (
+            "人类成员 {member_name} 仍持有 {count} 个活跃任务 [{task_ids}]，不允许非强制关闭。"
+            "请先通过 send_message 与成员协商是否同意强制关闭并取消任务。"
+        ),
+        # agent/fork.py — fork name mismatch surfaced to the leader
+        "checkpoint.fork_not_found": (
+            "[fork 警告] checkpoint '{fork}' 未能按 fork_source 解析{detail}，"
+            "已回退为全量继承（成员 {member}）。可用 checkpoint：{available}。"
+            "请用 list_checkpoints 核对名字后再 fork。"
+        ),
+        "checkpoint.fork_source_mismatch": (
+            "（创建者 '{creator}' 与 fork_source '{source}' 不匹配）"
+        ),
+        # agent/coordination/handlers/checkpoint.py — leader announcement body/note
+        "checkpoint.created_body": (
+            "成员 {member} 创建了 checkpoint '{name}'（消息位置 {count}）{description}"
+        ),
+        "checkpoint.created_note": (
+            "这是 checkpoint 创建公告，仅供你 fork 时核对名字使用，不需要回复。"
+        ),
         # reliability/ — anomaly remediation messages
         "reliability.steer_self_correct": (
             "⚙️[可靠性] 检测到 {kind}：{summary}。请停止重复无效操作，改换策略或换用其他工具。"
@@ -70,12 +92,15 @@ STRINGS: dict[str, dict[str, str]] = {
         ),
         # agent/coordination/handlers/stale_task.py — idle-clock stall nudges (autonomous, F_65)
         "dispatcher.stale_idle_claim_self": (
-            "[催促] 你持有任务 [{task_id}] {title}，但已空闲 {minutes} 分钟未推进。"
-            "如需回顾详情请用 view_task；请继续推进，完成后用 claim_task(status='completed') 标记完成。"
+            "[催促] 任务 [{task_id}] {title} 归你负责（当前状态：{status}），"
+            "但你已空闲 {minutes} 分钟未推进。如需回顾详情请用 view_task；"
+            "尚未开始就用 claim_task(status='claimed') 认领开工，已在进行就继续推进，"
+            "完成后用 claim_task(status='completed') 标记完成。"
         ),
         "dispatcher.stale_idle_claim_escalate": (
-            "[停滞上报] 我持有任务 [{task_id}] {title}，但已连续空闲 {minutes} 分钟未推进"
-            "（多次自我催促无效）。请评估是否需要问询、改派或更换成员。"
+            "[停滞上报] 任务 [{task_id}] {title} 归我负责（当前状态：{status}），"
+            "但我已连续空闲 {minutes} 分钟未推进（多次自我催促无效）。"
+            "请评估是否需要问询、改派或更换成员。"
         ),
         # agent/dispatcher.py — task assignment notification
         "dispatcher.task_assigned_to_self": (
@@ -126,9 +151,10 @@ STRINGS: dict[str, dict[str, str]] = {
         "scheduler.leader_task_done_how_direct": "无验证直接完成",
         "scheduler.leader_escalation_rounds": (
             "[调度器·需你处置] 任务 [{task_id}]「{title}」连续 {rounds} 轮验收未通过，"
-            "已停止自动返工，任务停在 in_review。最近一轮验证反馈：\n{feedback}\n"
-            "可选处置：update_task 调整承担者/验证者/任务内容（先 reset），"
-            "update_task(status='cancelled') 取消，或增删成员后重新规划。"
+            "已停止自动返工，任务停在 in_review。已通知承担者向你发送返工总结（通过 inbox）。"
+            "最近一轮验证反馈：\n{feedback}\n"
+            "收到承担者的返工总结后，综合判断并决定下一步：retry（继续修复）、"
+            "replan（调整承担者/验证者/需求）、或 rollback+replan（先回退产物再重分配）。"
         ),
         "scheduler.leader_escalation_stall": (
             "[调度器·需你处置] 任务 [{task_id}]「{title}」第 {round} 轮验收停摆超过 {minutes} 分钟："
@@ -138,6 +164,11 @@ STRINGS: dict[str, dict[str, str]] = {
         "scheduler.leader_all_done": (
             "[调度器] 任务看板已全部终结（共 {count} 个任务）。请汇总团队执行结果，向用户交付最终结论。"
         ),
+        "scheduler.inspector_avg_line": (
+            "\n- [检视者平均分] {avg:.2f} / 0.85 ({status})\n"
+        ),
+        "scheduler.inspector_avg_pass": "达标",
+        "scheduler.inspector_avg_fail": "未达标",
         "scheduler.none": "（无）",
         "dispatcher.msg_type_broadcast": "广播消息",
         "dispatcher.msg_type_direct": "单播消息",
@@ -153,6 +184,15 @@ STRINGS: dict[str, dict[str, str]] = {
         # the framework hint land in distinct <team-inbound> / <team-note>
         # tags. The legacy templates stay for the external/format.py path.
         "dispatcher.reply_hint": "如果对方在提问或等待回复，请务必通过 send_message 工具回复 {sender}。",
+        # Sender-specific variant: the ``user`` pseudo-member is the human
+        # outside the team, not a roster member. Unconditional by design —
+        # the generic hint's "if the sender is asking" lets the model talk
+        # itself out of replying, and a dropped user reply is invisible.
+        "dispatcher.reply_hint_user": (
+            "这条消息来自 user——委托本团队工作的**团队外部真人**，不是团队成员，不在成员名册里。"
+            "你必须调用 send_message(to=\"user\") 把答复发回用户；"
+            "你写在回复正文里的任何文字都不会送达用户，不调用工具就等于没有回复。"
+        ),
         # agent/dispatcher.py — idle-agent nudges
         "dispatcher.all_done_persistent": ("所有任务已完成。请汇总本轮工作成果。团队继续保持运行，等待新的任务指令。"),
         "dispatcher.all_done_temporary": (
@@ -168,7 +208,9 @@ STRINGS: dict[str, dict[str, str]] = {
             "- 整体进度是否符合预期"
         ),
         "dispatcher.teammate_task_list": (
-            "以下是当前可认领的任务：\n- 请认领适合你领域的任务\n- 认领后用 view_task 查看详情并开始执行"
+            "以下是当前可处理的任务：\n"
+            "- 未指派的 pending 任务可由你认领\n"
+            "- 已指派给你的任务请先用 view_task 查看详情，再按任务工具推进"
         ),
         "dispatcher.task_unassigned_marker": " (待领取)",
         # agent/dispatcher.py — stale-pending leader self-prompt
@@ -225,6 +267,15 @@ STRINGS: dict[str, dict[str, str]] = {
             "**保持静默**，只有控制者在 Inbox 里下达明确指令后才能行动。"
         ),
         "hitt.assigned_event": "你被指派了新任务 [{task_id}] {title}。",
+        # team_context.py — note attached to every roster snapshot / delta.
+        # Load-bearing: without it a member that sees "someone joined" fires off
+        # a courtesy greeting, burning an LLM round plus a mailbox delivery on
+        # both sides, and the greeting wakes the new member into doing the same.
+        "team_context.roster_announcement_note": (
+            "以上只是名册公告，不是给你的指令。"
+            "**不要**因为看到成员变动就去和相关成员打招呼、确认或寒暄；"
+            "只有当你手上的任务确实需要对方配合时才发消息。"
+        ),
         # agent/coordination/handlers/workflow.py — swarmflow spectator broadcast
         "workflow.started": "编排 [{run_id}]「{name}」已启动，我将在每个阶段向你汇报进展。",
         "workflow.phase": "编排 [{run_id}] 进入阶段：{phase}",
@@ -264,6 +315,29 @@ STRINGS: dict[str, dict[str, str]] = {
         "team.cancel_request_content": (
             "The current task has changed. Stop executing it and try claiming a suitable task again."
         ),
+        "team.shutdown_human_active_tasks": (
+            "Human agent {member_name} still holds {count} active task(s) [{task_ids}] "
+            "and cannot be shut down without force. "
+            "Use send_message to coordinate with the member on whether to force-shutdown and cancel the tasks."
+        ),
+        # agent/fork.py — fork name mismatch surfaced to the leader
+        "checkpoint.fork_not_found": (
+            "[fork warning] checkpoint '{fork}' could not be resolved against "
+            "fork_source{detail}; fell back to full-context inheritance "
+            "(member {member}). Available checkpoints: {available}. "
+            "Use list_checkpoints to verify names before forking."
+        ),
+        "checkpoint.fork_source_mismatch": (
+            " (creator '{creator}' does not match fork_source '{source}')"
+        ),
+        # agent/coordination/handlers/checkpoint.py — leader announcement body/note
+        "checkpoint.created_body": (
+            "Member {member} created checkpoint '{name}' (message position {count}){description}"
+        ),
+        "checkpoint.created_note": (
+            "This is a checkpoint-created announcement for your fork coordination; "
+            "no reply is needed."
+        ),
         # reliability/ — anomaly remediation messages
         "reliability.steer_self_correct": (
             "[reliability] Detected {kind}: {summary}. Stop repeating the ineffective action; "
@@ -296,14 +370,15 @@ STRINGS: dict[str, dict[str, str]] = {
         ),
         # agent/coordination/handlers/stale_task.py — idle-clock stall nudges (autonomous, F_65)
         "dispatcher.stale_idle_claim_self": (
-            "[Nudge] You hold task [{task_id}] {title} but have been idle for {minutes} minute(s) "
-            "without progressing it. Use view_task to review the details; keep pushing it forward "
-            "and call claim_task(status='completed') when done."
+            "[Nudge] Task [{task_id}] {title} is yours (currently {status}) but you have been idle "
+            "for {minutes} minute(s) without progressing it. Use view_task to review the details; "
+            "call claim_task(status='claimed') to start it if it has not begun, otherwise keep "
+            "pushing it forward, and call claim_task(status='completed') when done."
         ),
         "dispatcher.stale_idle_claim_escalate": (
-            "[Stall report] I hold task [{task_id}] {title} but have been idle for {minutes} "
-            "minute(s) without progressing it (repeated self-nudges did not help). Please consider "
-            "checking in, reassigning, or replacing the assignee."
+            "[Stall report] Task [{task_id}] {title} is mine (currently {status}) but I have been "
+            "idle for {minutes} minute(s) without progressing it (repeated self-nudges did not "
+            "help). Please consider checking in, reassigning, or replacing the assignee."
         ),
         # agent/dispatcher.py — task assignment notification
         "dispatcher.task_assigned_to_self": (
@@ -361,10 +436,12 @@ STRINGS: dict[str, dict[str, str]] = {
         "scheduler.leader_task_done_how_direct": "no review, completed directly",
         "scheduler.leader_escalation_rounds": (
             "[Scheduler · Action Needed] Task [{task_id}] \"{title}\" failed {rounds} review "
-            "round(s) in a row; automatic rework stopped and the task stays in_review. Latest "
-            "round feedback:\n{feedback}\n"
-            "Options: update_task to adjust assignee/reviewers/content (reset first), "
-            "update_task(status='cancelled') to cancel, or reshape the roster and re-plan."
+            "round(s) in a row; automatic rework stopped and the task stays in_review. "
+            "The assignee has been asked to send you a rework summary (via your inbox). "
+            "Latest round feedback:\n{feedback}\n"
+            "After receiving the assignee's summary, decide: retry, "
+            "replan (reassign / adjust reviewers / change requirements), "
+            "or rollback+replan (undo file changes before reassigning)."
         ),
         "scheduler.leader_escalation_stall": (
             "[Scheduler · Action Needed] Task [{task_id}] \"{title}\" review round {round} has "
@@ -376,6 +453,11 @@ STRINGS: dict[str, dict[str, str]] = {
             "[Scheduler] Every task on the board is terminal ({count} task(s) total). Summarize "
             "the team's results and deliver the final conclusion to the user."
         ),
+        "scheduler.inspector_avg_line": (
+            "\n- [Inspector avg] {avg:.2f} / 0.85 ({status})\n"
+        ),
+        "scheduler.inspector_avg_pass": "pass",
+        "scheduler.inspector_avg_fail": "fail",
         "scheduler.none": "(none)",
         "dispatcher.msg_type_broadcast": "broadcast",
         "dispatcher.msg_type_direct": "direct message",
@@ -389,6 +471,14 @@ STRINGS: dict[str, dict[str, str]] = {
         # XML inbound track (inbound_render.py) — see the cn note above.
         "dispatcher.reply_hint": (
             "If the sender is asking or waiting for a reply, be sure to reply to {sender} via send_message."
+        ),
+        # Sender-specific variant: see the cn note above.
+        "dispatcher.reply_hint_user": (
+            "This message is from user — the **human outside the team** who commissioned this team's work. "
+            "They are not a team member and do not appear in the roster. "
+            'You MUST call send_message(to="user") to deliver your reply; '
+            "any text you write in your reply body never reaches the user, "
+            "so not calling the tool means you did not reply at all."
         ),
         # agent/dispatcher.py — idle-agent nudges
         "dispatcher.all_done_persistent": (
@@ -408,9 +498,9 @@ STRINGS: dict[str, dict[str, str]] = {
             "- Whether the overall progress matches expectations"
         ),
         "dispatcher.teammate_task_list": (
-            "Tasks available to claim:\n"
-            "- Claim the ones that fit your domain\n"
-            "- After claiming, use view_task for details and start working"
+            "Tasks available to work on:\n"
+            "- Unassigned pending tasks may be claimed by you\n"
+            "- For tasks already assigned to you, use view_task for details and proceed with the task tools"
         ),
         "dispatcher.task_unassigned_marker": " (unassigned)",
         # agent/dispatcher.py — stale-pending leader self-prompt
@@ -481,6 +571,14 @@ STRINGS: dict[str, dict[str, str]] = {
             "explicit instruction via the Inbox."
         ),
         "hitt.assigned_event": 'You have been assigned task [{task_id}] "{title}".',
+        # team_context.py — see the cn note above; the "do NOT" framing is
+        # load-bearing.
+        "team_context.roster_announcement_note": (
+            "The above is a roster announcement, not an instruction for you. "
+            "Do **NOT** greet, check in with, or otherwise message a member just "
+            "because the roster changed; message someone only when the work you "
+            "are actually holding needs them."
+        ),
         # agent/coordination/handlers/workflow.py — swarmflow spectator broadcast
         "workflow.started": (
             "Orchestration [{run_id}] '{name}' has started; I will "
@@ -554,4 +652,23 @@ def t(key: str, **kwargs: object) -> str:
     return raw.format_map(kwargs) if kwargs else raw
 
 
-__all__ = ["Language", "STRINGS", "get_language", "set_language", "t"]
+def reply_hint_for(sender: str) -> str:
+    """Resolve the ``reply-hint`` note body for one inbound sender.
+
+    The ``user`` pseudo-member is not a roster member and has no agent
+    process, so a member that answers it in plain text silently drops the
+    reply. That case gets its own unconditional wording; every other
+    sender keeps the generic, conditional hint.
+
+    Args:
+        sender: The sending member's ``member_name``.
+
+    Returns:
+        The localized note body for the active language.
+    """
+    if sender == USER_PSEUDO_MEMBER_NAME:
+        return t("dispatcher.reply_hint_user")
+    return t("dispatcher.reply_hint", sender=sender)
+
+
+__all__ = ["Language", "STRINGS", "get_language", "reply_hint_for", "set_language", "t"]

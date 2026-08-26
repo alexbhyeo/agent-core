@@ -143,8 +143,9 @@ leader 全板巡视 nudge 关闭（见 §4）。
 - **提示词**：`dispatch_autonomous_*` / `dispatch_scheduled_*` 模板按 spec 模式装配
   （既有 F_57 管线），调度版 leader 模板只讲调度契约（assignee 必填、框架代办交接、
   reviewer/轮数指引、升级处置），不含任何"另一种模式"的说明。
-- **工具**：`create_task` 两个形态照旧构建期查表（autonomous 无 `assignee`；scheduled
-  `assignee` 必填 + 可选 `max_review_rounds`）；`verify_task` 语义按模式二分，**描述随语义
+- **工具**：`create_task` 两个形态照旧构建期查表（autonomous 的 `assignee` 可选且不暴露
+  `reviewer`；scheduled `assignee` 必填 + 可选 `reviewer` / `max_review_rounds`）；
+  `verify_task` 语义按模式二分，**描述随语义
   分离**（desc_key 形态：`verify_task` 首裁即决 / `verify_task_scheduled` 投票记录，照
   `member_complete_task` 的 `_MEMBER_COMPLETE_DESC_KEY` 先例）。
 - **运行时消费**：`TeamBackend.dispatch_mode` / `TeamTaskManager._dispatch_mode` 直接持
@@ -154,6 +155,10 @@ leader 全板巡视 nudge 关闭（见 §4）。
   时写 spec 值，供观测/外部工具读），运行时真相始终是 spec。
 - **build_team 的运行时开关**只剩 `enable_hitt` 与 `enable_task_verification`（提示词驱动
   的"验证预期"开关，沿 `enable_hitt` 的 ceiling/override 范式，效果值随行记录）。
+  后者随 [[F_76]] 收成 **dispatch 门控属性**——只在 `dispatch_mode == "scheduled"` 时向模型
+  暴露，autonomous 下连同描述那节一起消失。范式仍是 ceiling/override，但与 `enable_hitt`
+  有一处关键差别：撞天花板时它**静默收窄**而不 `raise_error`，所以 scheduled 下 build_team
+  的返回结果必须回带实际生效值。
 
 ### 3. 评审投票：票据落 DB（追加写），判定在调度器
 

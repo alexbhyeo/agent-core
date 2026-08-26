@@ -6,23 +6,26 @@ from __future__ import annotations
 import asyncio
 import copy
 import dataclasses
-import importlib
 import os
 import sys
 import uuid
-from contextlib import suppress
+from contextlib import AbstractAsyncContextManager, suppress
 import warnings
 from pathlib import Path
 from typing import (
     TYPE_CHECKING,
     Any,
     AsyncIterator,
+    Awaitable,
+    Callable,
     Dict,
     List,
     Optional,
     Tuple,
     cast,
 )
+
+import anyio
 
 from openjiuwen.core.common.exception.codes import StatusCode
 from openjiuwen.core.common.exception.errors import build_error
@@ -52,9 +55,14 @@ from openjiuwen.core.single_agent.rail.base import (
     InvokeInputs,
     RunContext,
     RunKind,
+    init_rail,
+    log_rail_init_breakdown,
 )
 from openjiuwen.core.single_agent.schema.agent_card import AgentCard
-from openjiuwen.harness.image_modality_probe import probe_image_support
+from openjiuwen.harness.image_modality_probe import (
+    get_cached_image_support,
+    schedule_image_support_probe,
+)
 from openjiuwen.harness.rails import DeepAgentRail
 from openjiuwen.harness.rails.progressive_tool_rail import ProgressiveToolRail
 from openjiuwen.harness.rails.task_completion_rail import (
@@ -84,6 +92,7 @@ from openjiuwen.harness.task_loop.task_loop_event_handler import (
     TaskLoopEventHandler,
 )
 from openjiuwen.harness.tools import SessionToolkit, is_free_search_enabled, is_paid_search_enabled
+from openjiuwen.harness.tools.subagent._control_registry import release_subagent_control
 from openjiuwen.harness.goal.manager import GoalManager
 from openjiuwen.harness.goal.schema import GoalRecord, GoalStatus
 from openjiuwen.harness.schema.interaction import (
@@ -117,17 +126,21 @@ from openjiuwen.harness.prompts.prompt_attachment_manager import (
 )
 from openjiuwen.harness.prompts.sections import SectionName
 from openjiuwen.harness.prompts.sections.identity import build_identity_section
-from openjiuwen.harness.prompts.sections.prompt_attachments import (
-    build_prompt_attachments_section,
-)
 from openjiuwen.harness.resources import (
     LoadRecord,
-    find_expert_harness_manifest,
-    load_expert_harness_spec,
+    find_agent_template_manifest,
+    find_plugin_manifest,
+    load_agent_template_package,
+    load_plugin_package,
 )
-from openjiuwen.harness.resources.expert_harness_parts import ExpertHarnessParts, ResolvedSkill
+from openjiuwen.harness.resources.extension_resolver import (
+    ExtensionParts,
+    ResolvedSkill,
+    resolve_agent_template_parts,
+    resolve_plugin_parts,
+)
 from openjiuwen.harness.schema.build_context import BuildContext
-from openjiuwen.harness.schema.expert_harness_spec import ExpertHarnessSpec
+from openjiuwen.harness.schema.extension_spec import AgentTemplateSpec, PluginSpec
 from openjiuwen.harness.workspace.workspace import Workspace
 
 # Events bridged to the inner ReActAgent.
@@ -143,6 +156,12 @@ _BRIDGE_EVENTS = frozenset(
         # rail registered via DeepAgent.register_rail must bridge to the inner
         # agent (same callback-manager namespace) rather than the outer one.
         AgentCallbackEvent.AFTER_REACT_ITERATION,
+        # Same reason: the inner agent is what admits consumed inputs into the
+        # conversation, so it is what fires this.
+        AgentCallbackEvent.ON_USER_MESSAGE,
+        # And it is what takes them off the steering queue, one model call
+        # before that.
+        AgentCallbackEvent.BEFORE_STEERING_DRAIN,
     }
 )
 
@@ -164,8 +183,75 @@ _DEEP_EVENTS = frozenset(
 
 _SUB_AGENTS_DIR = "sub_agents"
 
+# Tools that remain visible to the model when progressive tool loading is
+# enabled.  The registration switch still decides whether a tool exists at
+# all; this list only controls exposure for tools that are registered.
+_DEFAULT_DIRECT_TOOL_NAMES = frozenset(
+    {
+        "tool_search",
+        "tool_call",
+        "read_file",
+        "write_file",
+        "edit_file",
+        "glob",
+        "grep",
+        "bash",
+        "task_tool",
+        "subagent_spawn",
+        "subagent_wait",
+        "subagent_list",
+        "subagent_send_input",
+        "subagent_close",
+        "subagent_resume",
+        "ask_user",
+        "todo_create",
+        "todo_list",
+        "todo_get",
+        "todo_modify",
+        "skill_tool",
+        "memory_search",
+        "memory_get",
+        "paid_search",
+        "fetch_webpage",
+        "write_memory",
+        "edit_memory",
+        "read_memory",
+        "ltm_search",
+        "ltm_search_summary",
+        "send_file_to_user",
+        "enter_plan_mode",
+        "exit_plan_mode",
+        "skill_branch_explore",
+        "skill_index_build",
+    }
+)
+
 
 _ROUND_BOUNDARY = object()
+
+FreshInputContextFactory = Callable[[], AbstractAsyncContextManager[None]]
+
+
+def _render_identity_prompt(prompt_builder: SystemPromptBuilder, language: str) -> str:
+    """Render the identity section alone, for ReActAgent's prompt template.
+
+    ``ReActAgent`` re-reads ``prompt_template`` into its own identity section on
+    every round (see ``ReActAgent._inner_invoke``) and, because DeepAgent shares
+    its builder with the ReActAgent, that builder still contributes the other
+    sections itself. Handing over the fully built prompt would therefore fold
+    every section present at configure time into identity and emit them twice.
+
+    Args:
+        prompt_builder: The builder holding the sections for this agent.
+        language: Language the section is rendered in.
+
+    Returns:
+        The rendered identity text, or an empty string when there is none.
+    """
+    identity_section = prompt_builder.get_section(SectionName.IDENTITY)
+    if identity_section is None:
+        return ""
+    return identity_section.render(language)
 
 
 class DeepAgent(BaseAgent):
@@ -208,11 +294,52 @@ class DeepAgent(BaseAgent):
         self._interaction_send_lock = asyncio.Lock()
         self._interaction_wakeup = asyncio.Event()
         self._interaction_started = False
+        self._fresh_input_context_factory: Optional[FreshInputContextFactory] = None
+        self._task_resource_prepares: list[Callable[[], Awaitable[None]]] = []
+        self._task_resource_cleanups: list[Callable[[], Awaitable[None]]] = []
         super().__init__(card)
 
     def set_session_toolkit(self, toolkit: SessionToolkit | None) -> None:
         """Attach or clear the session toolkit (wired by SubagentRail async)."""
         self._session_toolkit = toolkit
+
+    def set_fresh_input_context_factory(
+        self,
+        factory: Optional[FreshInputContextFactory],
+    ) -> None:
+        """Set or clear the host context entered around fresh input enqueue.
+
+        The context runs while the interaction send and control locks are held.
+        It must not re-enter interaction or goal-control APIs that acquire them.
+        """
+        if factory is not None and not callable(factory):
+            raise TypeError("fresh input context factory must be callable")
+        self._fresh_input_context_factory = factory
+
+    def register_task_resource_cleanup(
+        self,
+        cleanup: Callable[[], Awaitable[None]],
+        *,
+        prepare: Optional[Callable[[], Awaitable[None]]] = None,
+    ) -> None:
+        """Register an idempotent cleanup for ephemeral subagent resources."""
+        if prepare is not None and prepare not in self._task_resource_prepares:
+            self._task_resource_prepares.append(prepare)
+        if cleanup not in self._task_resource_cleanups:
+            self._task_resource_cleanups.append(cleanup)
+
+    async def prepare_task_resources(self) -> None:
+        """Acquire task-scoped resource references before subagent invocation."""
+        for prepare in self._task_resource_prepares:
+            await prepare()
+
+    async def cleanup_task_resources(self) -> None:
+        """Release task-scoped resources without discarding persistent data."""
+        for cleanup in reversed(self._task_resource_cleanups):
+            try:
+                await cleanup()
+            except Exception:
+                logger.exception("[DeepAgent] task resource cleanup failed")
 
     def configure(self, config: DeepAgentConfig) -> "DeepAgent":
         """Apply configuration and rebuild the internal ReActAgent."""
@@ -275,12 +402,39 @@ class DeepAgent(BaseAgent):
                 result.msg(),
             )
 
+    @staticmethod
+    def _resolve_tool_owner_id(config: DeepAgentConfig) -> str:
+        """Return the owner id qualifying this agent's stateful tool registrations.
+
+        Tool ownership and persistence identity are separate concerns: the
+        checkpointer keys state by ``card.id``, so that id has to stay stable,
+        while the process-global resource manager needs one owner per live agent
+        or concurrent agents sharing a card silently overwrite each other's tool
+        instances. ``tool_owner_id`` lets a host separate the two; omitting it
+        keeps the historical behaviour of reusing ``card.id``.
+
+        Args:
+            config: The configuration being applied.
+
+        Returns:
+            The explicit ``tool_owner_id`` when set, otherwise the card id.
+        """
+        return config.tool_owner_id or config.card.id
+
     def _initial_configure(self, config: DeepAgentConfig) -> None:
         """First-time setup: persist config, create the inner ReActAgent, and queue rails."""
         self._deep_config = config
+        # Exposure is an agent-level registration policy.  Configure it before
+        # the factory adds ``config.tools`` and before rails can register their
+        # own tools; the AbilityManager then resolves each card exactly once at
+        # registration time.
+        self.ability_manager.set_tool_exposure_policy(
+            config.progressive_tool_enabled,
+            direct_tool_names=_DEFAULT_DIRECT_TOOL_NAMES,
+        )
         if config.card is not None:
             self.card = config.card
-            self.ability_manager.set_owner_id(self.card.id)
+            self.ability_manager.set_owner_id(self._resolve_tool_owner_id(config))
 
         self._react_agent = self._create_react_agent()
         self._queue_pending_rails(config)
@@ -289,9 +443,13 @@ class DeepAgent(BaseAgent):
         """Hot-reconfigure an already-running agent without restarting it."""
         previous_config = self._deep_config
         self._deep_config = config
+        self.ability_manager.set_tool_exposure_policy(
+            config.progressive_tool_enabled,
+            direct_tool_names=_DEFAULT_DIRECT_TOOL_NAMES,
+        )
         if config.card is not None:
             self.card = config.card
-            self.ability_manager.set_owner_id(self.card.id)
+            self.ability_manager.set_owner_id(self._resolve_tool_owner_id(config))
 
         self._hot_reload_rails(config)
 
@@ -309,6 +467,27 @@ class DeepAgent(BaseAgent):
 
         self._queue_pending_rails(config)
         self._sync_prompt_builder_references()
+        # SubagentRail is intentionally retained across partial hot reloads so
+        # its task/session tools and running subagents survive. Refresh the
+        # model-facing available-agents text after the parent registry and
+        # subagent configuration have changed, otherwise task_tool can keep
+        # advertising a stale tool-name snapshot.
+        self._refresh_subagent_tool_descriptions()
+
+    def _refresh_subagent_tool_descriptions(self) -> None:
+        """Refresh dynamic tool names embedded in subagent tool metadata."""
+
+        for rail in (*self._pending_rails, *self._registered_rails):
+            refresh = getattr(rail, "refresh_available_agents", None)
+            if not callable(refresh):
+                continue
+            try:
+                refresh(self)
+            except Exception as exc:
+                logger.warning(
+                    "[DeepAgent] Failed to refresh subagent tool descriptions: %s",
+                    exc,
+                )
 
     def _hot_reload_rails(self, config: DeepAgentConfig) -> None:
         """Cycle stale rails out and prepare replacement rails during hot-reconfigure.
@@ -429,6 +608,7 @@ class DeepAgent(BaseAgent):
         """
         language = resolve_language(config.language)
         mode = resolve_mode(config.prompt_mode)
+        self.prompt_attachment_manager.language = language
         prompt_builder = SystemPromptBuilder(language=language, mode=mode)
         if config.system_prompt:
             prompt_builder.add_section(PromptSection(
@@ -438,10 +618,11 @@ class DeepAgent(BaseAgent):
             ))
         else:
             prompt_builder.add_section(build_identity_section(language))
-        prompt_builder.add_section(build_prompt_attachments_section(language))
         prompt = prompt_builder.build()
         new_react_config = self._react_agent.config.model_copy()
-        new_react_config.prompt_template = [{"role": "system", "content": prompt}]
+        new_react_config.prompt_template = [
+            {"role": "system", "content": _render_identity_prompt(prompt_builder, language)}
+        ]
         self._react_agent.configure(new_react_config)
         self.system_prompt_builder = prompt_builder
         self._sync_prompt_builder_references()
@@ -475,16 +656,24 @@ class DeepAgent(BaseAgent):
 
         Public entry point for resource binding targets after a prompt section
         mutation: rebuilds ``react_agent.config.prompt_template`` from the
-        builder's current output and reconfigures the ReActAgent, then syncs
+        builder's identity section and reconfigures the ReActAgent, then syncs
         every prompt participant to the same builder reference via
         :meth:`_sync_prompt_builder_references`. Keeps the binding target from
         touching ``react_agent.config`` / ``react_agent.configure`` directly.
+
+        The template carries the identity alone, for the same reason it does in
+        :meth:`_hot_reload_system_prompt` -- see :func:`_render_identity_prompt`.
         """
         builder = self.system_prompt_builder
         if builder is None or self._react_agent is None:
             return
+        language = resolve_language(
+            self._deep_config.language if self._deep_config is not None else None
+        )
         new_react_config = self._react_agent.config.model_copy()
-        new_react_config.prompt_template = [{"role": "system", "content": builder.build()}]
+        new_react_config.prompt_template = [
+            {"role": "system", "content": _render_identity_prompt(builder, language)}
+        ]
         self._react_agent.configure(new_react_config)
         self._sync_prompt_builder_references()
 
@@ -523,6 +712,30 @@ class DeepAgent(BaseAgent):
             )
             if prail is not None:
                 self._pending_rails.append(prail)
+
+        self._queue_online_training_rail_from_env()
+
+    def _queue_online_training_rail_from_env(self) -> None:
+        """Queue the env-selected online training Rail when enabled by the host process."""
+
+        rail = self._build_online_training_rail_from_env()
+        if rail is None:
+            return
+        self._pending_rails.append(rail)
+        logger.info("[DeepAgent] %s added from environment", type(rail).__name__)
+
+    def _build_online_training_rail_from_env(self) -> AgentRail | None:
+        """Build the env-selected online training Rail without duplicating existing rails."""
+
+        try:
+            from openjiuwen.agent_evolving.agent_rl.online.core.rail_factory import (
+                build_online_training_rail_from_env,
+            )
+        except Exception as exc:
+            logger.warning("[DeepAgent] online training rail factory unavailable: %s", exc)
+            return None
+
+        return build_online_training_rail_from_env(self.configured_rails())
 
     def set_react_agent(
         self,
@@ -793,6 +1006,7 @@ class DeepAgent(BaseAgent):
             )
 
         inner_card = AgentCard(
+            id=self.card.id,
             name=f"{self.card.name}_react",
             description=self.card.description or "",
         )
@@ -815,6 +1029,7 @@ class DeepAgent(BaseAgent):
 
         language = resolve_language(cfg.language)
         mode = resolve_mode(cfg.prompt_mode)
+        self.prompt_attachment_manager.language = language
         prompt_builder = SystemPromptBuilder(language=language, mode=mode)
         if cfg.system_prompt:
             # Wrap the provided prompt as the identity section so all
@@ -826,7 +1041,6 @@ class DeepAgent(BaseAgent):
             ))
         else:
             prompt_builder.add_section(build_identity_section(language))
-        prompt_builder.add_section(build_prompt_attachments_section(language))
         prompt = prompt_builder.build()
         react_config.prompt_template = [{"role": "system", "content": prompt}]
 
@@ -902,7 +1116,13 @@ class DeepAgent(BaseAgent):
             self.ability_manager.add(mcp_config)
 
     async def _resolve_read_image_multimodal(self) -> None:
-        """Probe the agent model when read_file image modality is set to auto."""
+        """Resolve read_file image modality when it is set to auto.
+
+        A probe costs a full LLM round-trip, so it never blocks startup: a
+        cached verdict is applied straight away, otherwise the probe runs in the
+        background and this run stays metadata-only (``None`` is falsy at every
+        read site). Later agents on the same endpoint and model reuse the cache.
+        """
         config = self._deep_config
         if config is None or config.enable_read_image_multimodal is not None:
             return
@@ -914,19 +1134,20 @@ class DeepAgent(BaseAgent):
             config.enable_read_image_multimodal = False
             return
 
-        supported = await probe_image_support(config.model)
-        if supported is None:
-            logger.warning(
-                "[DeepAgent] image multimodal probe inconclusive; "
-                "leaving auto and degrading to metadata-only for this run",
+        cached = get_cached_image_support(config.model)
+        if cached is not None:
+            config.enable_read_image_multimodal = cached
+            logger.info(
+                "[DeepAgent] read_file image multimodal from probe cache: %s",
+                cached,
             )
             return
 
-        config.enable_read_image_multimodal = supported
         logger.info(
-            "[DeepAgent] read_file image multimodal auto-detected: %s",
-            supported,
+            "[DeepAgent] read_file image multimodal not probed yet; "
+            "probing in background and degrading to metadata-only for this run",
         )
+        schedule_image_support_probe(config.model)
 
     def _apply_inherited_artifact_cwd(self) -> None:
         """Set cwd from ``_inherited_artifact_root`` for a reused subagent.
@@ -953,23 +1174,34 @@ class DeepAgent(BaseAgent):
             # Reused subagent instances skip full init; still refresh cwd so
             # create_subagent does not have to mutate the parent's ContextVar.
             self._apply_inherited_artifact_cwd()
+            await self._register_online_training_rail_from_env_if_needed()
             return
+
+        self._queue_online_training_rail_from_env()
 
         # Initialize ContextVar CWD in the current asyncio Task context.
         # Each agent sets its own CWD unconditionally — ContextVar copies
         # are per-Task, so this won't affect the parent agent.
-        if self._deep_config and self._deep_config.workspace:
+        if self._deep_config and (self._deep_config.workspace or self._deep_config.cwd):
             from openjiuwen.core.sys_operation.cwd import init_cwd
 
-            init_root = self._deep_config.workspace.root_path or os.getcwd()
+            workspace = self._deep_config.workspace
+            workspace_root = (workspace.root_path if workspace else None) or os.getcwd()
             if self._inherited_artifact_root:
                 init_cwd(
                     self._inherited_artifact_root,
                     project_root=self._inherited_artifact_root,
-                    workspace=init_root,
+                    workspace=workspace_root,
                 )
             else:
-                init_cwd(init_root, workspace=init_root)
+                # cwd and workspace are separate layers: the workspace holds
+                # this agent's artifacts, cwd is where shell runs and relative
+                # paths resolve. They coincide unless the host says otherwise
+                # (team members run in the project dir / their worktree while
+                # keeping a private workspace).
+                cwd_root = self._deep_config.cwd or workspace_root
+                project_root = self._deep_config.project_root or cwd_root
+                init_cwd(cwd_root, project_root=project_root, workspace=workspace_root)
 
         await self._register_pending_mcps()
 
@@ -977,7 +1209,7 @@ class DeepAgent(BaseAgent):
             await self.init_workspace()
 
         await self._resolve_read_image_multimodal()
-        
+
         self._sync_prompt_builder_references()
 
         # Unregister stale rails left over from a previous configure() cycle.
@@ -988,17 +1220,56 @@ class DeepAgent(BaseAgent):
                 await self.unregister_rail(stale_rail)
         self._stale_rails.clear()
 
-        for rail_inst in self._pending_rails:
+        # Initialize in the same order callbacks run in: highest priority
+        # first. A rail's init registers its tools and prompt sections, so
+        # "run my hook after that rail's" and "see that rail's tools at init
+        # time" are the same question, and one number now answers both. The
+        # sort is stable, so rails sharing a priority keep the order the
+        # caller listed them in.
+        rail_init_timings: List[tuple] = []
+        initialized_rails = sorted(
+            self._pending_rails,
+            key=lambda r: r.priority,
+            reverse=True,
+        )
+        for rail_inst in initialized_rails:
             if isinstance(rail_inst, TaskCompletionRail):
                 self._task_completion_rail = rail_inst
             if isinstance(rail_inst, DeepAgentRail):
                 rail_inst.set_sys_operation(self._deep_config.sys_operation)
                 rail_inst.set_workspace(self._deep_config.workspace)
-            rail_inst.init(self)
+            rail_init_timings.append(
+                (type(rail_inst).__name__, init_rail(rail_inst, self))
+            )
             await self._register_rail_selective(rail_inst)
+
+        # ProgressiveToolRail owns the BM25 catalog. Build its initial
+        # snapshot only after every pending startup rail has registered its
+        # tools. Tools registered later are handled by the deferred-tool
+        # registry-version check on the next tool_search call.
+        seen_rails: set[int] = set()
+        for rail_inst in self._registered_rails:
+            if id(rail_inst) in seen_rails:
+                continue
+            seen_rails.add(id(rail_inst))
+            if isinstance(rail_inst, ProgressiveToolRail):
+                await rail_inst.finalize_startup_async(self)
+        log_rail_init_breakdown(rail_init_timings)
         self._pending_rails.clear()
         self._sync_prompt_builder_references()
         self._initialized = True
+
+    async def _register_online_training_rail_from_env_if_needed(self) -> None:
+        """Register the env-selected online Rail if env became available after configure()."""
+
+        if not self._initialized:
+            return
+
+        rail = self._build_online_training_rail_from_env()
+        if rail is None:
+            return
+        await self.register_rail(rail)
+        logger.info("[DeepAgent] %s registered from environment", type(rail).__name__)
 
     def _needs_workspace_init(self) -> bool:
         """Check if workspace initialization is needed."""
@@ -1149,6 +1420,22 @@ class DeepAgent(BaseAgent):
                 if spec.prompt_mode is not None
                 else self._deep_config.prompt_mode
             ),
+            # Preserve the parent's explicit decision by default.  A child
+            # using a model with different image capabilities may override it.
+            "enable_read_image_multimodal": (
+                spec.enable_read_image_multimodal
+                if spec.enable_read_image_multimodal is not None
+                else self._deep_config.enable_read_image_multimodal
+            ),
+            # A dynamically created subagent runs under its own conversation
+            # ID, but it remains part of the parent's KVC-affinity lifecycle.
+            # Without inheriting this config the child ReActAgent never
+            # installs the affinity hooks, so its normal model requests omit
+            # agent_hint even though TaskTool supplies conversation_id and
+            # parent_session_id.
+            "kv_cache_affinity_config": (
+                self._deep_config.kv_cache_affinity_config
+            ),
             "subagents": None,
             "enable_async_subagent": False,
             "add_general_purpose_agent": False,
@@ -1165,11 +1452,40 @@ class DeepAgent(BaseAgent):
                 )
 
                 factory_kwargs = dict(spec.factory_kwargs or {})
+                # Browser models may be independent from the parent model and
+                # therefore retain their factory's automatic image-capability
+                # probe.  Do not forward the generic inherited value twice.
+                browser_create_kwargs = dict(create_kwargs)
+                browser_create_kwargs.pop("enable_read_image_multimodal", None)
+                browser_model = create_kwargs["model"]
+                browser_parent_model = getattr(
+                    browser_model,
+                    "_browser_agent_parent_model",
+                    None,
+                )
+                if spec.enable_read_image_multimodal is not None:
+                    factory_kwargs.setdefault(
+                        "enable_read_image_multimodal",
+                        spec.enable_read_image_multimodal,
+                    )
+                elif (
+                    browser_model is self._deep_config.model
+                    or browser_parent_model is self._deep_config.model
+                ):
+                    parent_image_support = getattr(
+                        self._deep_config,
+                        "enable_read_image_multimodal",
+                        None,
+                    )
+                    factory_kwargs.setdefault(
+                        "enable_read_image_multimodal",
+                        parent_image_support is True,
+                    )
                 if browser_capabilities is not None:
                     factory_kwargs["browser_capabilities"] = list(browser_capabilities)
                 return self._bind_inherited_artifact_root(
                     create_browser_agent(
-                        **create_kwargs,
+                        **browser_create_kwargs,
                         **factory_kwargs,
                     )
                 )
@@ -1478,7 +1794,7 @@ class DeepAgent(BaseAgent):
             rail.set_sys_operation(self.deep_config.sys_operation)
             rail.set_workspace(self.deep_config.workspace)
         self._sync_prompt_builder_references()
-        rail.init(self)
+        init_rail(rail, self)
         await self._register_rail_selective(rail)
         self._sync_prompt_builder_references()
         return self
@@ -1503,73 +1819,131 @@ class DeepAgent(BaseAgent):
         rail.uninit(self)
         return self
 
-    async def load_expert_harness(
+    def _new_extension_context(self, context: BuildContext | None) -> BuildContext:
+        if context is not None:
+            ctx = context.derive()
+            ctx.extras = dict(ctx.extras)
+            return ctx
+        return BuildContext(
+            language=self.deep_config.language or "cn",
+            workspace=self.deep_config.workspace,
+            member_card_id=self.card.id,
+        )
+
+    async def _apply_extension_parts(
+        self,
+        parts: ExtensionParts,
+        *,
+        source_uri: str | None,
+    ) -> LoadRecord:
+        from openjiuwen.harness.extension_binder import apply_extension_hot
+
+        record = LoadRecord(source_uri=source_uri, refs=await apply_extension_hot(self, parts))
+        self._load_records[record.load_id] = record.model_copy(deep=True)
+        return record
+
+    async def load_plugin(
         self,
         path: str,
         *,
         context: BuildContext | None = None,
     ) -> LoadRecord:
-        """Hot-load a file-backed ExpertHarness package.
+        """Hot-load a file-backed Plugin package.
 
-        Reads the manifest at ``path`` into an ExpertHarnessSpec, then delegates
-        to ``load_expert_harness_from_spec``.
+        Accepts either a ``package_type=plugin`` ``manifest.json`` or a legacy
+        ``harness_config.yaml`` / ``expert_harness.yaml`` / ``harness.yaml``
+        package (see ``find_plugin_manifest`` for the lookup order); both map
+        onto ``PluginSpec``.
         """
         try:
-            spec = load_expert_harness_spec(path)
+            manifest_path = find_plugin_manifest(path)
+            spec = load_plugin_package(manifest_path)
+            ctx = self._new_extension_context(context)
+            ctx.extras["source_root"] = str(manifest_path.parent)
+            parts = resolve_plugin_parts(spec, ctx)
+            return await self._apply_extension_parts(parts, source_uri=str(manifest_path))
         except Exception as exc:
             raise build_error(
-                StatusCode.DEEPAGENT_LOAD_EXPERT_HARNESS_ERROR,
+                StatusCode.DEEPAGENT_LOAD_PLUGIN_ERROR,
                 error_msg=str(exc),
                 cause=exc,
             ) from exc
-        return await self.load_expert_harness_from_spec(spec, context=context)
 
-    async def load_expert_harness_from_spec(
+    async def load_plugin_spec(
         self,
-        spec: ExpertHarnessSpec,
+        spec: PluginSpec,
         *,
         context: BuildContext | None = None,
     ) -> LoadRecord:
-        """Hot-load an in-memory ExpertHarnessSpec via resolve Parts + apply_hot."""
+        """Hot-load an in-memory ``PluginSpec`` via resolve Parts + apply_hot.
+
+        Unlike :meth:`load_plugin`, there is no package root: every path-bearing
+        field on ``spec`` must already be an absolute path, or resolve rejects it.
+        """
         try:
-            if context is not None:
-                ctx = context.derive()
-                ctx.extras = dict(ctx.extras)
-            else:
-                ctx = BuildContext(
-                    language=self.deep_config.language or "cn",
-                    workspace=self.deep_config.workspace,
-                    member_card_id=self.card.id,
-                )
-            ctx.extras.setdefault(
-                "source_root",
-                (spec.source.root if spec.source else ".") or ".",
-            )
-            ctx.extras["_parent_model"] = self.deep_config.model
-
-            from openjiuwen.harness.resources.expert_harness_parts import (
-                resolve_expert_harness_parts,
-            )
-            from openjiuwen.harness.expert_harness_runtime import apply_expert_harness_hot
-
-            parts = resolve_expert_harness_parts(spec, ctx)
-            source_uri = None
-            if spec.source is not None:
-                source_uri = spec.source.uri or spec.source.root
-            record = LoadRecord(
-                source_uri=source_uri,
-                refs=await apply_expert_harness_hot(self, parts),
-            )
-            self._load_records[record.load_id] = record.model_copy(deep=True)
-            return record
+            ctx = self._new_extension_context(context)
+            parts = resolve_plugin_parts(spec, ctx)
+            return await self._apply_extension_parts(parts, source_uri=None)
         except Exception as exc:
             raise build_error(
-                StatusCode.DEEPAGENT_LOAD_EXPERT_HARNESS_ERROR,
+                StatusCode.DEEPAGENT_LOAD_PLUGIN_ERROR,
                 error_msg=str(exc),
                 cause=exc,
             ) from exc
 
-    async def load_expert_harness_ability(
+    async def load_agent_template(
+        self,
+        path: str,
+        *,
+        context: BuildContext | None = None,
+    ) -> LoadRecord:
+        """Hot-load a file-backed AgentTemplate package (root ``manifest.json``).
+
+        Keeps this agent's ``agent_card`` / model unchanged, overlays the root
+        template's persona/capabilities, and materializes its direct
+        ``subagents`` as runtime ``SubAgentConfig``.
+        """
+        try:
+            manifest_path = find_agent_template_manifest(path)
+            spec = load_agent_template_package(manifest_path)
+            ctx = self._new_extension_context(context)
+            ctx.extras["source_root"] = str(manifest_path.parent)
+            ctx.extras["_parent_model"] = self.deep_config.model
+            parts = resolve_agent_template_parts(spec, ctx)
+            return await self._apply_extension_parts(parts, source_uri=str(manifest_path))
+        except Exception as exc:
+            raise build_error(
+                StatusCode.DEEPAGENT_LOAD_AGENT_TEMPLATE_ERROR,
+                error_msg=str(exc),
+                cause=exc,
+            ) from exc
+
+    async def load_agent_template_spec(
+        self,
+        spec: AgentTemplateSpec,
+        *,
+        context: BuildContext | None = None,
+    ) -> LoadRecord:
+        """Hot-load an in-memory ``AgentTemplateSpec``.
+
+        Unlike :meth:`load_agent_template`, no package manifest is read here:
+        every path-bearing field on ``spec`` must already be absolute.  This is
+        the in-memory counterpart to :meth:`load_plugin_spec` and is suitable
+        for a serialized spec carried across a team-member build boundary.
+        """
+        try:
+            ctx = self._new_extension_context(context)
+            ctx.extras["_parent_model"] = self.deep_config.model
+            parts = resolve_agent_template_parts(spec, ctx)
+            return await self._apply_extension_parts(parts, source_uri=None)
+        except Exception as exc:
+            raise build_error(
+                StatusCode.DEEPAGENT_LOAD_AGENT_TEMPLATE_ERROR,
+                error_msg=str(exc),
+                cause=exc,
+            ) from exc
+
+    async def load_plugin_ability(
         self,
         *,
         tools: Tool | ToolCard | list[Tool | ToolCard] | None = None,
@@ -1577,14 +1951,8 @@ class DeepAgent(BaseAgent):
         skills: ResolvedSkill | list[ResolvedSkill] | None = None,
     ) -> LoadRecord:
         """Hot-load pre-built tools / rails / skills onto this agent.
-
-        Accepts already-constructed instances only. Assembles
-        ``ExpertHarnessParts`` and delegates to ``apply_expert_harness_hot``.
-        Unload via :meth:`unload_expert_harness`.
         """
         try:
-            from openjiuwen.harness.expert_harness_runtime import apply_expert_harness_hot
-
             def _as_ability_list(value):
                 if value is None:
                     return []
@@ -1592,50 +1960,48 @@ class DeepAgent(BaseAgent):
                     return [item for item in value if item is not None]
                 return [value]
 
-            parts = ExpertHarnessParts(
+            parts = ExtensionParts(
                 tools=_as_ability_list(tools),
                 rails=_as_ability_list(rails),
                 skills=_as_ability_list(skills),
             )
-            record = LoadRecord(refs=await apply_expert_harness_hot(self, parts))
-            self._load_records[record.load_id] = record.model_copy(deep=True)
-            return record
+            return await self._apply_extension_parts(parts, source_uri=None)
         except Exception as exc:
             raise build_error(
-                StatusCode.DEEPAGENT_LOAD_EXPERT_HARNESS_ERROR,
+                StatusCode.DEEPAGENT_LOAD_PLUGIN_ERROR,
                 error_msg=str(exc),
                 cause=exc,
             ) from exc
 
-    async def unload_expert_harness(self, record: LoadRecord) -> list[str]:
-        """Unload resources produced by a successful ExpertHarness load.
+    async def unload_extension(self, record: LoadRecord) -> list[str]:
+        """Unload resources produced by a successful Plugin / AgentTemplate load.
 
         Resolves ``record.load_id`` against this agent's ``_load_records`` ledger.
         Unknown / already-unloaded ids are a no-op. Only the ledger-owned refs
         are applied; the caller's ``record.refs`` are ignored.
         """
         try:
-            from openjiuwen.harness.expert_harness_runtime import unapply_expert_harness_hot
+            from openjiuwen.harness.extension_binder import unapply_extension_hot
 
             owned = self._load_records.get(record.load_id)
             if owned is None:
                 return []
-            labels = await unapply_expert_harness_hot(self, owned.refs)
+            labels = await unapply_extension_hot(self, owned.refs)
             self._load_records.pop(record.load_id, None)
             return labels
         except Exception as exc:
             raise build_error(
-                StatusCode.DEEPAGENT_LOAD_EXPERT_HARNESS_ERROR,
+                StatusCode.DEEPAGENT_UNLOAD_EXTENSION_ERROR,
                 error_msg=str(exc),
                 cause=exc,
             ) from exc
 
     async def load_harness_config(self, config_path: str) -> list[str]:
-        """Deprecated hot-load entry. Use :meth:`load_expert_harness` instead.
+        """Deprecated hot-load entry. Use :meth:`load_plugin` instead.
 
         Args:
             config_path: Path to a harness_config.yaml manifest or its parent
-                directory. Resolved the same way as ``load_expert_harness``.
+                directory. Resolved the same way as ``load_plugin``.
 
         Returns:
             List of human-readable resource labels (same shape the old
@@ -1643,19 +2009,19 @@ class DeepAgent(BaseAgent):
         """
         warnings.warn(
             "DeepAgent.load_harness_config is deprecated; "
-            "use load_expert_harness instead.",
+            "use load_plugin instead.",
             DeprecationWarning,
             stacklevel=2,
         )
-        record = await self.load_expert_harness(config_path)
+        record = await self.load_plugin(config_path)
         return self._load_record_labels(record)
 
     async def unload_harness_config(self, config_path: str) -> list[str]:
-        """Deprecated unload entry. Use :meth:`unload_expert_harness` instead.
+        """Deprecated unload entry. Use :meth:`unload_extension` instead.
 
         Locates the ``LoadRecord`` previously produced by ``load_harness_config``
         via ``_load_records`` (keyed by the resolved manifest path),
-        then delegates to ``unload_expert_harness``. Returns an empty list when
+        then delegates to ``unload_extension``. Returns an empty list when
         no matching record is found, mirroring the old "no-op on missing" behavior.
 
         Args:
@@ -1663,12 +2029,12 @@ class DeepAgent(BaseAgent):
         """
         warnings.warn(
             "DeepAgent.unload_harness_config is deprecated; "
-            "use unload_expert_harness instead.",
+            "use unload_extension instead.",
             DeprecationWarning,
             stacklevel=2,
         )
         try:
-            resolved = str(find_expert_harness_manifest(config_path))
+            resolved = str(find_plugin_manifest(config_path))
         except FileNotFoundError:
             return []
         target_record: LoadRecord | None = None
@@ -1678,7 +2044,7 @@ class DeepAgent(BaseAgent):
                 break
         if target_record is None:
             return []
-        return await self.unload_expert_harness(target_record)
+        return await self.unload_extension(target_record)
 
     @staticmethod
     def _load_record_labels(record: LoadRecord) -> list[str]:
@@ -1706,7 +2072,7 @@ class DeepAgent(BaseAgent):
         while self._pending_harness_configs:
             path = self._pending_harness_configs.pop(0)
             try:
-                record = await self.load_expert_harness(path)
+                record = await self.load_plugin(path)
                 logger.info(
                     "Auto-loaded harness config %s: %s",
                     path,
@@ -2306,6 +2672,10 @@ class DeepAgent(BaseAgent):
             # Without this, await task could wait for a long-running
             # operation (e.g., wait_round_completion with 600s timeout).
             await self._cancel_session_deep_tasks(session.get_session_id())
+            await self._release_session_subagent_controls(
+                session,
+                reason="stream_cancelled",
+            )
             await self._cancel_stream_process_task()
             raise
         finally:
@@ -2546,6 +2916,26 @@ class DeepAgent(BaseAgent):
                 exc_info=True,
             )
 
+    async def _release_session_subagent_controls(
+        self,
+        session: Optional[Session],
+        *,
+        reason: str,
+    ) -> None:
+        """Cancel persistent runtime subagents owned by a parent session."""
+        if session is None:
+            return
+        session_id = session.get_session_id()
+        try:
+            await release_subagent_control(self, session_id, reason=reason)
+        except Exception as e:
+            logger.warning(
+                "Failed to release subagent controls for session %s: %s",
+                session_id,
+                e,
+                exc_info=True,
+            )
+
     async def _cancel_session_deep_tasks(self, session_id: str) -> None:
         """Cancel active DeepAgent round tasks for a session.
 
@@ -2602,9 +2992,9 @@ class DeepAgent(BaseAgent):
         instead of leaving a zombie ReAct loop running.
 
         Args:
-            session: Current session (unused).
+            session: Parent session whose runtime subagents should be cancelled.
+                Falls back to the bound loop session when omitted.
         """
-        _ = session
         coordinator = self._loop_coordinator
         controller = self._loop_controller
         if coordinator is not None and controller is not None:
@@ -2615,6 +3005,10 @@ class DeepAgent(BaseAgent):
             )
             await handler.on_abort()
         await self._cancel_stream_process_task()
+        await self._release_session_subagent_controls(
+            session or self._loop_session,
+            reason="aborted",
+        )
 
     # ----------------------------------------------------------------
     # long-lived session
@@ -2778,8 +3172,16 @@ class DeepAgent(BaseAgent):
         Hosts should pass the product ``Session`` they own.  When ``session`` is
         omitted, a fresh agent session is created with id ``\"default\"`` (useful
         for unit tests and simple embeddings).
+
+        Lifecycle callbacks awaited while the start lock is held must not
+        re-enter ``start()`` or ``stop()`` on this agent.
         """
         async with self._interaction_start_lock:
+            if self._interaction_started:
+                self._ensure_interaction_running()
+            elif not self._try_transition_interaction_phase(InteractionPhase.IDLE):
+                raise RuntimeError("interaction_terminated")
+
             if session is None:
                 from openjiuwen.core.session.agent import create_agent_session
 
@@ -2799,6 +3201,14 @@ class DeepAgent(BaseAgent):
                     f"cannot bind {sid}."
                 )
 
+            # The controller starts its long-lived TaskScheduler inside
+            # prepare_interaction_task_loop().  Create the mutable worktree
+            # holder first so the scheduler, supervisor, rounds, and tool
+            # tasks all inherit the same object through their copied Context.
+            from openjiuwen.harness.tools.worktree.session import init_session_state
+
+            init_session_state()
+
             self._interaction_session = session
             await self.prepare_interaction_task_loop(session)
             if self._task_completion_rail is None:
@@ -2815,7 +3225,6 @@ class DeepAgent(BaseAgent):
                 emit_event=self._emit_interaction_event,
                 notify_work=self._notify_work,
             )
-            self._interaction_phase = InteractionPhase.IDLE
             self._interaction_started = True
             self._interaction_forwarder_task = asyncio.create_task(
                 self._forward_session_stream(), name=f"interaction_forwarder[{sid}]"
@@ -2825,7 +3234,7 @@ class DeepAgent(BaseAgent):
             if rail is not None and hasattr(rail, "set_goal_manager"):
                 rail.set_goal_manager(self.goal_manager)
                 try:
-                    rail.init(self)
+                    init_rail(rail, self)
                 except Exception:
                     logger.exception("[DeepAgent] Failed to register goal tools")
 
@@ -2833,12 +3242,18 @@ class DeepAgent(BaseAgent):
             logger.info("[DeepAgent] Started for session %s", sid)
 
     async def stop(self) -> None:
-        """Terminate the interaction loop and wake any attached output consumer."""
+        """Serialize teardown with start and terminate this interaction runtime."""
+        async with self._interaction_start_lock:
+            await self._stop_interaction_locked()
+
+    async def _stop_interaction_locked(self) -> None:
+        """Teardown helper; awaited callbacks must not re-enter start or stop."""
+        self._fresh_input_context_factory = None
+        self._try_transition_interaction_phase(InteractionPhase.TERMINATED)
         if not self._interaction_started:
             return
-        self._interaction_phase = InteractionPhase.TERMINATED
-        await self._interaction_output.shutdown()
         self._event_manager.discard_all_work()
+        await self._interaction_output.shutdown()
         await self._cancel_active_round(reason="stop")
 
         for task in (self._interaction_supervisor_task, self._interaction_forwarder_task):
@@ -2869,6 +3284,8 @@ class DeepAgent(BaseAgent):
                 await controller.stop()
 
         self._interaction_started = False
+        self._event_manager.discard_all_work()
+        self._try_transition_interaction_phase(InteractionPhase.TERMINATED)
         self._active_interaction_round = None
         self._interaction_round_task = None
 
@@ -2881,12 +3298,14 @@ class DeepAgent(BaseAgent):
         call does not obtain the lease, so an already-attached reader continues
         to receive goal progress (session switch / concurrent attach_goal).
         """
-        if not self._interaction_started or self._interaction_phase is InteractionPhase.TERMINATED:
-            raise RuntimeError("interaction_terminated")
+        self._ensure_interaction_running()
 
         async with self._interaction_send_lock:
+            self._ensure_interaction_running()
             async with self._interaction_control_lock:
+                self._ensure_interaction_running()
                 stream = await self._attach_output_locked()
+                self._ensure_interaction_running()
                 if self.goal_manager is not None:
                     record = self._load_goal_record_locked()
                     if record is not None and record.status is GoalStatus.ACTIVE:
@@ -2902,11 +3321,29 @@ class DeepAgent(BaseAgent):
         attach and let the existing consumer receive output.  Dispatch modes
         do not apply to ``InteractiveInput`` recovery requests.
         """
-        if not self._interaction_started or self._interaction_phase is InteractionPhase.TERMINATED:
-            raise RuntimeError("interaction_terminated")
+        self._ensure_interaction_running()
 
         async with self._interaction_send_lock:
+            self._ensure_interaction_running()
             await self._send_user(request)
+
+    def _ensure_interaction_running(self) -> None:
+        if not self._is_interaction_running():
+            raise RuntimeError("interaction_terminated")
+
+    def _is_interaction_running(self) -> bool:
+        return self._interaction_started and self._interaction_phase is not InteractionPhase.TERMINATED
+
+    def _try_transition_interaction_phase(self, target: InteractionPhase) -> bool:
+        if not isinstance(target, InteractionPhase):
+            raise TypeError("interaction phase target must be InteractionPhase")
+        if (
+            self._interaction_phase is InteractionPhase.TERMINATED
+            and target is not InteractionPhase.TERMINATED
+        ):
+            return False
+        self._interaction_phase = target
+        return True
 
     async def _send_user(self, request: SendInputRequest) -> None:
         inputs = request.inputs
@@ -2926,6 +3363,7 @@ class DeepAgent(BaseAgent):
             )
 
         async with self._interaction_control_lock:
+            self._ensure_interaction_running()
             if is_resume_input:
                 self._event_manager.push_user(
                     RoundWorkItem.user(
@@ -2969,10 +3407,52 @@ class DeepAgent(BaseAgent):
 
             # Fresh user turn.  Output lease ownership stays with the host via
             # ``attach_output``; send_input never steals or creates a stream.
+            context_factory = self._fresh_input_context_factory
+            if context_factory is None:
+                self._event_manager.push_user(
+                    RoundWorkItem.user(request_id=request.request_id, inputs=inputs)
+                )
+                self._notify_work()
+            else:
+                await self._enqueue_fresh_input_in_context(
+                    context_factory,
+                    request_id=request.request_id,
+                    inputs=inputs,
+                )
+
+    async def _enqueue_fresh_input_in_context(
+        self,
+        context_factory: FreshInputContextFactory,
+        *,
+        request_id: Optional[str],
+        inputs: Dict[str, Any],
+    ) -> None:
+        """Enter host readiness without allowing exit to hide dispatch failure."""
+        context = context_factory()
+        await context.__aenter__()
+        try:
+            self._ensure_interaction_running()
             self._event_manager.push_user(
-                RoundWorkItem.user(request_id=request.request_id, inputs=inputs)
+                RoundWorkItem.user(request_id=request_id, inputs=inputs)
             )
             self._notify_work()
+        except BaseException as primary_error:
+            primary_traceback = primary_error.__traceback__
+            try:
+                await context.__aexit__(
+                    type(primary_error),
+                    primary_error,
+                    primary_traceback,
+                )
+            except BaseException as exit_error:
+                # Dispatch failure is authoritative, including when context
+                # cleanup is cancelled. Preserve cleanup only as the cause.
+                logger.exception(
+                    "[DeepAgent] fresh input context exit failed after dispatch error"
+                )
+                raise primary_error.with_traceback(primary_traceback) from exit_error
+            raise
+        await context.__aexit__(None, None, None)
 
     async def _attach_output_locked(self) -> Optional[InteractionOutputStream]:
         lease = await self._interaction_output.attach()
@@ -3089,8 +3569,9 @@ class DeepAgent(BaseAgent):
                 name=f"deepagent-cancel-task-{task_id[:12]}",
             )
             try:
-                await asyncio.wait_for(asyncio.shield(cancel_wait), timeout=wait_timeout)
-            except asyncio.TimeoutError:
+                with anyio.fail_after(wait_timeout, shield=True):
+                    await cancel_wait
+            except TimeoutError:
                 logger.warning(
                     "[DeepAgent] cancel_task timed out after %.1fs "
                     "(reason=%s task_id=%s); continuing without waiting for LLM",
@@ -3121,20 +3602,26 @@ class DeepAgent(BaseAgent):
 
     async def _supervisor_loop(self) -> None:
         try:
-            while self._interaction_started and self._interaction_phase is not InteractionPhase.TERMINATED:
+            while self._is_interaction_running():
                 if not self._interaction_output.has_consumer():
-                    self._interaction_phase = InteractionPhase.IDLE
+                    if not self._try_transition_interaction_phase(InteractionPhase.IDLE):
+                        return
                     self._interaction_wakeup.clear()
                     await self._interaction_wakeup.wait()
                     continue
 
                 work = self._event_manager.next_work()
                 if work is None:
+                    if not self._is_interaction_running():
+                        return
                     await self._promote_loop_follow_ups()
                     work = self._event_manager.next_work()
                 if work is None:
                     await self._close_idle_output_if_finished()
-                    self._interaction_phase = InteractionPhase.IDLE
+                    if not self._is_interaction_running():
+                        return
+                    if not self._try_transition_interaction_phase(InteractionPhase.IDLE):
+                        return
                     self._interaction_wakeup.clear()
                     if self._event_manager.has_pending_work():
                         continue
@@ -3152,7 +3639,7 @@ class DeepAgent(BaseAgent):
             logger.debug("[DeepAgent] supervisor cancelled")
         except Exception:
             logger.exception("[DeepAgent] supervisor failed")
-            self._interaction_phase = InteractionPhase.IDLE
+            self._try_transition_interaction_phase(InteractionPhase.IDLE)
 
     async def _promote_loop_follow_ups(self) -> None:
         controller = self.loop_controller
@@ -3171,6 +3658,8 @@ class DeepAgent(BaseAgent):
     async def _close_idle_output_if_finished(self) -> None:
         """End an ordinary response stream after its final queued round."""
         async with self._interaction_control_lock:
+            if not self._is_interaction_running():
+                return
             if self._should_keep_interaction_open_locked():
                 return
             await self._interaction_output.finish_current()
@@ -3231,13 +3720,16 @@ class DeepAgent(BaseAgent):
             return False
 
     async def _execute_round(self, work: RoundWorkItem) -> None:
+        if not self._is_interaction_running():
+            return
+        if not self._try_transition_interaction_phase(InteractionPhase.RUNNING):
+            return
         session = self._interaction_session
         task_id = uuid.uuid4().hex
         forwarded = asyncio.Event()
         self._interaction_round_forwarded = forwarded
         self._active_interaction_round = ActiveInteractionRound(work=work, task_id=task_id)
         self._event_manager.mark_started(work)
-        self._interaction_phase = InteractionPhase.RUNNING
         try:
             if session is None or not self._interaction_output.has_consumer():
                 return
@@ -3254,6 +3746,8 @@ class DeepAgent(BaseAgent):
             outcome: RoundOutcome = await self.run_one_round(
                 work, task_id, session
             )
+            if not self._is_interaction_running():
+                return
             if outcome.next_work is not None:
                 self._event_manager.push_user(outcome.next_work)
                 self._notify_work()
@@ -3281,8 +3775,7 @@ class DeepAgent(BaseAgent):
                 if not emitted:
                     forwarded.set()
             self._active_interaction_round = None
-            if self._interaction_phase is InteractionPhase.RUNNING:
-                self._interaction_phase = InteractionPhase.IDLE
+            self._try_transition_interaction_phase(InteractionPhase.IDLE)
 
     def _load_goal_record_locked(self) -> Optional[GoalRecord]:
         if self.goal_manager is None:

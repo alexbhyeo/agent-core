@@ -23,7 +23,7 @@ from openjiuwen.agent_teams.messager import (
     Messager,
     create_messager,
 )
-from openjiuwen.agent_teams.paths import team_home
+from openjiuwen.agent_teams.paths import team_workspace_dir
 from openjiuwen.agent_teams.paths import (
     team_memory_dir as default_team_memory_dir,
 )
@@ -36,8 +36,11 @@ from openjiuwen.agent_teams.schema.team import (
     TeamRuntimeContext,
     TeamSpec,
 )
+from openjiuwen.agent_teams.skill.rail_spec import (
+    build_team_skill_rail_spec,
+    complete_declared_team_skill_rails,
+)
 from openjiuwen.agent_teams.tools.team import TeamBackend
-from openjiuwen.agent_teams.workspace_layout import ensure_team_member_workspace_link
 from openjiuwen.core.common.logging import team_logger
 from openjiuwen.core.runner.spawn.agent_config import (
     SpawnAgentConfig,
@@ -272,7 +275,14 @@ class AgentConfigurator:
         self.messager = create_messager(messager_config) if messager_config else None
 
         if spec.workspace and spec.workspace.enabled:
-            self.workspace_manager = self.create_workspace_manager(spec, ctx)
+            # Conditional creation: an in-process teammate
+            # whose manager was injected by ``share_workspace_cache_with``
+            # before ``configure`` already carries the leader's manager —
+            # do not overwrite it with a per-agent copy, otherwise the
+            # ``_assemble_member_workspace`` reuse check would miss and the
+            # teammate would re-scan the team-workspace md files.
+            if self.workspace_manager is None:
+                self.workspace_manager = self.create_workspace_manager(spec, ctx)
 
         if ctx.role == TeamRole.LEADER and self.model_allocator is None:
             from openjiuwen.agent_teams.models.allocator import (
@@ -317,7 +327,7 @@ class AgentConfigurator:
 
         ws_config = spec.workspace
         team_name = (ctx.team_spec.team_name if ctx.team_spec else None) or spec.team_name
-        ws_path = ws_config.root_path or str(team_home(team_name) / "team-workspace")
+        ws_path = ws_config.root_path or str(team_workspace_dir(team_name))
         os.makedirs(ws_path, exist_ok=True)
         team_logger.info("Team workspace directory ensured at {}", ws_path)
         return TeamWorkspaceManager(
@@ -420,6 +430,13 @@ class AgentConfigurator:
         if member_runtime is not None:
             self.harness = member_runtime
             self.memory_manager = None
+            # External CLI members (claude/codex): when evolution is on, also
+            # build the in-team workspace dir + write B-class identity md (no
+            # symlink out of the team tree), mirroring in-process members so
+            # evolved values reach the model via the shared cache and survive
+            # a session restart. Silently skipped when evolution is off or no
+            # shared workspace_manager is wired.
+            self._prepare_external_cli_workspace(spec, ctx)
             return member_runtime
 
         agent_spec = self.resolve_agent_spec(spec, ctx.role, ctx.member_name)
@@ -427,31 +444,46 @@ class AgentConfigurator:
         member_name = ctx.member_name
 
         ws_spec = agent_spec.workspace or spec.agents.get("leader", agent_spec).workspace
-        workspace_is_worktree = bool(ctx.worktree_path)
-        if ctx.worktree_path:
-            # Team-managed isolation creates the teammate worktree before this
-            # point. Build the DeepAgent with that worktree as its visible
-            # workspace so shell/file tools start inside the isolated checkout.
-            base_ws_spec = ws_spec or WorkspaceSpec()
-            ws_spec = base_ws_spec.model_copy(
-                update={
-                    "root_path": ctx.worktree_path,
-                    "stable_base": False,
-                }
-            )
-        if ws_spec and ws_spec.stable_base:
-            team_name = (ctx.team_spec.team_name if ctx.team_spec else None) or spec.team_name
-            ws_spec = ws_spec.model_copy(
-                update={"root_path": ensure_team_member_workspace_link(team_name, member_name)}
+        if ws_spec is None:
+            # A team member always owns a workspace -- it is where its
+            # artifacts, memory and the .team mount live, and DeepAgent keys
+            # its cwd initialisation off it.
+            ws_spec = WorkspaceSpec(stable_base=True)
+        if ws_spec.stable_base:
+            from openjiuwen.agent_teams.team_workspace.binder import (
+                prepare_member_workspace,
             )
 
+            team_name = (ctx.team_spec.team_name if ctx.team_spec else None) or spec.team_name
+            # Block C member-directory linker: flatten the member's real
+            # directory out of the team tree, expose it in-team via a link.
+            # The root returned is always the in-team ``team_member_workspace_dir``
+            # — A/B code never notices the link.
+            root_path = prepare_member_workspace(
+                team_name=team_name,
+                member_name=ctx.member_name or "",
+                role=ctx.role,
+                leader_member_name=(ctx.team_spec.leader_member_name if ctx.team_spec else None)
+                or spec.leader.member_name,
+                predefined_members={m.member_name for m in spec.predefined_members},
+                member_workspace_prefix=spec.member_workspace_prefix,
+            )
+            ws_spec = ws_spec.model_copy(update={"root_path": root_path})
+
+        # cwd is a separate layer from the workspace. The workspace stays the
+        # member's private artifact directory (memory, Skill visibility
+        # declaration, .team mount); cwd is where shell runs and relative paths
+        # resolve. Team isolation moves cwd into the worktree without dragging
+        # the workspace along -- otherwise the member's artifacts and its Skill
+        # grants would live inside an ephemeral checkout and vanish with it.
+        member_cwd = ctx.worktree_path or agent_spec.cwd or None
+        member_project_root = agent_spec.project_root or agent_spec.cwd or None
+
         workspace_root_path = ws_spec.root_path if ws_spec is not None else None
-        should_register_cleanup_path = (
-            bool(workspace_root_path)
-            and self.team_backend is not None
-            and not workspace_is_worktree
-        )
-        if should_register_cleanup_path and workspace_root_path is not None:
+        # The workspace is now always the member's own directory (never the
+        # project dir, never a worktree), so it is unconditionally ours to
+        # clean up.
+        if workspace_root_path and self.team_backend is not None:
             self.team_backend.register_cleanup_path(workspace_root_path)
 
         if self.workspace_manager and ws_spec and ws_spec.root_path:
@@ -464,15 +496,33 @@ class AgentConfigurator:
             mode=OperationMode.LOCAL,
             work_config=LocalWorkConfig(shell_allowlist=None),
         )
+        # Members default to metadata-only read_file images: the modality probe
+        # costs a full LLM round-trip per member on every team start. A blueprint
+        # that wants native image input says so explicitly on the agent spec.
+        enable_read_image_multimodal = agent_spec.enable_read_image_multimodal
+        if enable_read_image_multimodal is None:
+            enable_read_image_multimodal = False
+        # Skills are cleared and discovery is switched off on purpose: the
+        # DeepAgent factory auto-adds the generic SkillUseRail when either is
+        # truthy, and that rail scans the member workspace's own ``skills/``
+        # node plus every mounted team directory. A team member instead reads
+        # the one shared Skill library through ``core.team.skill_use``, which
+        # narrows it by the member's and the team's visibility declarations.
+        # ``agent_spec.skills`` is not discarded -- it travels into that rail's
+        # params as the member declaration's seed allow-list.
         build_spec = agent_spec.model_copy(
             update={
                 "card": self._card,
                 "model": model_config,
                 "workspace": ws_spec,
+                "cwd": member_cwd,
+                "project_root": member_project_root,
                 "sys_operation": sys_operation_spec,
                 "tools": list(agent_spec.tools or []),
-                "enable_skill_discovery": True,
+                "skills": [],
+                "enable_skill_discovery": False,
                 "enable_task_loop": True,
+                "enable_read_image_multimodal": enable_read_image_multimodal,
             }
         )
 
@@ -525,6 +575,7 @@ class AgentConfigurator:
                     "teammate_mode": teammate_mode,
                     "dispatch_mode": spec.dispatch_mode,
                     "lifecycle": spec.lifecycle,
+                    "team_mode": _resolve_team_mode(spec),
                     "exclude_tools": exclude,
                     "qualify_ids": spec.spawn_mode == "inprocess",
                     "team_name": resolved_team_name,
@@ -535,6 +586,8 @@ class AgentConfigurator:
                 type=TEAM_POLICY,
                 params={
                     "prompt": ctx.prompt or "",
+                    "display_name": ctx.display_name or "",
+                    "member_workspace_path": workspace_root_path,
                     "lifecycle": spec.lifecycle,
                     "teammate_mode": teammate_mode,
                     "team_mode": _resolve_team_mode(spec),
@@ -543,13 +596,15 @@ class AgentConfigurator:
                     "team_workspace_mount": team_workspace_mount,
                     "team_workspace_path": team_workspace_path,
                     "expose_human_agents_to_teammates": spec.expose_human_agents_to_teammates,
+                    "steer_batch_size": spec.steer_batch_size,
+                    "fork_source": ctx.fork_source or "",
                 },
             ),
         ]
         if self.workspace_manager:
             team_rail_specs.append(RailSpec(type=TEAM_WORKSPACE, params={}))
 
-        is_coordinated_teammate = ctx.role == TeamRole.TEAMMATE and ctx.team_spec
+        is_coordinated_teammate = ctx.role.is_coordinated_member and ctx.team_spec
         approval_tools = agent_spec.approval_required_tools or []
         can_request_approval = is_coordinated_teammate and self.team_backend and self.messager
         # When team permissions are enabled the platform-mounted
@@ -678,8 +733,7 @@ class AgentConfigurator:
             if swarmflow_worker_base_spec is not None:
                 swarmflow_worker_base_spec = swarmflow_worker_base_spec.model_copy(
                     update={
-                        "rails": list(swarmflow_worker_base_spec.rails or [])
-                                 + [observability_rail_spec],
+                        "rails": list(swarmflow_worker_base_spec.rails or []) + [observability_rail_spec],
                     },
                 )
 
@@ -723,16 +777,51 @@ class AgentConfigurator:
         team_rail_specs.append(observability_rail_spec)
         base_rails = _apply_team_worktree_shell_guard(
             list(build_spec.rails or []),
-            enabled=ctx.role in {TeamRole.LEADER, TeamRole.TEAMMATE},
+            enabled=ctx.role in {TeamRole.LEADER, TeamRole.TEAMMATE, TeamRole.EXTERNAL_CLI},
         )
-        if ctx.role in {TeamRole.LEADER, TeamRole.TEAMMATE} and not _has_team_worktree_shell_guard(base_rails):
+        if ctx.role in {
+            TeamRole.LEADER,
+            TeamRole.TEAMMATE,
+            TeamRole.EXTERNAL_CLI,
+        } and not _has_team_worktree_shell_guard(base_rails):
             team_logger.warning(
                 "Team-managed worktree shell guard was not applied for member {} because core.sys_operation is absent",
                 member_name,
             )
+        # Declared last, once base_rails is final: whether the Skill rail brings
+        # its own read_file / bash fallback depends on a system-operation rail
+        # being present, and a blueprint that declares its own Skill rail keeps it.
+        # A blueprint that declared a bare team Skill rail is completed first --
+        # it owns the exposure mode, but only the member is knowable here.
+        member_workspace_path = ws_spec.root_path
+        base_rails = complete_declared_team_skill_rails(
+            base_rails,
+            team_name=resolved_team_name,
+            member_name=member_name,
+            config_skills=agent_spec.skills,
+            team_workspace_path=team_workspace_path,
+            member_workspace_path=member_workspace_path,
+        )
+        skill_rail_spec = build_team_skill_rail_spec(
+            team_name=resolved_team_name,
+            member_name=member_name,
+            config_skills=agent_spec.skills,
+            declared_rails=base_rails,
+            team_workspace_path=team_workspace_path,
+            member_workspace_path=member_workspace_path,
+        )
+        if skill_rail_spec is not None:
+            team_rail_specs.append(skill_rail_spec)
         build_spec = build_spec.model_copy(
             update={"rails": base_rails + team_rail_specs},
         )
+
+        # Attach the evolvable-workspace cache BEFORE the harness build so
+        # the rail factories mint their A-class loaders against it — a fresh
+        # instance (first build / COLD_RECOVER) whose cache attached
+        # afterwards would bind the framework read-only loader and never
+        # see the team's evolved prompt values.
+        self._attach_workspace_cache(spec, ctx, resolved_language)
 
         self.harness = TeamHarness.build(
             agent_spec=build_spec,
@@ -744,6 +833,10 @@ class AgentConfigurator:
 
         # Team memory manager (only when explicitly enabled in the spec).
         self.memory_manager = self._build_memory_manager(spec, ctx, agent_spec, resolved_language, member_name)
+
+        # Assembly: write the evolvable workspace files (idempotent on every
+        # spawn / session recovery).
+        self._assemble_member_workspace(spec, ctx, resolved_language)
 
         return self.harness
 
@@ -862,12 +955,25 @@ class AgentConfigurator:
             enable_bridge=spec.enable_bridge,
             dispatch_mode=spec.dispatch_mode,
             enable_task_verification=spec.enable_task_verification,
+            enable_fork=spec.enable_fork,
+            evolution_enabled=spec.evolution_enabled,
             external_cli_agents=spec.external_cli_agents,
             on_before_team_cleaned=on_before_team_cleaned,
             on_team_cleaned=on_team_cleaned,
             on_team_built=on_team_built,
             leader_member_name=ctx.team_spec.leader_member_name if ctx.team_spec else None,
         )
+
+        def _snapshot_length() -> int:
+            h = self.harness
+            if h is not None and hasattr(h, "get_deep_agent"):
+                native = h.get_deep_agent()
+                if native is not None:
+                    return len(native.get_current_context())
+            return 0
+
+        agent_team.set_snapshot_length(_snapshot_length)
+
         self.team_backend = agent_team
         self.task_manager = agent_team.task_manager
         self.message_manager = agent_team.message_manager
@@ -956,3 +1062,166 @@ class AgentConfigurator:
         if self.ctx and self.ctx.team_spec:
             return self.ctx.team_spec.team_name
         return None
+
+    # ── evolvable-workspace assembly ──────────────────────────────────────
+
+    def _attach_workspace_cache(
+        self,
+        spec: TeamAgentSpec,
+        ctx: TeamRuntimeContext,
+        resolved_language: str,
+    ) -> None:
+        """Create (or reuse) the evolvable-workspace cache and attach it.
+
+        Runs **before** ``TeamHarness.build`` so the rail factories mint their
+        A-class loaders against an already-attached cache — without this, a
+        fresh instance (first build / COLD_RECOVER) would bind the framework
+        read-only loader and the team's evolved prompt values would never
+        reach the model. Idempotent: a manager that already carries a cache
+        (in-process teammate sharing the leader's manager via
+        ``share_workspace_cache_with``) is reused, never re-created.
+
+        Skips silently when the member has no team context (single-agent or
+        external CLI members without a team spec).
+        """
+        team_name = (ctx.team_spec.team_name if ctx.team_spec else None) or spec.team_name
+        member_name = ctx.member_name
+        if not member_name:
+            return
+
+        from openjiuwen.agent_teams.team_workspace.workspace_store import WorkspaceStore
+
+        evolution_enabled = True
+        if ctx.team_spec is not None:
+            evolution_enabled = ctx.team_spec.evolution_enabled
+        if not evolution_enabled:
+            # Evolution disabled: no cache object is built — the manager
+            # carries None and every read falls back to framework / DB.
+            return
+
+        # Team-level cache reuse: in-process teammates share
+        # the leader's manager by reference via ``share_workspace_cache_with``
+        # (run before configure). When the manager already carries a cache,
+        # just route the backend's reads to it — the leader's one cache
+        # instance is the team's single source of truth.
+        if self.workspace_manager is not None and self.workspace_manager.workspace_cache is not None:
+            if self.team_backend is not None:
+                self.team_backend.attach_workspace_manager(self.workspace_manager)
+            team_logger.info(
+                "[workspace] {} reuses team-level cache (shared manager)",
+                member_name,
+            )
+            return
+
+        # Create the evolvable-workspace cache object so every read-side
+        # consumer binds the same instance. An empty object:
+        # no proactive build, no file scan. Values fill lazily on the first
+        # ``get*`` (miss reads the file once, then hits) and drop on the
+        # Runner finally pause path via ``invalidate``.
+        from openjiuwen.agent_teams.team_workspace.workspace_cache import WorkspaceCache
+
+        store = WorkspaceStore()
+        cache = WorkspaceCache(
+            store,
+            team_name,
+            language=resolved_language,
+        )
+        # One cache instance lives on the workspace manager — every
+        # read-side consumer (backend overlay via the manager delegation,
+        # rails / worker backend / tiny agent / scheduler) takes the same
+        # instance through ``manager.workspace_cache``.
+        if self.workspace_manager is not None:
+            self.workspace_manager.attach_workspace_cache(cache)
+        # Route backend cache reads to the manager (single source of truth):
+        # A-class rail factories and the B-class member overlay
+        # read ``team_backend.workspace_cache``, which delegates to the
+        # manager's resident instance.
+        if self.team_backend is not None:
+            self.team_backend.attach_workspace_manager(self.workspace_manager)
+
+    def _prepare_external_cli_workspace(
+        self,
+        spec: TeamAgentSpec,
+        ctx: TeamRuntimeContext,
+    ) -> None:
+        """Ensure the external CLI member's in-team workspace exists and seed
+        B-class identity md (no symlink out of the team tree).
+
+        Mirrors what ``_assemble_member_workspace`` does for an in-process
+        teammate, but the CLI member's workspace is a pure in-team directory
+        (``workspaces/<m>_workspace/``) — no symlink out of the team tree, no
+        ref count. The identity md is primed into the shared workspace cache
+        (the leader's, injected via ``share_workspace_cache_with`` before
+        ``configure``), so evolved values reach the leader's roster overlay
+        and survive a session restart re-read.
+
+        Skips silently when evolution is disabled or the member has no shared
+        workspace manager (``spec.workspace`` not enabled) — in those cases the
+        CLI member keeps its lightweight behaviour and identity lives in the DB
+        only.
+        """
+        if not spec.evolution_enabled:
+            return
+        if self.workspace_manager is None:
+            return
+        member_name = ctx.member_name
+        if not member_name:
+            return
+        team_name = (ctx.team_spec.team_name if ctx.team_spec else None) or spec.team_name
+        # Pure in-team directory (same layout as the leader's): mkdir, no link.
+        from openjiuwen.agent_teams.paths import team_member_workspace_dir
+
+        team_member_workspace_dir(team_name, member_name).mkdir(
+            parents=True, exist_ok=True
+        )
+        # B-class identity md write + cache prime. ``resolved_language`` is
+        # unused for member identity (no lang suffix); pass empty string.
+        self._assemble_member_workspace(spec, ctx, "")
+
+    def _assemble_member_workspace(
+        self,
+        spec: TeamAgentSpec,
+        ctx: TeamRuntimeContext,
+        resolved_language: str,
+    ) -> None:
+        """Seed the evolvable B-class member files (write side only).
+
+        Runs on every spawn / session recovery inside ``setup_agent`` and is
+        idempotent: existing directories, junctions and baselines are reused.
+        The cache attach itself happens earlier in ``setup_agent`` (via
+        ``_attach_workspace_cache``, before the harness build) — this method
+        only writes the B-class member identity files and primes the shared
+        cache with the final bodies.
+
+        Skips silently when the member has no team context (single-agent)
+        or when the evolution mechanism is disabled.
+        """
+        team_name = (ctx.team_spec.team_name if ctx.team_spec else None) or spec.team_name
+        member_name = ctx.member_name
+        if not member_name:
+            return
+        if not spec.evolution_enabled:
+            # Evolution disabled: the write side is off — no B-class file.
+            return
+
+        from openjiuwen.agent_teams.team_workspace.assembler import WorkspaceAssembler
+        from openjiuwen.agent_teams.team_workspace.workspace_store import WorkspaceStore
+
+        # B-class member values come from the runtime context (mirrors the DB
+        # row / evolved md). Team-level files (system prompt templates, tool
+        # descriptions, team identity) are written earlier — at
+        # ``coordination.start`` (framework-source A/C baselines) and at
+        # ``build_team`` (team identity) — not in per-member assembly.
+        member_desc = ctx.desc or None
+        member_prompt = ctx.prompt or None
+
+        store = WorkspaceStore()
+        cache = self.workspace_manager.workspace_cache if self.workspace_manager else None
+        assembler = WorkspaceAssembler(store, cache=cache)
+        # B-class member identity — written on member spawn / recovery.
+        assembler.write_member_identity(
+            team_name=team_name,
+            member_name=member_name,
+            member_desc=member_desc,
+            member_prompt=member_prompt,
+        )

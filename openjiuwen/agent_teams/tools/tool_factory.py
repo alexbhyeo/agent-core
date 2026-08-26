@@ -16,6 +16,8 @@ from openjiuwen.agent_teams.tools.tool_async import (
 from openjiuwen.agent_teams.tools.tool_member import (
     ApprovePlanTool,
     ApproveToolCallTool,
+    CheckpointTool,
+    ListCheckpointsTool,
     ShutdownMemberTool,
     SpawnBridgeAgentTool,
     SpawnExternalCliTool,
@@ -99,6 +101,7 @@ def create_team_tools(
     teammate_mode: str = "build_mode",
     dispatch_mode: str = "autonomous",
     lifecycle: str = "temporary",
+    team_mode: str = "default",
     on_teammate_created: Callable[[str], Awaitable[None]] | None = None,
     model_config_allocator: Callable[[str | None], "Allocation | None"] | None = None,
     exclude_tools: set[str] | None = None,
@@ -118,6 +121,15 @@ def create_team_tools(
     Args:
         role: "leader" or "teammate".
         agent_team: AgentTeam instance providing task/message/db/messager.
+            Also carries the capability gates the toolset is filtered on:
+            ``hitt_enabled`` / ``bridge_enabled`` / ``external_cli_kinds``
+            select the spawn tools, and ``fork_enabled``
+            (``TeamAgentSpec.enable_fork``) drops the ``checkpoint`` tool
+            plus ``spawn_teammate``'s fork properties and the description
+            section documenting them. The team's resident
+            ``WorkspaceCache`` is read off ``agent_team.workspace_cache``
+            — it delegates to the workspace manager the way every other
+            consumer does, so no separate cache argument is threaded here.
         teammate_mode: Execution mode for teammates — "build_mode" or
             "plan_mode". Leader's approval tools (approve_plan / approve_tool)
             are only wired when teammate_mode == "plan_mode", since that's the
@@ -132,6 +144,9 @@ def create_team_tools(
             teams are torn down through operator-level SDK facades
             (``delete_agent_team`` etc.), so exposing a leader-callable
             tear-down tool inside a round would race the pool invariants.
+        team_mode: Team operating mode — "default" / "predefined" / "hybrid".
+            Selects the workflow variant disclosed in the ``build_team``
+            result; it does not change any tool's shape.
         on_teammate_created: Callback invoked when a teammate is created.
         model_config_allocator: Callback that returns the next
             ``Allocation`` for teammate allocation. Receives an
@@ -153,10 +168,20 @@ def create_team_tools(
         swarmflow_budget: The leader's shared ``BudgetLedger`` capping the tokens
             its swarmflow runs may burn. Non-None only for a swarmflow leader.
     """
+    from openjiuwen.agent_teams.prompts.loader import make_template_loader
     from openjiuwen.agent_teams.tools.locales import make_translator
     from openjiuwen.agent_teams.workflow.tool_swarmflow import SwarmflowTool
 
-    t = make_translator(lang)
+    # One translator closure bound to the team's resident WorkspaceCache —
+    # tool descriptions consult the evolved ``prompts/tool/`` files first,
+    # framework defaults otherwise. The cache is taken from the backend
+    # (which delegates to the workspace manager) — the single source every
+    # other consumer uses.
+    # ``None`` (no manager attached yet / evolution disabled / unit tests)
+    # → identical to the pre-evolvable ``make_translator`` closure.
+    cache = agent_team.workspace_cache
+    t = make_translator(lang, ws_cache=cache)
+    loader = make_template_loader(cache)
     task_mgr = agent_team.task_manager
     msg_mgr = agent_team.message_manager
     # Variant selection is a construction-time table lookup: every tool below
@@ -165,11 +190,29 @@ def create_team_tools(
     send_message_cls = _SEND_MESSAGE_CLASS[(dispatch_mode, "leader" if role == "leader" else "member")]
 
     all_tools = {
-        # Team management
-        "build_team": BuildTeamTool(agent_team, t),
+        # Team management. ``build_team`` carries the leader's collaboration
+        # policy in its result (F_76), so it needs the same assembly parameters
+        # the policy rail used to consume.
+        "build_team": BuildTeamTool(
+            agent_team,
+            t,
+            language=lang,
+            lifecycle=lifecycle,
+            teammate_mode=teammate_mode,
+            team_mode=team_mode,
+            dispatch_mode=dispatch_mode,
+            loader=loader,
+        ),
         "clean_team": CleanTeamTool(agent_team, t),
         # Member management — one tool per role_type (flat schema, no role branching)
-        "spawn_teammate": SpawnTeammateTool(agent_team, t, model_config_allocator=model_config_allocator),
+        "spawn_teammate": SpawnTeammateTool(
+            agent_team,
+            t,
+            model_config_allocator=model_config_allocator,
+            fork_enabled=agent_team.fork_enabled(),
+        ),
+        "checkpoint": CheckpointTool(agent_team, t),
+        "list_checkpoints": ListCheckpointsTool(agent_team, t),
         "spawn_human_agent": SpawnHumanAgentTool(agent_team, t),
         "spawn_bridge_agent": SpawnBridgeAgentTool(agent_team, t),
         "spawn_external_cli": SpawnExternalCliTool(agent_team, t),
@@ -178,14 +221,12 @@ def create_team_tools(
         "approve_tool": ApproveToolCallTool(agent_team, t),
         # Task management
         "create_task": create_task_cls(agent_team, t),
-        "update_task": UpdateTaskTool(agent_team, t),
+        "update_task": UpdateTaskTool(agent_team, t, dispatch_mode=dispatch_mode),
         "view_task": ViewTaskToolV2(task_mgr, t),
         "claim_task": ClaimTaskTool(task_mgr, t),
         "submit_plan": SubmitPlanTool(task_mgr, t),
         "verify_task": VerifyTaskTool(task_mgr, t, desc_key=_VERIFY_TASK_DESC_KEY[dispatch_mode]),
-        "member_complete_task": MemberCompleteTaskTool(
-            task_mgr, t, desc_key=_MEMBER_COMPLETE_DESC_KEY[dispatch_mode]
-        ),
+        "member_complete_task": MemberCompleteTaskTool(task_mgr, t, desc_key=_MEMBER_COMPLETE_DESC_KEY[dispatch_mode]),
         # Messaging
         "send_message": send_message_cls(
             msg_mgr,
@@ -248,6 +289,14 @@ def create_team_tools(
         allowed = allowed - {"spawn_bridge_agent"}
     if not agent_team.external_cli_kinds():
         allowed = allowed - {"spawn_external_cli"}
+    # Context inheritance (F_75). One flag gates the whole capability:
+    # ``checkpoint`` / ``list_checkpoints`` disappear here, and
+    # ``SpawnTeammateTool`` reads the same ``fork_enabled()`` above to drop
+    # its fork properties and the matching section of its description. A
+    # checkpoint nobody can fork from is dead weight in every member's tool
+    # list.
+    if not agent_team.fork_enabled():
+        allowed = allowed - {"checkpoint", "list_checkpoints"}
     # Swarmflow is wired only when the host supplied a worker-model resolver
     # (leader + enable_swarmflow). Same idempotent-subtraction gate as the
     # spawn tools.

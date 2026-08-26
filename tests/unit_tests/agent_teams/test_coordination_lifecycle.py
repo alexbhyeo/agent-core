@@ -309,11 +309,16 @@ def _arm_kernel_for_start(host: SimpleNamespace) -> CoordinationKernel:
     host.session_manager.bind_session = AsyncMock()
     host.resources.harness.start = AsyncMock()
     host.stream_controller.start = AsyncMock()
+    host.seed_member_registry = AsyncMock()
     host.update_status = AsyncMock()
     host.refresh_idle_baseline = MagicMock()
     host.infra.workspace_manager = None
     host.infra.workspace_initialized = True
-    host.blueprint = SimpleNamespace(spec=SimpleNamespace(workspace=None))
+    # ``start`` reads two spec fields: ``workspace`` (remote URL) and
+    # ``evolution_enabled`` (A/C-class write gate). This test targets the
+    # resume / leave-alone tail of ``start``, not workspace seeding — keeping
+    # evolution off leaves the write block inert, so no files land on disk.
+    host.blueprint = SimpleNamespace(spec=SimpleNamespace(workspace=None, evolution_enabled=False))
 
     kernel = CoordinationKernel(host)
     kernel._event_bus = SimpleNamespace(is_running=True, start=AsyncMock(), enqueue=AsyncMock())

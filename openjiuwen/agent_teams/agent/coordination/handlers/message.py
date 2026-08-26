@@ -26,13 +26,14 @@ from openjiuwen.agent_teams.agent.coordination.event_bus import (
     InnerEventType,
 )
 from openjiuwen.agent_teams.agent.coordination.handlers.base import BaseCoordinationHandler
-from openjiuwen.agent_teams.i18n import t
+from openjiuwen.agent_teams.i18n import reply_hint_for, t
 from openjiuwen.agent_teams.inbound_render import (
     INBOUND_TYPE_BROADCAST,
     INBOUND_TYPE_DIRECT,
     render_inbound,
 )
 from openjiuwen.agent_teams.message_template import ExpandedMessage, expand_message
+from openjiuwen.agent_teams.prompts.loader import TemplateLoader, bind_template_loader
 from openjiuwen.agent_teams.schema.events import EventMessage, MessageEvent, TeamEvent
 from openjiuwen.agent_teams.schema.status import MemberStatus
 from openjiuwen.agent_teams.schema.team import TeamRole
@@ -268,6 +269,21 @@ class MessageHandler(BaseCoordinationHandler):
             return team_spec.language
         return "cn"
 
+    @property
+    def _template_loader(self) -> TemplateLoader:
+        """The per-team A-class loader, bound once from the backend's cache.
+
+        Lazy: the first access snapshots
+        ``_infra.team_backend.workspace_cache`` into a loader closure so
+        scheduler_* deliveries read evolved workspace templates. Bound once
+        per handler life via the ``_template_loader_cache`` instance field.
+        """
+        loader = self._template_loader_cache
+        if loader is None:
+            loader = bind_template_loader(self._infra)
+            self._template_loader_cache = loader
+        return loader
+
     async def _expand(self, msg: Any) -> ExpandedMessage:
         """Render a message row's delivery text (F_63 two-phase templating).
 
@@ -290,6 +306,7 @@ class MessageHandler(BaseCoordinationHandler):
             task_getter=_get_task,
             member_getter=_get_member,
             language=self._language(),
+            loader=self._template_loader,
         )
 
     async def _bridge_deliverable_for(self, member_name: str, msg: Any, *, expanded: ExpandedMessage) -> str:
@@ -396,6 +413,8 @@ class MessageHandler(BaseCoordinationHandler):
             return TeamRole.HUMAN_AGENT
         if backend.is_bridge_agent(member_name):
             return TeamRole.BRIDGE_AGENT
+        if await backend.is_external_cli_agent(member_name):
+            return TeamRole.EXTERNAL_CLI
         # The leader uses the team's leader_member_name from team_spec.
         team_spec = self._blueprint.team_spec
         if team_spec is not None and member_name == team_spec.leader_member_name:
@@ -562,7 +581,7 @@ class MessageHandler(BaseCoordinationHandler):
                 note_text=t("hitt.silence_note"),
             )
         note_kind = None if expanded.is_template else "reply-hint"
-        note_text = None if expanded.is_template else t("dispatcher.reply_hint", sender=msg.from_member_name)
+        note_text = None if expanded.is_template else reply_hint_for(msg.from_member_name)
         return render_inbound(
             content=expanded.body,
             sender=msg.from_member_name,

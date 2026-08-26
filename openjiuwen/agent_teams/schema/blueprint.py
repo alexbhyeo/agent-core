@@ -14,7 +14,6 @@ from typing import (
     TYPE_CHECKING,
     Annotated,
     Any,
-    Callable,
     Literal,
     Optional,
     Union,
@@ -50,9 +49,9 @@ from openjiuwen.agent_teams.schema.team import (
     TeamSpec,
 )
 from openjiuwen.agent_teams.team_workspace.models import TeamWorkspaceConfig
+from openjiuwen.agent_teams.workflow.concurrency import ConcurrencyLimits, validate_swarmflow_concurrency
 from openjiuwen.core.single_agent.schema.agent_card import AgentCard
 from openjiuwen.harness.tools.worktree import WorktreeConfig
-from openjiuwen.agent_teams.workflow.concurrency import ConcurrencyLimits, validate_swarmflow_concurrency
 
 if TYPE_CHECKING:
     # Resolved for type-checkers only; the runtime import lives in ``build()``
@@ -190,6 +189,7 @@ class TinyAgentSpec(BaseModel):
     model_name: str
     name: str = "tiny"
     max_iterations: int = 6
+    enable_security_rail: bool = False
     default_schema: Optional[dict[str, Any]] = None
     """Optional default JSON-Schema applied to structured output on every call."""
 
@@ -206,6 +206,13 @@ class TeamAgentSpec(BaseModel):
     agents: dict[str, DeepAgentSpec]
     team_name: str = "agent_team"
     lifecycle: str = TeamLifecycle.TEMPORARY
+    evolution_enabled: bool = True
+    """Team switch for self-evolution coverage.
+
+    ``True`` (default): workspace files with an evolved value override code
+    defaults / DB values. ``False``: files are never applied — everything
+    falls back to code defaults / DB values.
+    """
     enable_team_plan: bool = False
     """Whether the leader starts in single-agent plan mode for this run.
 
@@ -216,6 +223,16 @@ class TeamAgentSpec(BaseModel):
     teammate_mode: str = "build_mode"
     """Member execution mode: ``build_mode`` or ``plan_mode``."""
     spawn_mode: str = "process"
+    member_workspace_prefix: bool = True
+    """Dynamic-only switch for member workspace isolation (block C).
+
+    When True, dynamic member real directories live at
+    ``.agent_teams/<team>#<member>/`` (per-team isolation). When False they
+    share the plain ``.agent_teams/<member>/`` shape (same as predefined).
+    The in-team link name is unaffected — it stays
+    ``workspaces/<member>_workspace`` either way, so A/B code and the worker
+    path never notice the switch.
+    """
     leader: LeaderSpec = LeaderSpec()
     predefined_members: list[PredefinedMemberSpec] = []
     external_cli_agents: list[ExternalCliAgentSpec] = []
@@ -332,15 +349,6 @@ class TeamAgentSpec(BaseModel):
     always available regardless of this flag. Overridable per team
     instance at ``build_team`` time. See F_62.
     """
-    verify_vote_threshold: float = 2 / 3
-    """Pass quorum for multi-reviewer verification under scheduled dispatch.
-
-    A task in review completes when ``pass_votes >= ceil(threshold * n)``
-    over ``n = len(reviewer)``, and is sent back for rework as soon as
-    that quorum becomes unreachable. Consumed only by the leader-side
-    scheduler (single judge), so it is not mirrored onto ``TeamSpec``.
-    Range ``0 < threshold <= 1``. See F_62.
-    """
     default_max_review_rounds: int = 3
     """Default per-task review-round ceiling (scheduled dispatch).
 
@@ -377,6 +385,16 @@ class TeamAgentSpec(BaseModel):
     prompt away from a team whose members are simply all busy. Measured off
     the leader's process-local idle clock, never DB ``updated_at``.
     Ignored under scheduled dispatch. See F_65.
+    """
+    steer_batch_size: int = 2
+    """How many queued steering inputs a non-leader member takes per model call.
+
+    Mailbox messages reach a running member one queue entry each, so a member
+    coming back from a busy stretch used to get the whole pile fused into one
+    turn. This caps the batch; the rest stays queued and arrives at the
+    following model calls, in order. The leader is exempt — it reads the
+    sequence of task-board snapshots to decide whether to re-plan, so it must
+    keep seeing all of it. See F_78.
     """
     transport: Optional[TransportSpec] = None
     """Pluggable transport layer specification.
@@ -462,6 +480,29 @@ class TeamAgentSpec(BaseModel):
     - ``enable_bridge=False`` with any BRIDGE_AGENT in predefined → error.
     - ``enable_bridge=True`` with no BRIDGE_AGENT predefined → allowed
       (dynamic spawn path).
+    """
+    enable_fork: bool = False
+    """Spec-level capability gate for context inheritance (fork).
+
+    True opens three surfaces at once, all keyed off this one flag:
+
+    - the ``checkpoint(name)`` tool, which lets any member save a named
+      snapshot of its own conversation position;
+    - the ``fork`` / ``fork_source`` / ``compact`` properties on
+      ``spawn_teammate``'s schema;
+    - the "context inheritance" section of ``spawn_teammate``'s description.
+
+    False (default) removes all three. Schema and prose are gated on the same
+    signal deliberately: a leader that reads about ``fork`` but has no
+    ``fork`` property to fill deliberates over a mechanism it cannot invoke,
+    which is worse than never mentioning it.
+
+    Fork only takes effect under ``spawn_mode="inprocess"`` — it injects the
+    source member's live message list into the new member's context engine,
+    which requires both to share a process. Under ``spawn_mode="process"``
+    the captured context cannot cross the boundary and is dropped. For the
+    same reason ``fork_source`` must name a member the caller hosts
+    in-process (the leader itself, or a teammate it spawned).
     """
     enable_swarmflow: bool = False
     """Spec-level capability gate for swarmflow orchestration.
@@ -613,10 +654,6 @@ class TeamAgentSpec(BaseModel):
         The scheduler consumes these without further guarding, so an
         out-of-range value must fail at spec time, not mid-run.
         """
-        if not 0 < self.verify_vote_threshold <= 1:
-            raise ValueError(
-                f"verify_vote_threshold must be in (0, 1], got {self.verify_vote_threshold}",
-            )
         if self.default_max_review_rounds < 1:
             raise ValueError(
                 f"default_max_review_rounds must be >= 1, got {self.default_max_review_rounds}",
@@ -641,6 +678,20 @@ class TeamAgentSpec(BaseModel):
         if self.stale_pending_idle_timeout <= 0:
             raise ValueError(
                 f"stale_pending_idle_timeout must be > 0 seconds, got {self.stale_pending_idle_timeout}",
+            )
+        return self
+
+    @model_validator(mode="after")
+    def _validate_steer_batch_size(self) -> "TeamAgentSpec":
+        """Reject a steering batch that would consume nothing (F_78).
+
+        A member always takes at least one queued message, so a zero here
+        would not stall anything — it would silently mean "one", which is a
+        worse thing to configure by accident than an outright error.
+        """
+        if self.steer_batch_size <= 0:
+            raise ValueError(
+                f"steer_batch_size must be > 0 messages, got {self.steer_batch_size}",
             )
         return self
 
@@ -731,6 +782,8 @@ class TeamAgentSpec(BaseModel):
             model_pool_strategy=team_strategy,
             external_messager_config=external_messager_config,
             workspace=self.workspace.model_dump() if self.workspace is not None else None,
+            evolution_enabled=self.evolution_enabled,
+            member_workspace_prefix=self.member_workspace_prefix,
         )
 
         messager_config = self.transport.build() if self.transport else None
@@ -762,6 +815,7 @@ class TeamAgentSpec(BaseModel):
         context = TeamRuntimeContext(
             role=TeamRole.LEADER,
             member_name=self.leader.member_name,
+            display_name=self.leader.display_name,
             desc=self.leader.desc,
             prompt=self.leader.prompt,
             team_spec=team_spec,

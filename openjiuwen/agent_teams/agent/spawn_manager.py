@@ -31,6 +31,7 @@ from openjiuwen.core.runner.spawn.process_manager import SpawnConfig
 if TYPE_CHECKING:
     from openjiuwen.agent_teams.agent.agent_configurator import AgentConfigurator
     from openjiuwen.agent_teams.agent.state import TeamAgentState
+    from openjiuwen.agent_teams.fork import ForkContext
     from openjiuwen.agent_teams.spawn.inprocess_handle import InProcessSpawnHandle
     from openjiuwen.core.runner.spawn.process_manager import SpawnedProcessHandle
     from openjiuwen.core.session.stream.base import OutputSchema
@@ -75,6 +76,7 @@ class SpawnManager:
         initial_message: Optional[str] = None,
         session: Optional[Any] = None,
         spawn_config: Optional[SpawnConfig] = None,
+        fork_from: "ForkContext | None" = None,
         resume_external_backend: bool = False,
     ) -> Optional[SpawnedProcessHandle]:
         member_name = ctx.member_name
@@ -105,6 +107,7 @@ class SpawnManager:
                 initial_message=initial_message,
                 session=session,
                 spawn_config=spawn_config,
+                fork_from=fork_from,
                 resume_external_backend=resume_external_backend,
             )
         finally:
@@ -117,6 +120,7 @@ class SpawnManager:
         initial_message: Optional[str] = None,
         session: Optional[Any] = None,
         spawn_config: Optional[SpawnConfig] = None,
+        fork_from: "ForkContext | None" = None,
         resume_external_backend: bool = False,
     ) -> SpawnedProcessHandle:
         member_name = ctx.member_name
@@ -128,9 +132,16 @@ class SpawnManager:
             # third-party CLI binary is the subprocess driven via stdin.
             from openjiuwen.agent_teams.spawn.external_cli_spawn import external_cli_spawn
 
+            team_backend = self._configurator.team_backend
+            if team_backend is not None:
+                hitt_enabled = team_backend.hitt_enabled()
+            else:
+                hitt_enabled = False
             handle = await external_cli_spawn(
                 team_agent=self._get_team_agent(),
+                spec=spec,
                 ctx=ctx,
+                hitt_enabled=hitt_enabled,
                 initial_message=initial_message,
                 session_id=get_session_id() or session,
                 resume_external_backend=resume_external_backend,
@@ -144,6 +155,7 @@ class SpawnManager:
                 ctx=ctx,
                 initial_message=initial_message,
                 session_id=get_session_id() or session,
+                fork_from=fork_from,
             )
             # Wire chunk fan-out so the teammate's stream chunks reach
             # the leader's stream_queue. Subprocess teammates skip this
@@ -356,12 +368,24 @@ class SpawnManager:
 
         permissions_override = get_member_permissions_override(teammate)
 
+        # Team-level B-class values come from ``team_info``: they are
+        # written to the DB when ``build_team`` succeeds and are carried
+        # into assembly through the runtime context — never derived from
+        # the spec. ``get_team_info`` already overlays evolved workspace
+        # values, so the ctx mirrors what the read side would return.
+        team = await team_backend.get_team_info()
+        team_desc = team.desc if team is not None else None
+        team_prompt = team.prompt if team is not None else None
+
         return TeamRuntimeContext(
             role=role,
             member_name=teammate.member_name,
+            display_name=teammate.display_name or "",
             desc=teammate.desc or "",
             prompt=teammate.prompt or "",
             team_spec=ctx.team_spec if ctx else None,
+            team_desc=team_desc,
+            team_prompt=team_prompt,
             messager_config=self._configurator.build_member_messager_config(teammate.member_name),
             db_config=ctx.db_config if ctx else None,
             member_model=member_model,

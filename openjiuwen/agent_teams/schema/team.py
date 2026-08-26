@@ -97,6 +97,16 @@ class TeamRole(str, Enum):
     that ends by calling the structured-output tool, then is torn down.
     Context is fresh per call ("用完即弃"); workers never poll the
     mailbox, claim tasks, or run multi-turn.
+
+    ``EXTERNAL_CLI`` is a teammate driven by a third-party CLI subprocess
+    (e.g. Claude CLI / Codex CLI) rather than a local DeepAgent. It is a
+    full coordination participant — it polls the mailbox, claims tasks,
+    and self-nudges on stale claimed tasks exactly like ``TEAMMATE``;
+    its ``role`` distinguishes the runtime provenance so observability and
+    prompt/worktree policies can treat it as a coordinated member without
+    aliasing it onto the plain ``TEAMMATE`` label. Role-driven dispatch
+    (CLI-vs-DeepAgent) is gated on the ``cli_agent`` registry, not on this
+    role value.
     """
 
     LEADER = "leader"
@@ -104,6 +114,20 @@ class TeamRole(str, Enum):
     HUMAN_AGENT = "human_agent"
     BRIDGE_AGENT = "bridge_agent"
     WORKER = "worker"
+    EXTERNAL_CLI = "external_cli"
+
+    @property
+    def is_coordinated_member(self) -> bool:
+        """Whether this role participates in the coordination loop as an autonomous member.
+
+        ``TEAMMATE`` and ``EXTERNAL_CLI`` both poll the mailbox, claim tasks,
+        self-nudge on stale claimed tasks, and receive team tool-approval /
+        worktree policies. They are the two coordinated-member roles; gates
+        that previously branched on ``== TEAMRole.TEAMMATE`` as a proxy for
+        "is a participating autonomous member" should use this instead so the
+        next coordinated role does not silently fall out of those paths.
+        """
+        return self in (TeamRole.TEAMMATE, TeamRole.EXTERNAL_CLI)
 
 
 class BridgeMailboxInjectMode(str, Enum):
@@ -226,6 +250,22 @@ class BridgeMemberSpec(TeamMemberSpec):
     """
 
 
+class ExternalCliModelConfig(BaseModel):
+    """Model endpoint configuration for SDK-backed external CLI agents."""
+
+    provider: str | None = Field(default=None, min_length=1)
+    """Logical provider name used by the target CLI runtime."""
+
+    model: str | None = Field(default=None, min_length=1)
+    """Model name passed to the target CLI runtime."""
+
+    api_base: str | None = Field(default=None, min_length=1)
+    """Base URL for the target model API."""
+
+    api_key: str | None = Field(default=None, min_length=1)
+    """API key injected into the target CLI subprocess environment."""
+
+
 class ExternalCliAgentSpec(BaseModel):
     """Static launch config for one kind of external CLI agent.
 
@@ -236,7 +276,7 @@ class ExternalCliAgentSpec(BaseModel):
     name (each member still gets its own subprocess and team-join identity).
     """
 
-    model_config = ConfigDict(protected_namespaces=())
+    model_config = ConfigDict(populate_by_name=True, protected_namespaces=())
 
     cli_agent: str
     """External agent kind identifier (``"claude"`` / ``"codex"`` /
@@ -252,11 +292,20 @@ class ExternalCliAgentSpec(BaseModel):
     and Codex uses :attr:`codex_bin` when a custom executable is required.
     """
 
-    codex_bin: str | None = None
+    cli_path: str | None = Field(default=None, min_length=1)
+    """Optional executable path for SDK-backed CLI agents.
+
+    For Claude this is passed to ``ClaudeAgentOptions.cli_path``. For Codex it
+    maps to ``CodexConfig.codex_bin``. Adapter-backed CLIs should continue to
+    use :attr:`command` when overriding the full launch argv.
+    """
+
+    codex_bin: str | None = Field(default=None, min_length=1)
     """Optional Codex executable path passed to ``CodexConfig.codex_bin``.
 
-    This field is valid only for ``cli_agent="codex"``. The Codex SDK remains
-    responsible for constructing its ``app-server`` arguments.
+    This legacy field is valid only for ``cli_agent="codex"``. Prefer
+    :attr:`cli_path` for new configuration. The Codex SDK remains responsible
+    for constructing its ``app-server`` arguments.
     """
 
     cwd: Optional[str] = None
@@ -266,7 +315,7 @@ class ExternalCliAgentSpec(BaseModel):
 
     inject_mcp: bool = True
     """Whether the spawn path auto-registers the team MCP server with the CLI
-    so it gets the team collaboration tools (read_inbox / claim_task / ...).
+    so it gets team collaboration tools such as view_task / claim_task / send_message.
     Injection is backend-specific (Claude SDK MCP options, codex
     ``-c mcp_servers...``); adapters without an injection strategy ignore it."""
 
@@ -309,6 +358,14 @@ class ExternalCliAgentSpec(BaseModel):
     """Extra environment variables for the CLI subprocess, merged over the
     inherited process env (the team-join descriptor is injected separately)."""
 
+    external_model_config: ExternalCliModelConfig | None = Field(default=None, alias="model_config")
+    """Optional model endpoint configuration for SDK-backed external CLI agents.
+
+    The public YAML key is ``model_config``. The Python attribute is named
+    ``external_model_config`` to avoid colliding with Pydantic's class-level
+    ``model_config`` setting.
+    """
+
     ssh_transport: SshTransportConfig | None = None
     """Optional ssh endpoint used to launch this CLI on a remote host.
 
@@ -323,8 +380,10 @@ class ExternalCliAgentSpec(BaseModel):
         """Keep SDK binary selection separate from adapter argv overrides."""
         if self.cli_agent == "codex" and self.command is not None:
             raise ValueError(
-                "Codex SDK config does not support command; use codex_bin to select a custom executable",
+                "Codex SDK config does not support command; use cli_path to select a custom executable",
             )
+        if self.cli_agent not in {"claude", "codex"} and self.cli_path is not None:
+            raise ValueError("cli_path is only valid when cli_agent is 'claude' or 'codex'")
         if self.cli_agent != "codex" and self.codex_bin is not None:
             raise ValueError("codex_bin is only valid when cli_agent='codex'")
         if self.cli_agent != "codex" and self.mcp_default_tools_approval_mode is not None:
@@ -339,6 +398,8 @@ class ExternalCliAgentSpec(BaseModel):
             raise ValueError("codex_turn_idle_timeout_s is only valid when cli_agent='codex'")
         if self.cli_agent != "codex" and self.codex_turn_idle_retries is not None:
             raise ValueError("codex_turn_idle_retries is only valid when cli_agent='codex'")
+        if self.cli_agent not in {"claude", "codex"} and self.external_model_config is not None:
+            raise ValueError("model_config is only valid when cli_agent is 'claude' or 'codex'")
         return self
 
 
@@ -404,6 +465,16 @@ class TeamSpec(BaseModel):
     """Transport used by an external CLI member's MCP client."""
     workspace: Optional[dict[str, Any]] = None
     """Shared workspace config mirrored from ``TeamAgentSpec`` for runtime-only paths."""
+    evolution_enabled: bool = True
+    """Self-evolution coverage switch — mirrors ``TeamAgentSpec.evolution_enabled``
+    so spawn-time assembly reads the same switch from the runtime spec."""
+    member_workspace_prefix: bool = True
+    """Dynamic-only switch for member workspace isolation (block C).
+
+    Mirrors ``TeamAgentSpec.member_workspace_prefix`` so paths that only see a
+    ``TeamRuntimeContext`` / ``TeamSpec`` resolve the same real-directory
+    shape as in-process members.
+    """
 
 
 class TeamRuntimeContext(BaseModel):
@@ -417,24 +488,47 @@ class TeamRuntimeContext(BaseModel):
 
     role: TeamRole = TeamRole.LEADER
     member_name: Optional[str] = None
+    display_name: str = ""
+    """Human-readable member label (DB ``team_member.display_name``).
+
+    Peers see it in their roster; the member itself is told its own label as
+    part of its identity, so it can recognise which roster row is itself and
+    refer to itself the way the rest of the team does."""
     desc: str = ""
     """Public member description (DB ``team_member.desc``). Shared into other
-    members' roster (``team_members`` section) and ``list_members`` only; it is
-    NOT injected into this member's own system prompt."""
+    members' roster and ``list_members`` only; it is NOT injected into this
+    member's own identity."""
     prompt: str = ""
-    """Private, member-only system-prompt addendum (DB ``team_member.prompt``).
+    """Private, member-only working agreement (DB ``team_member.prompt``).
 
-    Injected ONLY into this member's own system prompt, as a static section,
-    and never surfaces in ``list_members`` or peers' prompts. Empty for the
-    leader, whose system prompt is fixed at build time to keep the KV-cache
-    prefix stable."""
+    Delivered ONLY to this member, as part of its identity, and never surfaces
+    in ``list_members`` or peers' rosters."""
     team_spec: Optional[TeamSpec] = None
+    team_desc: Optional[str] = None
+    """Team-level description (DB ``team_info.desc``), resolved at spawn time.
+
+    ``build_team`` inserts the ``team_info`` row (with ``desc``) only after
+    the leader calls the tool, so this is empty on the leader's first spawn
+    and populated once the team row exists (later member spawns / session
+    recovery). Fed into ``WorkspaceAssembler.assemble`` so ``team_card.md``
+    can be seeded; an evolved file is never overwritten (write-side guard).
+    """
+    team_prompt: Optional[str] = None
+    """Team-level prompt (DB ``team_info.prompt``), same lifecycle as ``team_desc``."""
     messager_config: Optional[MessagerTransportConfig] = None
     db_config: DatabaseConfig = Field(default_factory=DatabaseConfig)
     member_model: Optional[TeamModelConfig] = None
     """TeamModelConfig assigned to this member by the allocator."""
     worktree_path: Optional[str] = None
     """Absolute cwd override for a teammate running in an isolated worktree."""
+    fork_source: Optional[str] = None
+    """The fork source member this member inherited its context from.
+
+    ``None`` for a normal spawn. Set by the leader's ``_on_teammate_created``
+    (defaulting to the leader's own name when ``fork_source`` was omitted) and
+    serialized with the spawn payload, so the target's ``TeamPolicyRail`` /
+    ``TeamContextTracker`` can render a conversion notice in its identity block.
+    """
     cli_agent: Optional[str] = None
     """When set, this teammate is driven by an external agent backend (e.g.
     ``"claude"`` SDK, ``"codex"`` SDK, or a named CLI adapter) instead
@@ -459,6 +553,7 @@ __all__ = [
     "BridgeMailboxInjectMode",
     "BridgeMemberSpec",
     "ExternalCliAgentSpec",
+    "ExternalCliModelConfig",
     "MemberOpResult",
     "MemberSpecBase",
     "TeamCompletionSnapshot",

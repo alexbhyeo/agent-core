@@ -108,6 +108,15 @@ class TeamHarness:
         )
 
     # ------------------------------------------------------------------
+    # Properties
+    # ------------------------------------------------------------------
+
+    @property
+    def build_context(self) -> "BuildContext | None":
+        """Return the assembly context this harness was built with."""
+        return self._build_context
+
+    # ------------------------------------------------------------------
     # Lifecycle (HarnessProtocol-aligned, one cycle per coordination.start)
     # ------------------------------------------------------------------
 
@@ -246,6 +255,10 @@ class TeamHarness:
     # ------------------------------------------------------------------
     # Interaction surface (forwarded to the native)
     # ------------------------------------------------------------------
+
+    def get_deep_agent(self):
+        """Return the underlying ``DeepAgent`` (``NativeHarness``)."""
+        return self._native
 
     @property
     def state(self) -> HarnessState:

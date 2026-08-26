@@ -3,19 +3,22 @@
 
 
 from typing import List, Optional
-from unittest.mock import MagicMock, AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
+
 import pytest
 
 from openjiuwen.core.common.exception.codes import StatusCode
 from openjiuwen.core.common.exception.errors import BaseError
 from openjiuwen.core.context_engine import ContextEngine, ContextEngineConfig, ModelContext
+from openjiuwen.core.context_engine.context.context_utils import ContextUtils
 from openjiuwen.core.foundation.llm import (
+    AssistantMessage,
     BaseMessage,
     SystemMessage,
-    UserMessage,
-    AssistantMessage,
-    ToolMessage,
     ToolCall,
+    ToolMessage,
+    UsageMetadata,
+    UserMessage,
 )
 from openjiuwen.core.foundation.tool import ToolInfo
 
@@ -39,6 +42,7 @@ class TestModelContext:
         dialogue_round: int = None,
         max_context_message_num: Optional[int] = None,
         enable_reload: bool = False,
+        enable_tiktoken_counter: bool = False,
         processors: Optional[List] = None,
         token_counter=None,
     ) -> ModelContext:
@@ -47,6 +51,7 @@ class TestModelContext:
             default_window_round_num=dialogue_round,
             max_context_message_num=max_context_message_num,
             enable_reload=enable_reload,
+            enable_tiktoken_counter=enable_tiktoken_counter,
         )
         context_engine = ContextEngine(config)
         session = None
@@ -408,6 +413,33 @@ class TestModelContext:
         assert messages == history_list[:50] + message_list
 
     @pytest.mark.asyncio
+    async def test_rewriting_context_invalidates_retained_assistant_usage(self):
+        assistant = AssistantMessage(content="answer", usage_metadata=UsageMetadata(total_tokens=100))
+        context = await self.create_context([UserMessage(content="question"), assistant])
+
+        context.set_messages([UserMessage(content="compressed"), assistant])
+
+        assert ContextUtils.has_valid_usage_metadata(assistant) is False
+
+    @pytest.mark.asyncio
+    async def test_appending_tail_keeps_assistant_usage_valid(self):
+        assistant = AssistantMessage(content="answer", usage_metadata=UsageMetadata(total_tokens=100))
+        context = await self.create_context([UserMessage(content="question"), assistant])
+
+        await context.add_messages(UserMessage(content="next question"))
+
+        assert ContextUtils.has_valid_usage_metadata(assistant) is True
+
+    @pytest.mark.asyncio
+    async def test_removing_messages_invalidates_retained_assistant_usage(self):
+        assistant = AssistantMessage(content="answer", usage_metadata=UsageMetadata(total_tokens=100))
+        context = await self.create_context([UserMessage(content="question"), assistant, UserMessage(content="tail")])
+
+        context.pop_messages()
+
+        assert ContextUtils.has_valid_usage_metadata(assistant) is False
+
+    @pytest.mark.asyncio
     async def test_model_context_set_invalid_messages(self):
         context = await self.create_context()
         try:
@@ -722,7 +754,7 @@ class TestModelContext:
     # ---------- token_counter ----------
     @pytest.mark.asyncio
     async def test_token_counter_returns_tokens(self):
-        context = await self.create_context()
+        context = await self.create_context(enable_tiktoken_counter=True)
         await context.add_messages([UserMessage(content="hi")])
         stat = context.statistic()
         assert stat.total_messages == 1
@@ -766,18 +798,20 @@ class TestModelContext:
             ctx = await engine.create_context(
                 "test",
                 None,
-                processors=[(
-                    "MockProcessor",
-                    CurrentRoundCompressorConfig(
-                        model=ModelRequestConfig(model="test-model"),
-                        model_client=ModelClientConfig(
-                            client_provider="OpenAI",
-                            api_key="test-key",
-                            api_base="http://test.local",
-                            verify_ssl=False,
+                processors=[
+                    (
+                        "MockProcessor",
+                        CurrentRoundCompressorConfig(
+                            model=ModelRequestConfig(model="test-model"),
+                            model_client=ModelClientConfig(
+                                client_provider="OpenAI",
+                                api_key="test-key",
+                                api_base="http://test.local",
+                                verify_ssl=False,
+                            ),
                         ),
-                    ),
-                )],
+                    )
+                ],
             )
             await ctx.add_messages([UserMessage(content="msg")])
             assert len(ctx) == 1
