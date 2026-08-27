@@ -265,6 +265,48 @@ class InfoListItem(BaseModel):
 
 _DEFAULT_ITEM_ICON = "check"
 
+# Common-language terms (English + Chinese) that mark a preferences-form title
+# as flight-related -- see `ask_preferences_form`'s comment on why both are needed.
+_FLIGHT_FORM_TERMS = (
+    "flight",
+    "flights",
+    "fly",
+    "airfare",
+    "plane",
+    "机票",
+    "航班",
+    "飞机",  # Chinese: air ticket / flight / airplane
+)
+
+# Deliberately excludes generic booking-verb words like "booking"/"预订"/"预定"
+# -- those appear in titles for *any* domain (a Chinese bus-ticket form titled
+# "预订巴士票" matched here and got hotel check_in/check_out fields bolted onto
+# its own correctly-labeled departure/return fields -- four date fields instead
+# of two). Every term below is specific to actually staying somewhere overnight.
+_HOTEL_FORM_TERMS = (
+    "hotel",
+    "accommodation",
+    "stay",
+    "酒店",
+    "住宿",
+    "订房",  # Chinese: hotel / lodging / book a room
+)
+
+_TRANSPORT_FORM_TERMS = (
+    "bus",
+    "coach",
+    "train",
+    "railway",
+    "ferry",
+    "巴士",
+    "大巴",
+    "客车",
+    "火车",
+    "高铁",
+    "动车",
+    "渡轮",
+)
+
 
 def _item_icon(item: InfoListItem) -> Optional[str]:
     if item.image_url:
@@ -420,36 +462,8 @@ def ask_preferences_form(title: str, fields: list[FormField], submit_label: str 
     # "我想订酒店" can come back titled "预订酒店" with no English gloss at
     # all), so each list also carries the common-language equivalents most
     # likely to appear rather than relying on English substrings alone.
-    is_flight_form = any(
-        term in title.lower()
-        for term in (
-            "flight",
-            "flights",
-            "fly",
-            "airfare",
-            "plane",
-            "机票",
-            "航班",
-            "飞机",  # Chinese: air ticket / flight / airplane
-        )
-    )
-    # "booking"/"预订"/"预定" alone used to be in this list, but they're
-    # generic booking-verb words that appear in titles for *any* domain (a
-    # Chinese bus-ticket form titled "预订巴士票" matched here and got
-    # hotel check_in/check_out fields bolted onto its own correctly-labeled
-    # departure/return fields -- four date fields instead of two). Every
-    # term below is specific to actually staying somewhere overnight.
-    is_hotel_form = not is_flight_form and any(
-        term in title.lower()
-        for term in (
-            "hotel",
-            "accommodation",
-            "stay",
-            "酒店",
-            "住宿",
-            "订房",  # Chinese: hotel / lodging / book a room
-        )
-    )
+    is_flight_form = any(term in title.lower() for term in _FLIGHT_FORM_TERMS)
+    is_hotel_form = not is_flight_form and any(term in title.lower() for term in _HOTEL_FORM_TERMS)
     # Round-trip transport (bus, coach, train, ferry) -- checked after
     # flight/hotel since a title could otherwise ambiguously match more than
     # one (e.g. a title mentioning both a city and "巴士"). Without this
@@ -458,25 +472,7 @@ def ask_preferences_form(title: str, fields: list[FormField], submit_label: str 
     # asks it to do for stay dates too -- so a bus form ended up with both
     # its own correct fields AND the unrelated hotel ones.
     is_transport_form = (
-        not is_flight_form
-        and not is_hotel_form
-        and any(
-            term in title.lower()
-            for term in (
-                "bus",
-                "coach",
-                "train",
-                "railway",
-                "ferry",
-                "巴士",
-                "大巴",
-                "客车",
-                "火车",
-                "高铁",
-                "动车",
-                "渡轮",
-            )
-        )
+        not is_flight_form and not is_hotel_form and any(term in title.lower() for term in _TRANSPORT_FORM_TERMS)
     )
     flight_field_groups: list[tuple[str, list[dict[str, Any]]]] = []
     flight_extra_components: list[dict[str, Any]] = []

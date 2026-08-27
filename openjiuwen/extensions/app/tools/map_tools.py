@@ -73,7 +73,12 @@ MAP_EMBED_ROUTE_PATH = "/map-embed"
 async def geocode_place(query: str) -> dict[str, Any]:
     api_key = config.get("GOOGLE_MAPS_API_KEY")
     if not api_key:
-        return {"query": query, "lat": None, "lng": None, "error": "GOOGLE_MAPS_API_KEY is not configured on the server."}
+        return {
+            "query": query,
+            "lat": None,
+            "lng": None,
+            "error": "GOOGLE_MAPS_API_KEY is not configured on the server.",
+        }
 
     headers = {**_REQUEST_HEADERS, "X-Goog-Api-Key": api_key, "X-Goog-FieldMask": _PLACES_FIELD_MASK}
     try:

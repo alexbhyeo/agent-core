@@ -100,13 +100,17 @@ def create_app() -> FastAPI:
     return app
 
 
+def _tls_cert_ready(certfile: str | None, keyfile: str | None) -> bool:
+    return bool(certfile and keyfile and os.path.exists(certfile) and os.path.exists(keyfile))
+
+
 if __name__ == "__main__":
     import uvicorn
 
     certfile = app_config.get("SSL_CERTFILE")
     keyfile = app_config.get("SSL_KEYFILE")
     ssl_kwargs: dict[str, str] = {}
-    if certfile and keyfile and os.path.exists(certfile) and os.path.exists(keyfile):
+    if _tls_cert_ready(certfile, keyfile):
         ssl_kwargs = {"ssl_certfile": certfile, "ssl_keyfile": keyfile}
         logging.info("TLS enabled: serving wss:// with cert %s", certfile)
     else:

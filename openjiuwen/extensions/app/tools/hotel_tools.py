@@ -177,7 +177,8 @@ class HotelResult(BaseModel):
         default=None, description="Real photo URLs (up to 3) from `search_hotels`, shown as a swipeable gallery."
     )
     link: Optional[str] = Field(
-        default=None, description="Real URL to the hotel's own page, from `search_hotels` -- the 'View Hotel' button target."
+        default=None,
+        description="Real URL to the hotel's own page, from `search_hotels` -- the 'View Hotel' button target.",
     )
     description: Optional[str] = Field(default=None, description="Real short description from `search_hotels`.")
 

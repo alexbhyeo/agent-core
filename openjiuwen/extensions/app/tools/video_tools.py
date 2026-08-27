@@ -99,7 +99,9 @@ async def search_youtube_videos(query: str, max_results: int = 5) -> dict[str, A
     return {"query": query, "videos": videos}
 
 
-_YOUTUBE_ID_RE = re.compile(r"(?:youtube(?:-nocookie)?\.com/(?:watch\?(?:.*&)?v=|embed/|shorts/)|youtu\.be/)([A-Za-z0-9_-]{11})")
+_YOUTUBE_ID_RE = re.compile(
+    r"(?:youtube(?:-nocookie)?\.com/(?:watch\?(?:.*&)?v=|embed/|shorts/)|youtu\.be/)([A-Za-z0-9_-]{11})"
+)
 
 _VIDEO_FILE_EXTENSIONS = (".mp4", ".webm", ".mov", ".m3u8", ".ogv")
 
@@ -143,7 +145,11 @@ async def _fetch_page_video_once(url: str) -> Optional[str]:
     html = _decode_response_text(body, content_type=headers.get("Content-Type", ""))
     soup = _parse_html(html)
 
-    for selector in ('meta[property="og:video:secure_url"]', 'meta[property="og:video:url"]', 'meta[property="og:video"]'):
+    for selector in (
+        'meta[property="og:video:secure_url"]',
+        'meta[property="og:video:url"]',
+        'meta[property="og:video"]',
+    ):
         tag = soup.select_one(selector)
         content = tag.get("content") if tag else None
         if content:
@@ -207,7 +213,9 @@ async def fetch_video_source(url: str) -> dict[str, Any]:
 
 class VideoClip(BaseModel):
     caption: str = Field(description="Short caption/title shown below this clip.")
-    kind: str = Field(description="Exactly the `kind` value `fetch_video_source` returned for this clip: 'youtube' or 'direct'.")
+    kind: str = Field(
+        description="Exactly the `kind` value `fetch_video_source` returned for this clip: 'youtube' or 'direct'."
+    )
     embed_url: Optional[str] = Field(
         default=None, description="Required when kind='youtube': the `embed_url` `fetch_video_source` returned."
     )
