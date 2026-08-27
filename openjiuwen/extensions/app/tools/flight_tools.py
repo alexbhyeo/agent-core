@@ -106,7 +106,7 @@ def _flights_search_url(
         "find a real flight booking site instead, per the booking policy."
     )
 )
-async def search_flights(
+async def search_flights(  # pylint: disable=huawei-too-many-arguments -- flat params are the tool's LLM schema
     departure_id: str,
     arrival_id: str,
     outbound_date: str,

@@ -223,7 +223,7 @@ def _suggest_icon(*texts: Optional[str]) -> Optional[str]:
         "navigated to."
     )
 )
-def show_card(
+def show_card(  # pylint: disable=huawei-too-many-arguments -- flat params are the tool's LLM schema
     title: str,
     body: str,
     icon: Optional[str] = None,

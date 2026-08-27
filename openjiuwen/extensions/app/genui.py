@@ -81,7 +81,7 @@ def divider(comp_id: str) -> dict[str, Any]:
     return {"id": comp_id, "component": "Divider"}
 
 
-def column(
+def column(  # pylint: disable=huawei-too-many-arguments -- ~24 call sites rely on these as typed kwargs
     comp_id: str,
     children: list[str],
     justify: Optional[str] = None,
@@ -230,7 +230,7 @@ def image(
     return payload
 
 
-def chart(
+def chart(  # pylint: disable=huawei-too-many-arguments -- kept as typed kwargs, see column() above
     comp_id: str,
     chart_type: str,
     series: list[dict[str, Any]],
@@ -711,7 +711,7 @@ def tabs(comp_id: str, tab_specs: list[tuple[str, str]], active_tab: int = 0) ->
     }
 
 
-def summary_card(
+def summary_card(  # pylint: disable=huawei-too-many-arguments -- kept as typed kwargs, see column() above
     surface_id: str,
     title: str,
     body: str,
@@ -847,7 +847,7 @@ def info_list_card(
 # ---------------------------------------------------------------------------
 
 
-def choice_picker(
+def choice_picker(  # pylint: disable=huawei-too-many-arguments -- kept as typed kwargs, see column() above
     comp_id: str,
     options: list[tuple[str, str]],
     label: Optional[str] = None,
@@ -947,7 +947,7 @@ _DEFAULT_BUTTON_STYLES: dict[str, Any] = {
 }
 
 
-def button(
+def button(  # pylint: disable=huawei-too-many-arguments -- kept as typed kwargs, see column() above
     comp_id: str,
     child_id: str,
     action_name: str,
@@ -992,7 +992,7 @@ def open_url_button(
     }
 
 
-def form(
+def form(  # pylint: disable=huawei-too-many-arguments -- kept as typed kwargs, see column() above
     surface_id: str,
     title: str,
     fields: list[dict[str, Any]],

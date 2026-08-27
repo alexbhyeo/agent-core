@@ -65,7 +65,7 @@ MAX_HOTEL_IMAGES = 3
         "instead, per the booking policy."
     )
 )
-async def search_hotels(
+async def search_hotels(  # pylint: disable=huawei-too-many-arguments -- flat params are the tool's LLM schema
     location: str,
     check_in_date: str,
     check_out_date: str,
