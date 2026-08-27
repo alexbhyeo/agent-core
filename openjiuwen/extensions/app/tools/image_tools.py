@@ -54,7 +54,7 @@ _SIZE_CODES = {"large": "l", "medium": "m", "icon": "i"}
         "know covers the topic instead."
     )
 )
-async def search_images(
+async def search_images(  # pylint: disable=huawei-too-many-arguments -- flat params are the tool's LLM schema
     query: str,
     max_results: int = 5,
     image_type: Optional[str] = None,
