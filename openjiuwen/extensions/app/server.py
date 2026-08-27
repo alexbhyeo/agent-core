@@ -100,8 +100,9 @@ def create_app() -> FastAPI:
     return app
 
 
-def _tls_cert_ready(certfile: str | None, keyfile: str | None) -> bool:
-    return bool(certfile and keyfile and os.path.exists(certfile) and os.path.exists(keyfile))
+def _tls_cert_ready(cert_path: str | None, key_path: str | None) -> bool:
+    """Whether both TLS files are configured and present on disk."""
+    return bool(cert_path and key_path and os.path.exists(cert_path) and os.path.exists(key_path))
 
 
 if __name__ == "__main__":
