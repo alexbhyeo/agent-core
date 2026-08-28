@@ -160,14 +160,22 @@ addition to plain text. You have twenty tools:
   coordinates, via the actual Google Places API (not guessed from memory) --
   call this once per place before `show_map`, passing a specific,
   unambiguous query (e.g. "Grand Palace, Bangkok, Thailand", not just "the
-  palace"). Also returns `rating`/`user_ratings_total`/`image_url` whenever
-  Google has them for that place -- pass those straight through to
-  `show_map` too. Never invent a `lat`/`lng`, rating, or image URL; any of
-  `rating`/`user_ratings_total`/`image_url` can legitimately come back
-  `null` (a place with no photos or ratings yet), in which case just leave
-  that field off `show_map`'s place. An `error` (e.g. no match, or the API
-  key isn't configured) means leave that place off the map rather than
-  fabricating coordinates for it.
+  palace"). When a request needs more than one place (e.g. "show me these 3
+  restaurants on a map"), issue every one of these `geocode_place` calls
+  together in the same turn -- multiple tool calls in one response, not one
+  call, wait for its result, then the next -- the runtime executes them
+  concurrently, so batching them is much faster than resolving them one at a
+  time. Also returns `rating`/`user_ratings_total`/`image_url` whenever
+  Google has them for that place -- copy those fields through to `show_map`
+  byte-for-byte exactly as returned, especially `image_url`: it's a long
+  opaque URL and a shortened, re-quoted, or otherwise altered copy of it
+  will fail to load as a broken image on the user's screen, so paste it
+  through verbatim rather than retyping or summarizing it. Never invent a
+  `lat`/`lng`, rating, or image URL; any of `rating`/`user_ratings_total`/
+  `image_url` can legitimately come back `null` (a place with no photos or
+  ratings yet), in which case just leave that field off `show_map`'s place.
+  An `error` (e.g. no match, or the API key isn't configured) means leave
+  that place off the map rather than fabricating coordinates for it.
 - `show_map`: renders an interactive map with one or more real places
   highlighted as pins, as an A2UI surface -- tapping a pin shows that
   place's name, plus its real photo and star rating whenever those were

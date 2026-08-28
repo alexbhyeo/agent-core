@@ -575,6 +575,17 @@ def map_places_list(surface_id: str, places: list[dict[str, Any]]) -> tuple[str,
 
     list_id = "placesList"
     components = [
+        # Tried switching this to a plain Row (mounts every child
+        # immediately, no lazy cell creation/reuse) to work around an
+        # intermittent "one card's photo never loads" issue traced to the
+        # client's horizontal List lazy-loading its cells -- reverted: Row
+        # has no scroll, so any request returning more than ~3 places (a
+        # common case, e.g. "nice places to play in Singapore" easily
+        # returns 5) overflowed and overlapped instead of scrolling. The
+        # catalog has no scrollable non-lazy container to use instead, so
+        # List stays despite the occasional image-load flakiness -- a
+        # blank photo placeholder is a much smaller problem than cards
+        # overlapping illegibly.
         list_view(
             list_id,
             list_children,

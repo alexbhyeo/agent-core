@@ -13,11 +13,15 @@ why a *custom* component is needed here, not the generic ``Web`` one) loads
 it, exactly the same pattern already proven for ``/youtube-embed``.
 """
 
+import asyncio
 import json
+import re
+import time
 from typing import Any, Optional
 from urllib.parse import quote, urlencode
 
-from pydantic import BaseModel, Field
+import aiohttp
+from pydantic import BaseModel, Field, field_validator
 
 from openjiuwen.core.foundation.tool import tool
 from openjiuwen.harness.tools.web import _http
@@ -48,6 +52,59 @@ _PRICE_LEVEL_TEXT = {
 }
 
 MAP_EMBED_ROUTE_PATH = "/map-embed"
+
+# `geocode_place` is normally called once per place in a map request, and a
+# fresh `_http.new_session()` per call pays a new TLS handshake to
+# places.googleapis.com every time -- a single long-lived session (module
+# scope, matching this process's lifetime) reuses pooled connections across
+# calls instead, which matters most once several places are geocoded
+# concurrently (see agent.py's instruction to batch them in one turn).
+_shared_session: Optional[aiohttp.ClientSession] = None
+_shared_session_lock = asyncio.Lock()
+
+
+async def _get_shared_session() -> aiohttp.ClientSession:
+    global _shared_session
+    if _shared_session is None or _shared_session.closed:
+        async with _shared_session_lock:
+            if _shared_session is None or _shared_session.closed:
+                _shared_session = aiohttp.ClientSession(trust_env=True, connector=_http._make_connector())
+    return _shared_session
+
+
+# Same place asked about more than once in a session (a popular landmark, a
+# user refining their request) shouldn't re-hit the Places API -- results
+# rarely change within this window, so a short TTL cache trades a little
+# staleness for skipping the network round-trip entirely on a repeat.
+_GEOCODE_CACHE_TTL_SECONDS = 1800
+_geocode_cache: dict[str, tuple[float, dict[str, Any]]] = {}
+
+
+def _geocode_cache_get(query: str) -> Optional[dict[str, Any]]:
+    entry = _geocode_cache.get(query)
+    if entry is None:
+        return None
+    cached_at, result = entry
+    if time.monotonic() - cached_at > _GEOCODE_CACHE_TTL_SECONDS:
+        del _geocode_cache[query]
+        return None
+    return dict(result)
+
+
+def _geocode_cache_put(query: str, result: dict[str, Any]) -> None:
+    _geocode_cache[query] = (time.monotonic(), dict(result))
+
+
+# A model that mis-transcribes `geocode_place`'s `image_url` when passing it
+# through to `show_map` (truncates it, wraps it in markdown, drops the
+# trailing `key=` param) produces a syntactically valid but broken URL --
+# nothing else in this pipeline would catch that before it reaches the
+# client as a silently-broken image. Requiring the real Places photo URL
+# shape here means a garbled one is dropped (falls back to the no-photo
+# placeholder) instead of failing on-screen.
+_PLACE_PHOTO_URL_RE = re.compile(
+    r"^https://places\.googleapis\.com/v1/[^\s?]+/media\?[^\s]*\bkey=[^&\s]+"
+)
 
 
 @tool(
@@ -80,18 +137,22 @@ async def geocode_place(query: str) -> dict[str, Any]:
             "error": "GOOGLE_MAPS_API_KEY is not configured on the server.",
         }
 
+    cached = _geocode_cache_get(query)
+    if cached is not None:
+        return cached
+
     headers = {**_REQUEST_HEADERS, "X-Goog-Api-Key": api_key, "X-Goog-FieldMask": _PLACES_FIELD_MASK}
     try:
-        async with _http.new_session() as session:
-            status, resp_headers, body, _final_url, _truncated = await _http.request(
-                session,
-                "POST",
-                _PLACES_SEARCH_ENDPOINT,
-                headers=headers,
-                json_body={"textQuery": query},
-                timeout_seconds=15,
-                max_bytes=1_000_000,
-            )
+        session = await _get_shared_session()
+        status, resp_headers, body, _final_url, _truncated = await _http.request(
+            session,
+            "POST",
+            _PLACES_SEARCH_ENDPOINT,
+            headers=headers,
+            json_body={"textQuery": query},
+            timeout_seconds=15,
+            max_bytes=1_000_000,
+        )
     except Exception as exc:  # noqa: BLE001 -- report the failure, don't crash the tool call
         return {"query": query, "lat": None, "lng": None, "error": str(exc)}
 
@@ -125,7 +186,7 @@ async def geocode_place(query: str) -> dict[str, Any]:
     opening_hours = place.get("currentOpeningHours")
     open_now = opening_hours.get("openNow") if isinstance(opening_hours, dict) else None
 
-    return {
+    result = {
         "query": query,
         "lat": location["latitude"],
         "lng": location["longitude"],
@@ -137,6 +198,8 @@ async def geocode_place(query: str) -> dict[str, Any]:
         "price_level": price_level,
         "open_now": open_now,
     }
+    _geocode_cache_put(query, result)
+    return result
 
 
 class MapPlace(BaseModel):
@@ -183,6 +246,20 @@ class MapPlace(BaseModel):
             "never guess this."
         ),
     )
+
+    @field_validator("image_url")
+    @classmethod
+    def _drop_malformed_image_url(cls, value: Optional[str]) -> Optional[str]:
+        """Null out anything that isn't a real Places photo URL rather than
+        raising -- a model that truncates/re-quotes/wraps this in markdown
+        when copying it from `geocode_place` produces a syntactically valid
+        but broken string; silently dropping it here falls back to the
+        no-photo placeholder card instead of a broken image reaching the
+        client. See `_PLACE_PHOTO_URL_RE`.
+        """
+        if value is not None and not _PLACE_PHOTO_URL_RE.match(value):
+            return None
+        return value
 
 
 _MAP_EMBED_TEMPLATE = """<!DOCTYPE html>

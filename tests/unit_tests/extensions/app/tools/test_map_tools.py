@@ -14,6 +14,19 @@ def _config_get(values):
     return lambda key, default=None: values.get(key, default)
 
 
+@pytest.fixture(autouse=True)
+def _clear_geocode_cache():
+    # `_geocode_cache` is module-level state (see map_tools._get_shared_session's
+    # docstring) so it survives across tests in the same run -- without
+    # clearing it, a query string reused by two tests (e.g. "Grand Palace,
+    # Bangkok") would silently serve the first test's mocked result to every
+    # later test with the same query, instead of exercising that test's own
+    # mock.
+    map_tools._geocode_cache.clear()
+    yield
+    map_tools._geocode_cache.clear()
+
+
 class TestGeocodePlace:
     @pytest.mark.asyncio
     async def test_returns_error_when_api_key_not_configured(self):
@@ -133,6 +146,19 @@ class TestGeocodePlace:
         assert kwargs["json_body"] == {"textQuery": "Grand Palace, Bangkok"}
 
     @pytest.mark.asyncio
+    async def test_repeated_query_is_served_from_cache_without_a_second_request(self):
+        body = json.dumps({"places": [{"location": {"latitude": 1.0, "longitude": 2.0}}]}).encode("utf-8")
+        mock_request = AsyncMock(return_value=(200, {"Content-Type": "application/json"}, body, "url", False))
+        with (
+            patch.object(map_tools.config, "get", side_effect=_config_get({"GOOGLE_MAPS_API_KEY": "test-key"})),
+            patch.object(map_tools._http, "request", mock_request),
+        ):
+            first = await map_tools.geocode_place.invoke({"query": "Grand Palace, Bangkok"})
+            second = await map_tools.geocode_place.invoke({"query": "Grand Palace, Bangkok"})
+        assert mock_request.await_count == 1
+        assert first == second
+
+    @pytest.mark.asyncio
     async def test_returns_error_when_no_places_found(self):
         body = json.dumps({"places": []}).encode("utf-8")
         mock_request = AsyncMock(return_value=(200, {"Content-Type": "application/json"}, body, "url", False))
@@ -154,6 +180,33 @@ class TestGeocodePlace:
             result = await map_tools.geocode_place.invoke({"query": "Grand Palace, Bangkok"})
         assert result["lat"] is None
         assert "403" in result["error"]
+
+
+class TestMapPlaceImageUrlValidation:
+    # Regression tests: a model that mis-transcribes `geocode_place`'s
+    # `image_url` when passing it through to `show_map` (truncates it,
+    # wraps it in markdown, drops the `key=` param) must not have that
+    # broken string reach the client -- it should silently fall back to no
+    # photo instead, the same as `geocode_place` itself returning `null`.
+    _REAL_URL = "https://places.googleapis.com/v1/places/abc/photos/xyz/media?maxWidthPx=640&key=test-key"
+
+    def test_real_places_photo_url_is_kept(self):
+        place = map_tools.MapPlace(label="Grand Palace", lat=13.75, lng=100.4913, image_url=self._REAL_URL)
+        assert place.image_url == self._REAL_URL
+
+    @pytest.mark.parametrize(
+        "bad_url",
+        [
+            "https://places.googleapis.com/v1/places/abc/photos/xyz/media",  # missing ?key=
+            "`https://places.googleapis.com/v1/places/abc/photos/xyz/media?maxWidthPx=640&key=test-key`",  # markdown-wrapped
+            "https://places.googleapis.com/v1/places/abc/photos/xyz/media?maxWidthPx=640&key=",  # empty key value
+            "https://evil.example.com/media?key=test-key",  # wrong domain entirely
+            "not a url at all",
+        ],
+    )
+    def test_malformed_or_garbled_url_is_dropped(self, bad_url):
+        place = map_tools.MapPlace(label="Grand Palace", lat=13.75, lng=100.4913, image_url=bad_url)
+        assert place.image_url is None
 
 
 class TestRenderMapEmbedHtml:
@@ -334,7 +387,10 @@ class TestShowMap:
                             "label": "Grand Palace",
                             "lat": 13.75,
                             "lng": 100.4913,
-                            "image_url": "https://places.googleapis.com/v1/places/abc/photos/xyz/media",
+                            "image_url": (
+                                "https://places.googleapis.com/v1/places/abc/photos/xyz/media"
+                                "?maxWidthPx=640&key=test-key"
+                            ),
                             "rating": 4.6,
                             "user_ratings_total": 12345,
                         }
@@ -350,7 +406,9 @@ class TestShowMap:
                 "label": "Grand Palace",
                 "lat": 13.75,
                 "lng": 100.4913,
-                "image_url": "https://places.googleapis.com/v1/places/abc/photos/xyz/media",
+                "image_url": (
+                    "https://places.googleapis.com/v1/places/abc/photos/xyz/media?maxWidthPx=640&key=test-key"
+                ),
                 "rating": 4.6,
                 "user_ratings_total": 12345,
                 "category": None,
