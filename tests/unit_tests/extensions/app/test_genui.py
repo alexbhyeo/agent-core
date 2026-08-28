@@ -407,6 +407,59 @@ class TestBasicCatalogHelpers:
         components = {c["id"]: c for c in messages[1]["updateComponents"]["components"]}
         assert components["finance0Name"]["text"] == "Mystery Corp"
 
+    def test_shopping_gallery_card_builds_create_and_update_pair(self):
+        messages = genui.shopping_gallery_card(
+            "surface-1",
+            "Headphones",
+            [
+                {
+                    "title": "Sony WH-1000XM5",
+                    "price": "$328.00",
+                    "rating": 4.7,
+                    "reviews": 12345,
+                    "image_url": "https://example.com/headphones.jpg",
+                    "link": "https://example.com/dp/B09XS7JWHH",
+                    "is_prime": True,
+                }
+            ],
+        )
+        assert len(messages) == 2
+        assert "createSurface" in messages[0]
+        components = {c["id"]: c for c in messages[1]["updateComponents"]["components"]}
+        assert components["product0Name"]["text"] == "Sony WH-1000XM5"
+        assert "$328.00" in components["product0Subtitle"]["text"]
+        assert "★ 4.7 (12,345 reviews)" in components["product0Subtitle"]["text"]
+        assert "Prime" in components["product0Subtitle"]["text"]
+        assert components["product0Media"]["component"] == "Image"
+        assert components["product0Media"]["url"] == "https://example.com/headphones.jpg"
+        assert components["product0Media"]["fit"] == "contain"
+        assert components["product0Button"]["action"]["functionCall"] == {
+            "call": "openUrl",
+            "args": {"url": "https://example.com/dp/B09XS7JWHH"},
+        }
+        assert components["product0ButtonText"]["text"] == "Buy Now"
+
+    def test_shopping_gallery_card_omits_optional_fields_when_absent(self):
+        messages = genui.shopping_gallery_card("surface-1", "Headphones", [{"title": "Mystery Product"}])
+        components = {c["id"]: c for c in messages[1]["updateComponents"]["components"]}
+        assert components["product0Name"]["text"] == "Mystery Product"
+        assert "product0Subtitle" not in components
+        assert "product0Media" not in components
+        assert "product0Button" not in components
+
+    def test_shopping_gallery_card_adds_show_more_button_when_more_count_positive(self):
+        messages = genui.shopping_gallery_card("surface-1", "Headphones", [{"title": "Product A"}], more_count=5)
+        components = {c["id"]: c for c in messages[1]["updateComponents"]["components"]}
+        assert components["moreButtonText"]["text"] == "Show more..."
+        assert components["moreButton"]["action"]["event"]["name"] == "show_more_products"
+        assert components["moreButton"]["variant"] == "borderless"
+
+    def test_shopping_gallery_card_omits_show_more_button_when_more_count_zero(self):
+        messages = genui.shopping_gallery_card("surface-1", "Headphones", [{"title": "Product A"}])
+        components = {c["id"]: c for c in messages[1]["updateComponents"]["components"]}
+        assert "moreButton" not in components
+        assert "moreButtonText" not in components
+
 
 class TestFormHelpers:
     def test_choice_picker_defaults(self):

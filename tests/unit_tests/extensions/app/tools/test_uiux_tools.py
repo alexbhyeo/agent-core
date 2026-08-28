@@ -375,4 +375,6 @@ class TestAllTools:
             "show_flight_results",
             "search_finance",
             "show_finance_results",
+            "search_products",
+            "show_shopping_results",
         }

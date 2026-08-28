@@ -1517,3 +1517,136 @@ def flight_gallery_card(
         create_surface(surface_id),
         update_components(surface_id, components),
     ]
+
+
+def shopping_gallery_card(
+    surface_id: str,
+    title: str,
+    products: list[dict[str, Any]],
+    more_count: int = 0,
+) -> list[dict[str, Any]]:
+    """A titled vertical list of Amazon product results, each in its own
+    Card with a photo, title, price/rating/Prime-badge subtitle, and a
+    "Buy Now" button that opens the product's real Amazon page externally
+    (via ``open_url_button``) -- the user completes the purchase there
+    themselves, same handoff pattern as ``hotel_gallery_card``'s "View
+    Hotel" button.
+
+    Each dict in ``products`` may have: ``title`` (required), ``image_url``,
+    ``price``, ``rating``, ``reviews``, ``is_prime``, ``link``. Any field
+    besides ``title`` is optional -- only what's actually present is
+    rendered.
+
+    ``more_count`` > 0 adds a "Show more..." link (bold, underlined text,
+    no button chrome) below the list -- pressing it sends a
+    ``show_more_products`` UI action back to the agent, see
+    ``shopping_tools.show_shopping_results`` -- same pagination pattern as
+    ``hotel_gallery_card``.
+    """
+    card_ids = [f"product{i}Card" for i in range(len(products))]
+    item_components: list[dict[str, Any]] = []
+    for i, product in enumerate(products):
+        card_id = card_ids[i]
+        outer_id = f"product{i}"
+        text_col_id = f"{outer_id}TextCol"
+        name_id = f"{outer_id}Name"
+        subtitle_id = f"{outer_id}Subtitle"
+        media_id = f"{outer_id}Media"
+        button_id = f"{outer_id}Button"
+        button_text_id = f"{outer_id}ButtonText"
+
+        subtitle_parts: list[str] = []
+        if product.get("price"):
+            subtitle_parts.append(product["price"])
+        if product.get("rating"):
+            rating_text = f"★ {product['rating']}"
+            if product.get("reviews"):
+                rating_text += f" ({product['reviews']:,} reviews)"
+            subtitle_parts.append(rating_text)
+        if product.get("is_prime"):
+            subtitle_parts.append("Prime")
+        subtitle_text = "  •  ".join(subtitle_parts)
+
+        text_col_children = [name_id]
+        if subtitle_text:
+            text_col_children.append(subtitle_id)
+        if product.get("link"):
+            text_col_children.append(button_id)
+
+        # padding=0 on the card itself, same reasoning as
+        # hotel_gallery_card's photo items: the image sits flush against the
+        # card edges, with the text block below getting its own inset
+        # padding instead.
+        item_components.append(card(card_id, outer_id, styles={"padding": "0px"}))
+        if product.get("image_url"):
+            item_components.append(column(outer_id, [media_id, text_col_id]))
+            # "contain", not "cover" like hotel_gallery_card's photos --
+            # Amazon product thumbnails are usually the product shot on a
+            # plain white background with a lot of empty margin, not an
+            # edge-to-edge scene, so cropping to fill the frame (cover)
+            # tends to cut off part of the product instead of just trimming
+            # background.
+            item_components.append(image(media_id, product["image_url"], variant="header", fit="contain"))
+        else:
+            item_components.append(column(outer_id, [text_col_id]))
+        item_components.append(column(text_col_id, text_col_children, styles={"padding": "16px", "gap": "8px"}))
+        item_components.append(text(name_id, product["title"], variant="h3", styles={"line-clamp": 2}))
+        if subtitle_text:
+            item_components.append(text(subtitle_id, subtitle_text, variant="body"))
+        if product.get("link"):
+            item_components.append(
+                open_url_button(button_id, button_text_id, product["link"], styles={"width": "100%"})
+            )
+            item_components.append(
+                text(
+                    button_text_id,
+                    "Buy Now",
+                    styles={"color": "#FFFFFF", "width": "100%", "text-align": "center"},
+                )
+            )
+
+    root_children = ["title", "list"]
+    more_components: list[dict[str, Any]] = []
+    if more_count > 0:
+        root_children.append("moreButton")
+        # A link, not a filled button -- see hotel_gallery_card's identical
+        # "Show more" block for why.
+        more_components.append(
+            button(
+                "moreButton",
+                "moreButtonText",
+                "show_more_products",
+                variant="borderless",
+                styles={
+                    "width": "100%",
+                    "background-color": "transparent",
+                    "padding": "8px 0px",
+                    "border-radius": "0px",
+                },
+            )
+        )
+        more_components.append(
+            text(
+                "moreButtonText",
+                "Show more...",
+                styles={
+                    "color": "#2273F7",
+                    "font-weight": "bold",
+                    "text-decoration": "underline",
+                    "width": "100%",
+                    "text-align": "center",
+                },
+            )
+        )
+
+    components = [
+        column("root", root_children, styles={"gap": "12px"}),
+        text("title", title, variant="h3"),
+        list_view("list", card_ids, styles={"gap": "12px"}),
+        *more_components,
+        *item_components,
+    ]
+    return [
+        create_surface(surface_id),
+        update_components(surface_id, components),
+    ]
