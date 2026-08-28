@@ -68,7 +68,7 @@ async def _get_shared_session() -> aiohttp.ClientSession:
     if _shared_session is None or _shared_session.closed:
         async with _shared_session_lock:
             if _shared_session is None or _shared_session.closed:
-                _shared_session = aiohttp.ClientSession(trust_env=True, connector=_http._make_connector())
+                _shared_session = aiohttp.ClientSession(trust_env=True, connector=_http.make_connector())
     return _shared_session
 
 

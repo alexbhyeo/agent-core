@@ -278,6 +278,7 @@ tests/system_tests/config_llm_local.yaml
 /memory/
 /messages/
 /skills/
+/sub_agents/
 /todo/
 
 # context_evolver unit test store, written next to the test
