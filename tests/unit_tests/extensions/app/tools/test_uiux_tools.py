@@ -377,4 +377,8 @@ class TestAllTools:
             "show_finance_results",
             "search_products",
             "show_shopping_results",
+            "search_weather_forecast",
+            "show_weather_forecast",
+            "search_weather_history",
+            "show_weather_history",
         }

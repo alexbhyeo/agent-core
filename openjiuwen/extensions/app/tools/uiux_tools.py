@@ -7,11 +7,12 @@ messages reach the WebSocket layer: ``rails.A2uiToolEventRail`` captures the
 raw dict from ``AFTER_TOOL_CALL`` and ``ws_session._translate`` turns the
 ``genui`` list into one WebSocket ``genui`` event per message.
 
-Image, video, map, hotel, flight, finance, and shopping tools live in their
-own modules (``image_tools.py``, ``video_tools.py``, ``map_tools.py``,
-``hotel_tools.py``, ``flight_tools.py``, ``finance_tools.py``,
-``shopping_tools.py``) -- imported back in here just to keep ``ALL_TOOLS``
-as the single place that assembles everything the agent gets.
+Image, video, map, hotel, flight, finance, shopping, and weather tools live
+in their own modules (``image_tools.py``, ``video_tools.py``,
+``map_tools.py``, ``hotel_tools.py``, ``flight_tools.py``,
+``finance_tools.py``, ``shopping_tools.py``, ``weather_tools.py``) --
+imported back in here just to keep ``ALL_TOOLS`` as the single place that
+assembles everything the agent gets.
 """
 
 import re
@@ -31,6 +32,7 @@ from .image_tools import fetch_page_image, search_images
 from .map_tools import geocode_place, show_map
 from .shopping_tools import search_products, show_shopping_results
 from .video_tools import fetch_video_source, search_youtube_videos, show_video_clips
+from .weather_tools import search_weather_forecast, search_weather_history, show_weather_forecast, show_weather_history
 
 _CJK_RE = re.compile(r"[一-鿿]")
 
@@ -660,4 +662,8 @@ ALL_TOOLS = (
     show_finance_results,
     search_products,
     show_shopping_results,
+    search_weather_forecast,
+    show_weather_forecast,
+    search_weather_history,
+    show_weather_history,
 )

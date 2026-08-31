@@ -1650,3 +1650,305 @@ def shopping_gallery_card(
         create_surface(surface_id),
         update_components(surface_id, components),
     ]
+
+
+def _weather_hourly_chart_component(comp_id: str, hourly: list[dict[str, Any]], color: str) -> dict[str, Any]:
+    x_axis = [h["hour_label"] for h in hourly]
+    values = [h["temp"] if h.get("temp") is not None else 0 for h in hourly]
+    return chart(
+        comp_id,
+        "line",
+        series=[{"name": "Temperature", "data": [{"value": v} for v in values]}],
+        x_axis=x_axis,
+        styles={"width": "100%", "aspect-ratio": "2/1", "chartConfig": {"colors": [color]}},
+    )
+
+
+# Layout threshold, not a data cap -- at or below this many days, the day
+# strip is a plain Row with every pill sharing the width equally (fills
+# the card edge to edge, no dead space); above it, the strip switches to a
+# real scrollable List with a fixed per-pill width instead, so a 5+ day
+# forecast is reachable by swiping rather than being invisibly truncated.
+# A Row only stays safe up to this threshold -- see map_places_list's own
+# docstring for why an open-ended count silently overlaps in a Row.
+_WEATHER_DAILY_FILL_THRESHOLD = 3
+_WEATHER_DAILY_PILL_WIDTH = "220px"
+_WEATHER_PILL_COLOR = "#7B93E8"
+_WEATHER_PILL_SELECTED_COLOR = "#4F63D6"
+
+
+def weather_forecast_card(
+    surface_id: str,
+    location: str,
+    current_temp: Optional[float] = None,
+    current_condition: Optional[str] = None,
+    current_icon_url: Optional[str] = None,
+    daily: Optional[list[dict[str, Any]]] = None,
+    hourly: Optional[list[dict[str, Any]]] = None,
+    selected_day_index: int = 0,
+    is_update: bool = False,
+) -> list[dict[str, Any]]:
+    """A single day-theme weather card (the standard light ``card()``
+    styling, not the dark theme a typical weather-app mockup uses):
+    location, current conditions, a strip of tappable day pills (day +
+    date + icon + high/low), and an hourly temperature line chart for
+    whichever day is selected.
+
+    The day strip is a plain ``row()`` with ``weight=1`` on each pill (so
+    they stretch to fill the card's width evenly) when there are
+    ``_WEATHER_DAILY_FILL_THRESHOLD`` or fewer days; above that it becomes
+    a real scrollable ``list_view()`` with each pill at a fixed
+    ``_WEATHER_DAILY_PILL_WIDTH`` instead, so a longer forecast is
+    reachable by swiping. Neither uses the catalog's actual ``Carousel``
+    component -- that one only ever holds plain images (see
+    ``carousel()``'s own docstring). Each pill is a ``button()`` (not a
+    plain column) whose action fires ``select_forecast_day_<i>``, handled
+    by ``weather_tools.show_weather_forecast``'s own docstring -- tapping
+    one re-renders this same card (in place, see ``is_update`` below) with
+    that day's ``hourly`` swapped into the chart and that pill highlighted
+    (``_WEATHER_PILL_SELECTED_COLOR`` instead of the default
+    ``_WEATHER_PILL_COLOR``). A client-local ``functionCall`` (like
+    ``highlightMapPlace``) was tried here instead so the chart could swap
+    on-device with no round-trip at all, but a custom ``A2UIComponent``
+    (``ChartComponent.ets``) only actually repaints when driven through
+    the engine's own native protocol-update pipeline -- calling its public
+    ``updateProperties()`` from a function-call handler updated its cached
+    state (confirmed via hilog) but never repainted the screen. Reverted
+    in favor of this reliably-working server round-trip. That same
+    never-repaints-on-update limitation turned out to affect the server
+    round-trip's own chart element too, though -- the chart's own pixels
+    silently stayed frozen on its first-rendered day across further
+    updates to the *same* chart node, even though the surrounding
+    Text/Button components (the pill highlight) updated correctly in the
+    exact same message. See ``hourly_chart_id`` below for the fix.
+
+    ``daily`` items: ``day_label`` (required), ``date_label``, ``icon_url``,
+    ``condition``, ``max_temp``, ``min_temp``. ``hourly`` items:
+    ``hour_label`` (required), ``temp``. Both lists, and the three
+    ``current_*`` args, are optional -- only what's actually present
+    renders.
+
+    ``is_update`` -- pass ``True`` when re-rendering the *same* surface
+    after a day-pill tap (i.e. ``surface_id`` is a previously-returned id,
+    not a freshly generated one): skips the ``create_surface`` message so
+    the client updates the existing card's components in place instead of
+    layering a duplicate card underneath it in the chat. Leave it
+    ``False`` for the first render of a new forecast.
+    """
+    daily = daily or []
+    hourly = hourly or []
+    selected_day_index = max(0, min(selected_day_index, len(daily) - 1)) if daily else 0
+
+    inner_children = ["location"]
+    components: list[dict[str, Any]] = []
+
+    has_current = current_temp is not None or bool(current_condition) or bool(current_icon_url)
+    if has_current:
+        inner_children.append("currentRow")
+    if daily:
+        inner_children.append("dailyDivider")
+        inner_children.append("dailyList")
+    # Suffixed with the selected day so a tap gets a brand-new chart node
+    # id instead of reusing the same one -- ChartComponent.ets (a custom
+    # A2UIComponent wrapping @ohos/mpchart) only actually repaints its
+    # bound LineChart on a node's first mount; a second onUpdateProperties
+    # on the *same* already-mounted instance updates its cached data (and
+    # the surrounding pill highlighting, plain Text/Button components,
+    # updates fine) but the chart's own pixels silently stay frozen on
+    # whatever it first rendered -- confirmed live, and true regardless of
+    # whether the update is server-driven (this card's normal tap flow) or
+    # client-local (a functionCall-based approach was tried and hit the
+    # exact same wall). A fresh id makes the client treat it as a new
+    # component to create rather than an existing one to update, which
+    # reliably renders correctly like any other first render.
+    hourly_chart_id = f"hourlyChart_{selected_day_index}"
+    if hourly:
+        inner_children.append("hourlyDivider")
+        inner_children.append(hourly_chart_id)
+
+    components.append(card("root", "content", styles={"padding": "20px"}))
+    components.append(column("content", inner_children, styles={"gap": "16px"}))
+    components.append(text("location", location, variant="h3"))
+
+    if has_current:
+        current_row_children = (["currentIcon"] if current_icon_url else []) + ["currentTextCol"]
+        components.append(row("currentRow", current_row_children, align="center", styles={"gap": "16px"}))
+        if current_icon_url:
+            components.append(
+                image(
+                    "currentIcon",
+                    current_icon_url,
+                    variant="largeFeature",
+                    fit="contain",
+                    styles={"width": "64px", "height": "64px"},
+                )
+            )
+        current_text_children = (["currentTemp"] if current_temp is not None else []) + (
+            ["currentCondition"] if current_condition else []
+        )
+        components.append(column("currentTextCol", current_text_children, styles={"gap": "2px"}))
+        if current_temp is not None:
+            components.append(text("currentTemp", f"{round(current_temp)}°C", variant="h1"))
+        if current_condition:
+            components.append(text("currentCondition", current_condition, variant="body", styles={"color": "#6B7280"}))
+
+    if daily:
+        components.append(divider("dailyDivider"))
+        day_ids = []
+        for i, day in enumerate(daily):
+            day_id = f"day{i}"
+            content_id = f"day{i}Content"
+            label_id = f"day{i}Label"
+            date_id = f"day{i}Date"
+            icon_id = f"day{i}Icon"
+            high_id = f"day{i}High"
+            low_id = f"day{i}Low"
+
+            content_children = [label_id]
+            if day.get("date_label"):
+                content_children.append(date_id)
+            if day.get("icon_url"):
+                content_children.append(icon_id)
+            if day.get("max_temp") is not None:
+                content_children.append(high_id)
+            if day.get("min_temp") is not None:
+                content_children.append(low_id)
+
+            pill_color = _WEATHER_PILL_SELECTED_COLOR if i == selected_day_index else _WEATHER_PILL_COLOR
+            pill_styles: dict[str, Any] = {
+                "background-color": pill_color,
+                "border-radius": "20px",
+                "padding": "16px 8px",
+            }
+            if len(daily) > _WEATHER_DAILY_FILL_THRESHOLD:
+                pill_styles["width"] = _WEATHER_DAILY_PILL_WIDTH
+            pill = button(
+                day_id,
+                content_id,
+                f"select_forecast_day_{i}",
+                variant="borderless",
+                styles=pill_styles,
+            )
+            if len(daily) <= _WEATHER_DAILY_FILL_THRESHOLD:
+                # Equal-share flex-grow instead of a fixed width -- see
+                # _hotel_compact_search_rows for the same weight=1-per-column
+                # pattern -- fills the card edge to edge when there are few
+                # enough pills for that to always fit.
+                pill["weight"] = 1
+            components.append(pill)
+            components.append(column(content_id, content_children, align="center", styles={"gap": "4px"}))
+            components.append(text(label_id, day["day_label"], variant="body", weight=700, styles={"color": "#FFFFFF"}))
+            if day.get("date_label"):
+                components.append(text(date_id, day["date_label"], variant="caption", styles={"color": "#E3E7FB"}))
+            if day.get("icon_url"):
+                components.append(
+                    image(
+                        icon_id,
+                        day["icon_url"],
+                        variant="icon",
+                        fit="contain",
+                        styles={
+                            "width": "36px",
+                            "height": "36px",
+                            "background-color": "rgba(255,255,255,0.25)",
+                            "border-radius": "18px",
+                            "padding": "4px",
+                        },
+                    )
+                )
+            if day.get("max_temp") is not None:
+                components.append(text(high_id, f"{round(day['max_temp'])}°", variant="h3", weight=700, styles={"color": "#FFFFFF"}))
+            if day.get("min_temp") is not None:
+                components.append(text(low_id, f"{round(day['min_temp'])}°", variant="caption", styles={"color": "#D7DDF8"}))
+            day_ids.append(day_id)
+
+        daily_list_styles = {
+            "gap": "12px",
+            "padding": "12px",
+            "background-color": "#EEF1FC",
+            "border-radius": "16px",
+        }
+        if len(daily) <= _WEATHER_DAILY_FILL_THRESHOLD:
+            components.append(row("dailyList", day_ids, styles=daily_list_styles))
+        else:
+            components.append(list_view("dailyList", day_ids, direction="horizontal", styles=daily_list_styles))
+
+    if hourly:
+        components.append(divider("hourlyDivider"))
+        components.append(_weather_hourly_chart_component(hourly_chart_id, hourly, "#F59E0B"))
+
+    if is_update:
+        return [update_components(surface_id, components)]
+    return [
+        create_surface(surface_id),
+        update_components(surface_id, components),
+    ]
+
+
+def weather_history_card(
+    surface_id: str,
+    location: str,
+    as_of: Optional[str] = None,
+    latest_temp: Optional[float] = None,
+    latest_condition: Optional[str] = None,
+    latest_icon_url: Optional[str] = None,
+    hourly: Optional[list[dict[str, Any]]] = None,
+) -> list[dict[str, Any]]:
+    """Same day-theme visual language as ``weather_forecast_card``, for a
+    "what was the weather like" request instead of a forecast: location,
+    the most recent recorded reading (temperature/condition, "as of" a
+    given hour), and an hourly temperature line chart for the requested
+    past period.
+
+    ``hourly`` items: ``hour_label`` (required), ``temp``. All of
+    ``as_of``/``latest_temp``/``latest_condition``/``latest_icon_url`` are
+    optional -- only what's actually present renders.
+    """
+    hourly = hourly or []
+
+    inner_children = ["location"]
+    components: list[dict[str, Any]] = []
+
+    has_latest = latest_temp is not None or bool(latest_condition) or bool(latest_icon_url)
+    if has_latest:
+        inner_children.append("latestRow")
+    if hourly:
+        inner_children.append("hourlyDivider")
+        inner_children.append("hourlyChart")
+
+    components.append(card("root", "content", styles={"padding": "20px"}))
+    components.append(column("content", inner_children, styles={"gap": "16px"}))
+    components.append(text("location", location, variant="h3"))
+
+    if has_latest:
+        latest_row_children = (["latestIcon"] if latest_icon_url else []) + ["latestTextCol"]
+        components.append(row("latestRow", latest_row_children, align="center", styles={"gap": "16px"}))
+        if latest_icon_url:
+            components.append(
+                image(
+                    "latestIcon",
+                    latest_icon_url,
+                    variant="largeFeature",
+                    fit="contain",
+                    styles={"width": "64px", "height": "64px"},
+                )
+            )
+        subtitle_parts = [p for p in (latest_condition, f"as of {as_of}" if as_of else None) if p]
+        subtitle_text = "  •  ".join(subtitle_parts)
+        latest_text_children = (["latestTemp"] if latest_temp is not None else []) + (
+            ["latestSubtitle"] if subtitle_text else []
+        )
+        components.append(column("latestTextCol", latest_text_children, styles={"gap": "2px"}))
+        if latest_temp is not None:
+            components.append(text("latestTemp", f"{round(latest_temp)}°C", variant="h1"))
+        if subtitle_text:
+            components.append(text("latestSubtitle", subtitle_text, variant="body", styles={"color": "#6B7280"}))
+
+    if hourly:
+        components.append(divider("hourlyDivider"))
+        components.append(_weather_hourly_chart_component("hourlyChart", hourly, "#2273F7"))
+
+    return [
+        create_surface(surface_id),
+        update_components(surface_id, components),
+    ]
