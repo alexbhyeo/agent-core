@@ -16,7 +16,7 @@ self-contained the same way.
 import json
 import uuid
 from datetime import date
-from typing import Any, Optional
+from typing import Any, NamedTuple, Optional
 from urllib.parse import urlencode
 
 from pydantic import BaseModel, Field
@@ -130,8 +130,13 @@ async def _weather_get(
         return None, f"Could not parse Weather API response: {exc}"
 
 
+class LatLng(NamedTuple):
+    lat: float
+    lng: float
+
+
 async def _weather_get_paginated(
-    endpoint: str, lat: float, lng: float, extra_params: dict[str, Any], items_key: str, want: int
+    endpoint: str, location: LatLng, extra_params: dict[str, Any], items_key: str, want: int
 ) -> tuple[list[dict[str, Any]], Optional[str]]:
     """Like `_weather_get`, but follows `nextPageToken` until at least
     `want` items are collected (or the API runs out of pages). Both
@@ -148,7 +153,7 @@ async def _weather_get_paginated(
         params = {**extra_params, "pageSize": want}
         if page_token:
             params["pageToken"] = page_token
-        data, error = await _weather_get(endpoint, lat, lng, params)
+        data, error = await _weather_get(endpoint, location.lat, location.lng, params)
         if error:
             return items, (None if items else error)
         page_items = (data or {}).get(items_key) or []
@@ -231,7 +236,7 @@ async def search_weather_forecast(location: str, days: int = 7) -> dict[str, Any
     # >5-day or >24-hour request actually comes back in full instead of
     # silently truncating to the first page.
     forecast_days, daily_error = await _weather_get_paginated(
-        _DAILY_FORECAST_ENDPOINT, lat, lng, {"days": days}, "forecastDays", days
+        _DAILY_FORECAST_ENDPOINT, LatLng(lat, lng), {"days": days}, "forecastDays", days
     )
     if daily_error:
         return {"location": location, "error": daily_error}
@@ -243,7 +248,7 @@ async def search_weather_forecast(location: str, days: int = 7) -> dict[str, Any
     # call -- the daily strip alone is still useful.
     hours_needed = min(days * 24, MAX_FORECAST_HOURLY_HOURS)
     forecast_hours, _hourly_error = await _weather_get_paginated(
-        _HOURLY_FORECAST_ENDPOINT, lat, lng, {"hours": hours_needed}, "forecastHours", hours_needed
+        _HOURLY_FORECAST_ENDPOINT, LatLng(lat, lng), {"hours": hours_needed}, "forecastHours", hours_needed
     )
 
     # Group hourly points by calendar date so each daily card can carry
@@ -387,7 +392,9 @@ class HourlyPoint(BaseModel):
 
 
 class DailyForecast(BaseModel):
-    day_label: str = Field(description="Short day label (e.g. 'Mon', or 'Today' for the first entry), from a prior search_weather_forecast call.")
+    day_label: str = Field(
+        description="Short day label (e.g. 'Mon', or 'Today' for the first entry), from search_weather_forecast."
+    )
     date_label: Optional[str] = Field(default=None, description="Real MM-DD date label. Omit if null.")
     icon_url: Optional[str] = Field(default=None, description="Real weather icon URL. Omit if null.")
     condition: Optional[str] = Field(default=None, description="Real short condition text. Omit if null.")
@@ -484,18 +491,27 @@ def show_weather_forecast(
         "hourly": [h.model_dump(exclude_none=True) for h in parsed_hourly],
     }
 
-    summary_parts = [location] if location else []
-    if current_temp is not None:
-        summary_parts.append(f"{round(current_temp)}°C")
-    if current_condition:
-        summary_parts.append(current_condition)
-    summary = " - ".join(summary_parts)
-    if parsed_daily:
-        summary += "\n" + "\n".join(
-            f"- {d.day_label} ({d.date_label}): {round(d.max_temp) if d.max_temp is not None else '?'}°/"
-            f"{round(d.min_temp) if d.min_temp is not None else '?'}°"
-            for d in parsed_daily
-        )
+    # A day-pill tap (is_update) re-renders this same card in place -- its
+    # own pill highlight and swapped chart already show what changed, so
+    # this summary is deliberately left empty rather than recomputed: a
+    # non-empty `text` here becomes a `tool.output` chat bubble
+    # (ws_session._translate), which would repeat the same summary back to
+    # the user every single tap. Only a fresh forecast render gets one.
+    if is_update:
+        summary = ""
+    else:
+        summary_parts = [location] if location else []
+        if current_temp is not None:
+            summary_parts.append(f"{round(current_temp)}°C")
+        if current_condition:
+            summary_parts.append(current_condition)
+        summary = " - ".join(summary_parts)
+        if parsed_daily:
+            summary += "\n" + "\n".join(
+                f"- {d.day_label} ({d.date_label}): {round(d.max_temp) if d.max_temp is not None else '?'}°/"
+                f"{round(d.min_temp) if d.min_temp is not None else '?'}°"
+                for d in parsed_daily
+            )
 
     return {
         "text": summary,

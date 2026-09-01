@@ -473,7 +473,34 @@ class TestShowWeatherForecast:
         assert components["day1"]["styles"]["background-color"] == genui._WEATHER_PILL_SELECTED_COLOR
         chart_values = components["hourlyChart_1"]["data"]["series"][0]["data"]
         assert chart_values == [{"value": 27}]
-        assert "Sembawang" in second["text"]
+        # A day-pill tap must not re-summarize -- see test_pill_tap_returns_no_summary_text.
+        assert second["text"] == ""
+
+    @pytest.mark.asyncio
+    async def test_pill_tap_returns_no_summary_text(self):
+        # Regression test: a non-empty `text` on a day-pill-tap update becomes
+        # a `tool.output` chat bubble (ws_session._translate) that repeats the
+        # same forecast summary back to the user on every single tap, even
+        # though the pill highlight and swapped chart already show the change
+        # (see agent.py's weather flow, step 5). Only a fresh forecast render
+        # should produce a summary; an update must return an empty string.
+        first = await weather_tools.show_weather_forecast.invoke(
+            {
+                "location": "Sembawang, Singapore",
+                "current_temp": 30,
+                "current_condition": "Sunny",
+                "daily": [
+                    {"day_label": "Today", "hourly": [{"hour_label": "3pm", "temp": 32}]},
+                    {"day_label": "Tue", "hourly": [{"hour_label": "9am", "temp": 27}]},
+                ],
+            }
+        )
+        assert first["text"] != ""
+
+        second = await weather_tools.show_weather_forecast.invoke(
+            {"selected_day_index": 1, "surface_id": first["surface_id"]}
+        )
+        assert second["text"] == ""
 
     @pytest.mark.asyncio
     async def test_forecast_token_supplies_full_daily_data_even_if_model_only_sent_todays_hourly(self):
