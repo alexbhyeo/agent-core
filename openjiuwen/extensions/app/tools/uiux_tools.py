@@ -347,7 +347,6 @@ def show_info_list(title: str, items: list[InfoListItem], icon: Optional[str] = 
 class FormFieldType(str, Enum):
     choice = "choice"
     multi_choice = "multi_choice"
-    slider = "slider"
     text = "text"
     checkbox = "checkbox"
     date = "date"
@@ -382,12 +381,12 @@ class FormField(BaseModel):
             "multi_choice = checkboxes (pick any number, including zero) -- use this "
             "whenever the user could reasonably want more than one option, e.g. "
             "'which cuisines do you like', 'which amenities matter to you'; "
-            "slider = a numeric range where the exact value matters less than the "
-            "position within a wide range, e.g. a price/budget range -- do NOT use "
-            "it for a small discrete count like a number of guests/adults/"
-            "children/passengers, since a slider knob doesn't let the user see or "
-            "set the exact number precisely; use `choice` with explicit numbered "
-            "options instead (e.g. '1', '2', '3', '4+') for those; "
+            "there is no slider/numeric-range field type -- for a price/budget range or "
+            "any other numeric range, use `choice` with explicit bucketed options instead "
+            "(e.g. 'Under $50', '$50-$100', '$100-$200', '$200+'), the same way a small "
+            "discrete count like a number of guests/adults/children/passengers uses "
+            "`choice` with explicit numbered options (e.g. '1', '2', '3', '4+') -- a knob "
+            "the user drags along a bar doesn't let them see or set an exact value; "
             "text = free text; checkbox = a single yes/no toggle; "
             "date = date-only calendar picker (use for check-in, check-out, booking, or travel dates)."
         )
@@ -400,13 +399,7 @@ class FormField(BaseModel):
             "guess the meaning of."
         )
     )
-    help_text: Optional[str] = Field(
-        default=None,
-        description=(
-            "Short explanation shown below the field. Required for sliders: say "
-            "what the setting controls and what low versus high values mean."
-        ),
-    )
+    help_text: Optional[str] = Field(default=None, description="Short explanation shown below the field.")
     options: Optional[list[FormFieldOption]] = Field(
         default=None, description="Required for type=choice/multi_choice: the selectable options."
     )
@@ -416,9 +409,6 @@ class FormField(BaseModel):
     default_option_values: Optional[list[str]] = Field(
         default=None, description="For type=multi_choice: the values pre-selected."
     )
-    min_value: Optional[float] = Field(default=None, description="For type=slider: minimum value.")
-    max_value: Optional[float] = Field(default=None, description="For type=slider: maximum value.")
-    default_number: Optional[float] = Field(default=None, description="For type=slider: starting value.")
     default_text: str = Field(default="", description="For type=text: starting value.")
     default_checked: bool = Field(default=False, description="For type=checkbox: starting checked state.")
     default_date: Optional[str] = Field(default=None, description="For type=date: starting date in YYYY-MM-DD format.")
@@ -444,8 +434,9 @@ class FormField(BaseModel):
         "'adults' and 'children' are two separate counts: use two separate `choice` "
         "fields with explicit numbered options (e.g. '1'/'2'/'3'/'4+'), each in its own "
         "category ('Adults', 'Children') -- never one field whose options are combined "
-        "pairs like '(1 adult, 2 children)' / '(2 adults, 0 children)', and never a "
-        "`slider` for a count like this (see FormField.type). Likewise, every `date` "
+        "pairs like '(1 adult, 2 children)' / '(2 adults, 0 children)' (see FormField.type "
+        "for the same `choice`-with-bucketed-options approach for numeric ranges like a "
+        "price/budget). Likewise, every `date` "
         "field needs its own specific label naming which date it is and its own category "
         "(see FormField.label/category) -- e.g. a 'Check-in date' field and a "
         "'Check-out date' field are two separate fields in two separate categories, "
@@ -573,32 +564,6 @@ def ask_preferences_form(title: str, fields: list[FormField], submit_label: str 
                 )
             )
             field_defaults[f.id] = default_values
-            field_paths[f.id] = f"/{f.id}/value"
-        elif f.type == FormFieldType.slider:
-            default_value = f.default_number if f.default_number is not None else (f.min_value or 0)
-            min_value = f.min_value or 0
-            max_value = f.max_value if f.max_value is not None else 100
-            built_fields.append(
-                genui.slider(
-                    f.id,
-                    value=default_value,
-                    min_value=min_value,
-                    max_value=max_value,
-                    label=f.label,
-                )
-            )
-            slider_help = f.help_text or (
-                f"Choose a value from {min_value:g} to {max_value:g}. Current value: {default_value:g}."
-            )
-            built_fields.append(
-                genui.text(
-                    f"{f.id}_help",
-                    slider_help,
-                    variant="caption",
-                    styles={"line-clamp": 0},
-                )
-            )
-            field_defaults[f.id] = default_value
             field_paths[f.id] = f"/{f.id}/value"
         elif f.type == FormFieldType.text:
             built_fields.append(genui.text_field(f.id, label=f.label, value=f.default_text))

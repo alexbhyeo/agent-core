@@ -506,7 +506,7 @@ class TestFormHelpers:
     def test_form_groups_fields_by_category(self):
         fields = [
             genui.text_field("brand", label="Brand"),
-            genui.slider("budget", value=100, min_value=0, max_value=500, label="Budget"),
+            genui.text_field("budget", label="Budget"),
         ]
         messages = genui.form(
             "surface-1",

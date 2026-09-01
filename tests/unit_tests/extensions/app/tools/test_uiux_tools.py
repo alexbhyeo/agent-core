@@ -58,7 +58,12 @@ class TestAskPreferencesForm:
                 "title": "Racket preferences",
                 "fields": [
                     {"id": "level", "type": "choice", "label": "Level", "options": [{"label": "Pro", "value": "pro"}]},
-                    {"id": "budget", "type": "slider", "label": "Budget", "min_value": 30, "max_value": 500},
+                    {
+                        "id": "budget",
+                        "type": "choice",
+                        "label": "Budget",
+                        "options": [{"label": "$30-$100", "value": "30-100"}],
+                    },
                 ],
             }
         )
@@ -71,7 +76,14 @@ class TestAskPreferencesForm:
         result = await tools.ask_preferences_form.invoke(
             {
                 "title": "Hotel booking preferences",
-                "fields": [{"id": "budget", "type": "slider", "label": "Budget", "min_value": 0, "max_value": 1000}],
+                "fields": [
+                    {
+                        "id": "budget",
+                        "type": "choice",
+                        "label": "Budget",
+                        "options": [{"label": "$0-$1000", "value": "0-1000"}],
+                    }
+                ],
             }
         )
         component_ids = {c["id"] for c in result["genui"][-1]["updateComponents"]["components"]}
@@ -82,7 +94,9 @@ class TestAskPreferencesForm:
         result = await tools.ask_preferences_form.invoke(
             {
                 "title": "Flight booking preferences",
-                "fields": [{"id": "adults", "type": "slider", "label": "Adults", "min_value": 1, "max_value": 9}],
+                "fields": [
+                    {"id": "adults", "type": "choice", "label": "Adults", "options": [{"label": "1", "value": "1"}]}
+                ],
             }
         )
         component_ids = {c["id"] for c in result["genui"][-1]["updateComponents"]["components"]}

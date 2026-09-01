@@ -848,11 +848,18 @@ def info_list_card(
 
 
 # ---------------------------------------------------------------------------
-# Form input components (ChoicePicker / Slider / TextField / CheckBox / Button)
+# Form input components (ChoicePicker / TextField / CheckBox / Button)
+#
+# No Slider widget builder here -- the catalog Slider component has no way to
+# show its own value while dragging (confirmed live: neither a "showTips"
+# property nor a protocol-version bump changed anything), which left users
+# with no idea what value they'd dragged to, so ask_preferences_form's
+# FormField.type no longer offers a slider option at all; a numeric range
+# uses `choice` with explicit bucketed options instead (see uiux_tools.py).
 #
 # Each input auto-binds to a data-model path of "<comp_id>.value" unless an
 # explicit {"path": ...} is given for its value -- see genui's TextField /
-# ChoicePicker / Slider / CheckBox widget builders. Button.action's "context"
+# ChoicePicker / CheckBox widget builders. Button.action's "context"
 # map is resolved against those same paths when pressed, so a submit button
 # collects whatever the user has entered into its sibling fields.
 # ---------------------------------------------------------------------------
@@ -877,25 +884,6 @@ def choice_picker(  # pylint: disable=huawei-too-many-arguments -- kept as typed
         payload["label"] = label
     if styles is not None:
         payload["styles"] = styles
-    return payload
-
-
-def slider(
-    comp_id: str,
-    value: float,
-    min_value: float = 0,
-    max_value: float = 1,
-    label: Optional[str] = None,
-) -> dict[str, Any]:
-    payload: dict[str, Any] = {
-        "id": comp_id,
-        "component": "Slider",
-        "value": value,
-        "min": min_value,
-        "max": max_value,
-    }
-    if label is not None:
-        payload["label"] = label
     return payload
 
 
@@ -1022,7 +1010,7 @@ def form(  # pylint: disable=huawei-too-many-arguments -- kept as typed kwargs, 
 
     A field's ``value`` in its component JSON only sets its *visual* initial
     state -- it is not written into the data model until the user interacts
-    with the widget (see e.g. ChoicePicker/Slider/TextField/CheckBox widget
+    with the widget (see e.g. ChoicePicker/TextField/CheckBox widget
     builders: unset paths fall back to that literal for display only). A
     field left untouched at its pre-selected default would therefore submit
     as empty. ``field_defaults`` (field id -> default value) seeds the data
