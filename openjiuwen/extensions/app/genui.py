@@ -1677,7 +1677,7 @@ _WEATHER_PILL_COLOR = "#7B93E8"
 _WEATHER_PILL_SELECTED_COLOR = "#4F63D6"
 
 
-def weather_forecast_card(
+def weather_forecast_card(  # pylint: disable=huawei-too-many-arguments -- kept as typed kwargs, see column() above
     surface_id: str,
     location: str,
     current_temp: Optional[float] = None,

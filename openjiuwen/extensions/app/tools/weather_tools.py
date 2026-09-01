@@ -541,7 +541,7 @@ def show_weather_forecast(  # pylint: disable=huawei-too-many-arguments -- flat 
         "invent a replacement value). Call this once per history request."
     )
 )
-def show_weather_history(
+def show_weather_history(  # pylint: disable=huawei-too-many-arguments -- flat params are the tool's LLM schema
     location: str,
     as_of: Optional[str] = None,
     latest_temp: Optional[float] = None,
