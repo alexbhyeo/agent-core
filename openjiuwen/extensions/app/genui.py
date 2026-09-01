@@ -1857,9 +1857,13 @@ def weather_forecast_card(
                     )
                 )
             if day.get("max_temp") is not None:
-                components.append(text(high_id, f"{round(day['max_temp'])}°", variant="h3", weight=700, styles={"color": "#FFFFFF"}))
+                components.append(
+                    text(high_id, f"{round(day['max_temp'])}°", variant="h3", weight=700, styles={"color": "#FFFFFF"})
+                )
             if day.get("min_temp") is not None:
-                components.append(text(low_id, f"{round(day['min_temp'])}°", variant="caption", styles={"color": "#D7DDF8"}))
+                components.append(
+                    text(low_id, f"{round(day['min_temp'])}°", variant="caption", styles={"color": "#D7DDF8"})
+                )
             day_ids.append(day_id)
 
         daily_list_styles = {
