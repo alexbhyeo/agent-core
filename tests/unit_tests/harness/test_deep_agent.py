@@ -518,7 +518,9 @@ async def test_stream_single_round_branch() -> None:
     chunks = [chunk async for chunk in agent.stream("stream_input")]
 
     assert [chunk["chunk"] for chunk in chunks] == [1, 2]
-    assert fake_react.stream_calls[0]["inputs"] == {"query": "stream_input"}
+    assert fake_react.stream_calls[0]["inputs"] == {
+        "query": "stream_input",
+    }
 
 
 @pytest.mark.asyncio
@@ -619,10 +621,10 @@ async def test_get_context_usage_prefers_model_usage_metadata() -> None:
     await context.add_messages(
         [
             UserMessage(content="hello"),
-            AssistantMessage(
-                content="world",
-                usage_metadata=UsageMetadata(total_tokens=250),
-            ),
+                AssistantMessage(
+                    content="world",
+                    usage_metadata=UsageMetadata(input_tokens=250, total_tokens=250),
+                ),
         ]
     )
 

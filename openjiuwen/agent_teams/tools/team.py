@@ -115,6 +115,7 @@ class TeamBackend:
         enable_task_verification: bool = False,
         enable_fork: bool = False,
         evolution_enabled: bool = True,
+        member_workspace_prefix: bool = True,
         external_cli_agents: list[ExternalCliAgentSpec] | None = None,
         on_before_team_cleaned: Callable[[], Awaitable[None]] | None = None,
         on_team_cleaned: Callable[[], Awaitable[None]] | None = None,
@@ -247,6 +248,12 @@ class TeamBackend:
         # framework / DB). No runtime override — unlike enable_hitt, build_team
         # cannot flip it.
         self._spec_evolution_enabled: bool = evolution_enabled
+        # Dynamic-member workspace isolation switch (mirrors
+        # ``TeamAgentSpec.member_workspace_prefix``). Spawn-time workspace
+        # setup reads it so dynamic members get the same real-directory
+        # shape (``team#member`` vs plain ``member``) as the in-process
+        # ``prepare_member_workspace`` path.
+        self._member_workspace_prefix: bool = member_workspace_prefix
         # True once build_team took over a team that already existed rather
         # than creating one, so the tool result can say which it was.
         self._team_taken_over: bool = False
@@ -637,6 +644,49 @@ class TeamBackend:
             permissions_override=permissions_override,
         )
 
+        # Resolve the latest identity from the evolvable md before writing the
+        # db row. ``prepare_member_workspace`` builds the in-team root first
+        # (link for dynamic/predefined, in-team real dir for external_cli/leader)
+        # so the md write below lands through that path — ``write_member_identity``
+        # only writes/protects the B-class md and primes the shared cache, never
+        # creating the workspace directory. Idempotent: a leader whose root was
+        # already built by its own ``setup_agent`` re-runs ``prepare_member_workspace``
+        # harmlessly (binder reuse). With the evolution switch off (or no cache),
+        # the spec baseline value stands and the db row is written unchanged.
+        # This closes the first-roster race: by the time the leader renders the
+        # roster, the cache already carries the evolved value and the db row is an
+        # evolved-value snapshot, not the spec baseline.
+        desc_to_write, prompt_to_write = desc, prompt
+        if self._spec_evolution_enabled and self.workspace_cache is not None:
+            from openjiuwen.agent_teams.team_workspace.binder import (
+                prepare_member_workspace,
+            )
+
+            prepare_member_workspace(
+                team_name=self.team_name,
+                member_name=member_name,
+                role=role,
+                leader_member_name=self.leader_member_name,
+                predefined_members={
+                    m.member_name for m in self.predefined_members
+                },
+                member_workspace_prefix=self._member_workspace_prefix,
+            )
+            from openjiuwen.agent_teams.team_workspace.assembler import WorkspaceAssembler
+
+            resolved_desc, resolved_prompt = WorkspaceAssembler(
+                cache=self.workspace_cache
+            ).write_member_identity(
+                team_name=self.team_name,
+                member_name=member_name,
+                member_desc=desc,
+                member_prompt=prompt,
+            )
+            if resolved_desc is not None:
+                desc_to_write = resolved_desc
+            if resolved_prompt is not None:
+                prompt_to_write = resolved_prompt
+
         success = await self.db.member.create_member(
             member_name=member_name,
             team_name=self.team_name,
@@ -644,10 +694,10 @@ class TeamBackend:
             agent_card=agent_card.model_dump_json(),
             status=status,
             role=role.value,
-            desc=desc,
+            desc=desc_to_write,
             execution_status=execution_status,
             mode=mode.value,
-            prompt=prompt,
+            prompt=prompt_to_write,
             options=options,
         )
         if not success:
@@ -1383,6 +1433,52 @@ class TeamBackend:
             cache.get_team_updated_at("prompt"),
         )
         return max(db_ts, md_max)
+
+    async def get_team_updated_at_state(self) -> tuple[int, bool]:
+        """Probe the team_card ``updated_at`` plus its presence flag.
+
+        Counterpart of :meth:`get_team_updated_at` narrowed to the team_card
+        md file (the only team B-class file whose body enters the team-info
+        block; ``team_prompt`` is a write-only placeholder whose body never
+        renders). Also surfaces whether the frontmatter carried an explicit
+        ``updated_at`` integer so the team-info re-announce path can treat
+        ``present=False`` (a blank field — the evolution party edited the
+        ``team_card.md`` body without stamping it) as an explicit "must
+        update" signal, symmetric with :meth:`get_member_updated_at_state`.
+
+        When the cache is absent (evolution off / single-agent) the md probe
+        has nothing to read, so the DB column is probed instead and surfaced
+        with ``present=True``: the team-info re-announce path then compares
+        the DB timestamp wall-clock (a ``build_team`` / team mutation moves
+        it and re-delivers), preserving the pre-evolution behaviour. Evolution
+        on stays md-only (the DB column is shadowed by ``get_team_info``'s md
+        overlay, so a DB-only change shows nothing new to announce).
+
+        Returns:
+            ``(updated_at_ms, present)`` — ``(db_ts, True)`` when the cache is
+            absent (evolution off; DB column drives the probe), the md pair
+            otherwise.
+        """
+        cache = self.workspace_cache
+        if cache is None:
+            db_ts = await self.db.team.get_team_updated_at(self.team_name)
+            return (db_ts, True)
+        return cache.get_team_updated_at_state("desc")
+
+    async def stamp_team_card_updated_at(self, ts: int) -> None:
+        """Stamp ``ts`` into ``team_card.md``'s ``updated_at`` (meta only).
+
+        Thin forward to the workspace cache, which owns all md-file IO. Called
+        by the team-info re-announce path right after a "must update" decision
+        so the comparison baseline and the file's ``updated_at`` share one
+        timestamp (next probe is stable, no re-fire). No-op when the cache is
+        absent (evolution off / single-agent). Symmetric with
+        :meth:`stamp_member_prompt_updated_at`.
+        """
+        cache = self.workspace_cache
+        if cache is None:
+            return
+        cache.stamp_team_updated_at("desc", ts)
 
     async def get_member_updated_at(self, member_name: str, field: str) -> int:
         """Probe one member's md ``updated_at`` for change detection.
