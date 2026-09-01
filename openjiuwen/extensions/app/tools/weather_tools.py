@@ -438,7 +438,7 @@ class DailyForecast(BaseModel):
         "of a new forecast."
     )
 )
-def show_weather_forecast(
+def show_weather_forecast(  # pylint: disable=huawei-too-many-arguments -- flat params are the tool's LLM schema
     location: Optional[str] = None,
     current_temp: Optional[float] = None,
     current_condition: Optional[str] = None,

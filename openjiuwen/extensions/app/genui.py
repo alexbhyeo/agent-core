@@ -1889,7 +1889,7 @@ def weather_forecast_card(
     ]
 
 
-def weather_history_card(
+def weather_history_card(  # pylint: disable=huawei-too-many-arguments -- kept as typed kwargs, see column() above
     surface_id: str,
     location: str,
     as_of: Optional[str] = None,
