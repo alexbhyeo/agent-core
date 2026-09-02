@@ -1099,6 +1099,29 @@ wheels = [
 ]
 
 [[package]]
+name = "deepseek-harness-runtime-bin"
+version = "0.1.2a3"
+source = { registry = "https://mirrors.aliyun.com/pypi/simple" }
+wheels = [
+    { url = "https://mirrors.aliyun.com/pypi/packages/b6/34/75ffd1a299973efce14cbc4b887436f634276ad04230462cbd51972c87c9/deepseek_harness_runtime_bin-0.1.2a3-py3-none-macosx_14_0_arm64.whl", hash = "sha256:fb82bf60c4cd5e793bed6caa5060589a31f349342bd9f4bb70826a854419c32d" },
+    { url = "https://mirrors.aliyun.com/pypi/packages/ec/0a/ad19adb1e6278ac66952a9901ad1df76e7d99875eb37998a7178c88d39eb/deepseek_harness_runtime_bin-0.1.2a3-py3-none-manylinux_2_28_aarch64.whl", hash = "sha256:42f073f30c1ccbd46edcef7410c4e550a65d35efdf9a16da190223412a64cd02" },
+    { url = "https://mirrors.aliyun.com/pypi/packages/9f/f0/ab1d5969e7963a609e531c705e85eb0672faa481e772452e3f22793aea1c/deepseek_harness_runtime_bin-0.1.2a3-py3-none-manylinux_2_28_x86_64.whl", hash = "sha256:857968930814517baa8299f80c915beb253ce14b981a17e02916030ce30d17e8" },
+    { url = "https://mirrors.aliyun.com/pypi/packages/96/5a/d10ecc84b20666698c1b5397ccd21e825c04d40614653dbd6dfb8590b365/deepseek_harness_runtime_bin-0.1.2a3-py3-none-win_amd64.whl", hash = "sha256:76af793a5202ea878eee2d6153ccb140a6787f846e33b03f0340366f7274568d" },
+]
+
+[[package]]
+name = "deepseek-harness-sdk"
+version = "0.1.2a3"
+source = { registry = "https://mirrors.aliyun.com/pypi/simple" }
+dependencies = [
+    { name = "deepseek-harness-runtime-bin" },
+    { name = "pydantic" },
+]
+wheels = [
+    { url = "https://mirrors.aliyun.com/pypi/packages/cd/54/c37b73a5a06a1ac9fd797b19d304dcc79b753dd2345838909e370e03d1cc/deepseek_harness_sdk-0.1.2a3-py3-none-any.whl", hash = "sha256:3c8b09f5b3ffd7322afb05bc30b365b86479ac1cd2017884d2c583900eca73ec" },
+]
+
+[[package]]
 name = "defusedxml"
 version = "0.7.1"
 source = { registry = "https://mirrors.aliyun.com/pypi/simple" }
@@ -2965,6 +2988,9 @@ cli = [
 codex = [
     { name = "openai-codex" },
 ]
+dsh = [
+    { name = "deepseek-harness-sdk" },
+]
 elasticsearch = [
     { name = "elasticsearch", extra = ["async"] },
 ]
@@ -3110,6 +3136,7 @@ requires-dist = [
     { name = "claude-agent-sdk", marker = "extra == 'claude'", specifier = ">=0.2.115" },
     { name = "click", marker = "extra == 'cli'", specifier = ">=8.0" },
     { name = "dashscope", specifier = ">=1.25.6" },
+    { name = "deepseek-harness-sdk", marker = "extra == 'dsh'", specifier = ">=0.1.1rc1" },
     { name = "docx2txt", specifier = ">=0.8" },
     { name = "elasticsearch", extras = ["async"], marker = "extra == 'elasticsearch'", specifier = ">=8.0.0" },
     { name = "fastapi", marker = "extra == 'online-rl'", specifier = ">=0.100" },
@@ -3173,7 +3200,7 @@ requires-dist = [
     { name = "uiautomator2", marker = "extra == 'mobile-gui'", specifier = ">=3.2.0" },
     { name = "uvicorn", extras = ["standard"], marker = "extra == 'online-rl'" },
 ]
-provides-extras = ["all-a2a", "pulsar", "elasticsearch", "redis", "sqlite", "postgres", "mysql", "gaussdb", "pgvector", "gaussvector", "chromadb", "obs", "zmq", "sandbox", "mem0", "jiuwen-memory", "agentarts", "claude", "codex", "ssh", "browser", "observability", "mobile-gui", "online-rl", "all-mq", "all-storage", "all-vector", "cli", "default", "all"]
+provides-extras = ["all-a2a", "pulsar", "elasticsearch", "redis", "sqlite", "postgres", "mysql", "gaussdb", "pgvector", "gaussvector", "chromadb", "obs", "zmq", "sandbox", "mem0", "jiuwen-memory", "agentarts", "claude", "codex", "dsh", "ssh", "browser", "observability", "mobile-gui", "online-rl", "all-mq", "all-storage", "all-vector", "cli", "default", "all"]
 
 [package.metadata.requires-dev]
 dev = [

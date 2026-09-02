@@ -5,9 +5,9 @@ WebSocket endpoint, streaming A2UI (GenUI) JSON to any client that speaks
 the envelope protocol -- in particular the Flutter ``a2ui_mobile_app``.
 
 Run:
-    python -m openjiuwen.extensions.app.server
+    python -m openjiuwen.harness.a2ui.server
     # or
-    uvicorn openjiuwen.extensions.app.server:create_app --factory --host 0.0.0.0 --port 8090
+    uvicorn openjiuwen.harness.a2ui.server:create_app --factory --host 0.0.0.0 --port 8090
 
 Then point the Flutter app at it, e.g.:
     flutter run --dart-define=A2UI_WS_URL=wss://10.0.2.2:8090/ws
@@ -28,10 +28,10 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse
 
 from openjiuwen.core.runner import Runner
-from openjiuwen.extensions.app import config as app_config
-from openjiuwen.extensions.app.agent import build_agent
-from openjiuwen.extensions.app.tools.map_tools import MAP_EMBED_ROUTE_PATH, MapPlace, render_map_embed_html
-from openjiuwen.extensions.app.ws_session import ConnectionSession
+from openjiuwen.harness.a2ui import config as app_config
+from openjiuwen.harness.a2ui.agent import build_agent
+from openjiuwen.harness.a2ui.tools.map_tools import MAP_EMBED_ROUTE_PATH, MapPlace, render_map_embed_html
+from openjiuwen.harness.a2ui.ws_session import ConnectionSession
 
 
 def create_app() -> FastAPI:

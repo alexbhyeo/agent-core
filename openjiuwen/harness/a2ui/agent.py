@@ -470,13 +470,15 @@ Weather requests -- for "what's the weather in X"/"will it rain in X"
    call's own result returned (leave `location`/`daily`/`hourly`/etc. out
    -- the server remembers them from the original call, don't call
    `search_weather_forecast` again either) -- this updates that same card
-   in place instead of adding a duplicate one below it. Exception to the
-   "always give a text reply" rule below: for this action specifically,
-   reply with ONLY the tool call and no trailing chat message at all --
-   not even a short acknowledgement. The pill highlighting and the
-   chart's own swapped curve already show the change; the user just
-   tapped that pill themselves, so narrating it back every time is
-   repetitive noise, not new information.
+   in place instead of adding a duplicate one below it. Prefer not to add
+   a trailing chat message for this action at all -- the pill highlighting
+   and the chart's own swapped curve already show the change, the user
+   just tapped that pill themselves, so narrating it back is repetitive
+   noise, not new information. If you do add one anyway, it must be a
+   single short factual line about the newly-selected day only (e.g. its
+   temperature and condition) -- never a sentence about the update itself
+   ("the chart has updated to...", "no reply needed...", "confirming it's
+   done", or similar) and never a recap of the whole multi-day forecast.
 
 General flow -- for restaurant/other reservation requests, round-trip
 transport (bus, coach, train, ferry -- there is no dedicated search tool for
@@ -511,6 +513,10 @@ any card you render. Even for simple chit-chat and greetings, wrap your text
 reply in `show_card` so the mobile app can display it -- set `title` to a
 brief summary and `body` to your full reply text. The app renders A2UI cards,
 not raw text tokens, so every response must include a `show_card` call.
+The one exception is a `select_forecast_day_<N>` weather day-pill tap (see
+the weather flow's own step 5 above): prefer no trailing reply there at
+all, and if one does slip in, it must be one short factual line about the
+day now selected, never commentary about the update itself.
 
 The text reply that follows the card is a separate, short chat message, not
 a second copy of the card -- never restate the card's title/body there, even

@@ -1,14 +1,14 @@
 # -*- coding: UTF-8 -*-
 # Copyright (c) Huawei Technologies Co., Ltd. 2025. All rights reserved.
-"""Unit tests for openjiuwen.extensions.app.tools.weather_tools."""
+"""Unit tests for openjiuwen.harness.a2ui.tools.weather_tools."""
 
 import json
 from unittest.mock import AsyncMock, patch
 
 import pytest
 
-from openjiuwen.extensions.app import genui
-from openjiuwen.extensions.app.tools import weather_tools
+from openjiuwen.harness.a2ui import genui
+from openjiuwen.harness.a2ui.tools import weather_tools
 
 
 def _config_get(values):
@@ -473,34 +473,47 @@ class TestShowWeatherForecast:
         assert components["day1"]["styles"]["background-color"] == genui._WEATHER_PILL_SELECTED_COLOR
         chart_values = components["hourlyChart_1"]["data"]["series"][0]["data"]
         assert chart_values == [{"value": 27}]
-        # A day-pill tap must not re-summarize -- see test_pill_tap_returns_no_summary_text.
-        assert second["text"] == ""
+        # A day-pill tap's own text summarizes only the newly-selected day --
+        # see test_pill_tap_returns_selected_day_summary_not_full_rundown.
+        assert second["text"] == "Tue"
 
     @pytest.mark.asyncio
-    async def test_pill_tap_returns_no_summary_text(self):
-        # Regression test: a non-empty `text` on a day-pill-tap update becomes
-        # a `tool.output` chat bubble (ws_session._translate) that repeats the
-        # same forecast summary back to the user on every single tap, even
-        # though the pill highlight and swapped chart already show the change
-        # (see agent.py's weather flow, step 5). Only a fresh forecast render
-        # should produce a summary; an update must return an empty string.
+    async def test_pill_tap_returns_selected_day_summary_not_full_rundown(self):
+        # Regression test: a day-pill-tap update used to return either the
+        # whole multi-day rundown again (repeating what the pill highlight
+        # and swapped chart already show) or an empty string (which some
+        # clients fall back to showing as an empty/near-empty chat bubble
+        # anyway when the model's own reply also comes back empty -- see
+        # agent.py's weather flow, step 5). It should instead describe just
+        # the day now selected, so whichever text ends up shown is useful.
         first = await weather_tools.show_weather_forecast.invoke(
             {
                 "location": "Sembawang, Singapore",
                 "current_temp": 30,
                 "current_condition": "Sunny",
                 "daily": [
-                    {"day_label": "Today", "hourly": [{"hour_label": "3pm", "temp": 32}]},
-                    {"day_label": "Tue", "hourly": [{"hour_label": "9am", "temp": 27}]},
+                    {"day_label": "Today", "date_label": "08-31", "max_temp": 32, "min_temp": 26},
+                    {
+                        "day_label": "Tue",
+                        "date_label": "09-01",
+                        "max_temp": 31,
+                        "min_temp": 25,
+                        "condition": "Cloudy",
+                        "hourly": [{"hour_label": "9am", "temp": 27}],
+                    },
                 ],
             }
         )
-        assert first["text"] != ""
+        # First render's text is the whole rundown (every day, including Tue).
+        assert "Today" in first["text"]
 
         second = await weather_tools.show_weather_forecast.invoke(
             {"selected_day_index": 1, "surface_id": first["surface_id"]}
         )
-        assert second["text"] == ""
+        # Update's text describes only the newly-selected day -- not the
+        # whole rundown repeated, and not "Today" (no longer selected).
+        assert second["text"] == "Tue (09-01) - 31°/25° - Cloudy"
+        assert "Today" not in second["text"]
 
     @pytest.mark.asyncio
     async def test_forecast_token_supplies_full_daily_data_even_if_model_only_sent_todays_hourly(self):

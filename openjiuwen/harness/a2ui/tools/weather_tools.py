@@ -493,12 +493,33 @@ def show_weather_forecast(  # pylint: disable=huawei-too-many-arguments -- flat 
 
     # A day-pill tap (is_update) re-renders this same card in place -- its
     # own pill highlight and swapped chart already show what changed, so
-    # this summary is deliberately left empty rather than recomputed: a
-    # non-empty `text` here becomes a `tool.output` chat bubble
-    # (ws_session._translate), which would repeat the same summary back to
-    # the user every single tap. Only a fresh forecast render gets one.
+    # the model is told (see agent.py's weather flow) to add no reply text
+    # of its own for that action. This `text` is what a client falls back
+    # to displaying if the model's own final reply comes back empty, so it
+    # still needs to be a real, useful description of the day now
+    # selected (not the whole multi-day rundown again, and not blank --
+    # blank was tried and still left a chat bubble showing up some of the
+    # time, just an empty/near-empty one instead of a helpful one).
     if is_update:
-        summary = ""
+        if selected_day:
+            day_heading = (
+                f"{selected_day.day_label} ({selected_day.date_label})"
+                if selected_day.date_label
+                else selected_day.day_label
+            )
+            summary_parts = [day_heading]
+            temps = []
+            if selected_day.max_temp is not None:
+                temps.append(f"{round(selected_day.max_temp)}°")
+            if selected_day.min_temp is not None:
+                temps.append(f"{round(selected_day.min_temp)}°")
+            if temps:
+                summary_parts.append("/".join(temps))
+            if selected_day.condition:
+                summary_parts.append(selected_day.condition)
+            summary = " - ".join(summary_parts)
+        else:
+            summary = ""
     else:
         summary_parts = [location] if location else []
         if current_temp is not None:

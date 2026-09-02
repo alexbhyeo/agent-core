@@ -1,12 +1,12 @@
 # -*- coding: UTF-8 -*-
 # Copyright (c) Huawei Technologies Co., Ltd. 2025. All rights reserved.
-"""Unit tests for openjiuwen.extensions.app.tools.video_tools."""
+"""Unit tests for openjiuwen.harness.a2ui.tools.video_tools."""
 
 from unittest.mock import AsyncMock, patch
 
 import pytest
 
-from openjiuwen.extensions.app.tools import video_tools
+from openjiuwen.harness.a2ui.tools import video_tools
 
 
 class TestExtractYoutubeId:

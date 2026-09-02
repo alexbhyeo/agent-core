@@ -1,10 +1,10 @@
 # -*- coding: UTF-8 -*-
 # Copyright (c) Huawei Technologies Co., Ltd. 2025. All rights reserved.
-"""Unit tests for openjiuwen.extensions.app.genui."""
+"""Unit tests for openjiuwen.harness.a2ui.genui."""
 
 import pytest
 
-from openjiuwen.extensions.app import genui
+from openjiuwen.harness.a2ui import genui
 
 
 class TestSurfaceMessages:

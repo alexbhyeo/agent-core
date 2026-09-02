@@ -1,6 +1,6 @@
 # -*- coding: UTF-8 -*-
 # Copyright (c) Huawei Technologies Co., Ltd. 2025. All rights reserved.
-"""Unit tests for openjiuwen.extensions.app.agent.build_agent.
+"""Unit tests for openjiuwen.harness.a2ui.agent.build_agent.
 
 build_agent() only constructs config objects and registers tools/rails --
 it never opens a network connection, so this is safe to run without
@@ -11,8 +11,8 @@ import pytest
 
 from openjiuwen.core.runner import Runner
 from openjiuwen.core.single_agent.rail.base import AgentCallbackEvent
-from openjiuwen.extensions.app import config
-from openjiuwen.extensions.app.agent import AGENT_ID, ALL_TOOLS, build_agent
+from openjiuwen.harness.a2ui import config
+from openjiuwen.harness.a2ui.agent import AGENT_ID, ALL_TOOLS, build_agent
 
 
 class TestBuildAgent:

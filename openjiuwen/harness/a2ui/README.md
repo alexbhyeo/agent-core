@@ -9,7 +9,7 @@ so that app can connect to this server with no client-side changes.
 ## How it fits together
 
 ```
-Flutter app (WsService/ChatBridge)  <--WebSocket-->  openjiuwen/extensions/app/server.py
+Flutter app (WsService/ChatBridge)  <--WebSocket-->  openjiuwen/harness/a2ui/server.py
                                                         |
                                                         v
                                                  ReActAgent (agent.py)
@@ -38,9 +38,9 @@ Flutter app (WsService/ChatBridge)  <--WebSocket-->  openjiuwen/extensions/app/s
 ## Run it
 
 ```bash
-cp openjiuwen/extensions/app/.env.example openjiuwen/extensions/app/.env   # fill in API_KEY etc., or export env vars directly
-uv run python -m openjiuwen.extensions.app.server
-# or: uv run uvicorn openjiuwen.extensions.app.server:create_app --factory --host 0.0.0.0 --port 8090
+cp openjiuwen/harness/a2ui/.env.example openjiuwen/harness/a2ui/.env   # fill in API_KEY etc., or export env vars directly
+uv run python -m openjiuwen.harness.a2ui.server
+# or: uv run uvicorn openjiuwen.harness.a2ui.server:create_app --factory --host 0.0.0.0 --port 8090
 ```
 
 Point the Flutter app at it:

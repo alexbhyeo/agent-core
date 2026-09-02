@@ -292,4 +292,4 @@ tests/unit_tests/extensions/context_evolver/memory_file/
 # TLS key material for the A2UI app server -- self-signed dev cert, private
 # key must never be committed. The .crt is regenerable/public but there's no
 # reason to track it either; both live in certs/ as deploy-time artifacts.
-openjiuwen/extensions/app/certs/
+openjiuwen/harness/a2ui/certs/

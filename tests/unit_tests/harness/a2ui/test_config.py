@@ -1,10 +1,10 @@
 # -*- coding: UTF-8 -*-
 # Copyright (c) Huawei Technologies Co., Ltd. 2025. All rights reserved.
-"""Unit tests for openjiuwen.extensions.app.config."""
+"""Unit tests for openjiuwen.harness.a2ui.config."""
 
 import os
 
-from openjiuwen.extensions.app import config
+from openjiuwen.harness.a2ui import config
 
 
 class TestConfig:

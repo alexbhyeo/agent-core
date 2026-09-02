@@ -1,13 +1,13 @@
 # -*- coding: UTF-8 -*-
 # Copyright (c) Huawei Technologies Co., Ltd. 2025. All rights reserved.
-"""Unit tests for openjiuwen.extensions.app.tools.finance_tools."""
+"""Unit tests for openjiuwen.harness.a2ui.tools.finance_tools."""
 
 import json
 from unittest.mock import AsyncMock, patch
 
 import pytest
 
-from openjiuwen.extensions.app.tools import finance_tools
+from openjiuwen.harness.a2ui.tools import finance_tools
 
 
 def _config_get(values):
