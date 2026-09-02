@@ -226,6 +226,19 @@ STRINGS: dict[str, str] = {
         "and MCP injection all live in that entry; this field only references "
         "it by name"
     ),
+    "spawn_external_cli.model_name": (
+        "Optional. Set only when the user explicitly specifies the model for this third-party agent. "
+        "You must not choose, infer, or auto-fill it. Omit it when the user has not explicitly specified "
+        "a model so the agent uses its own default model"
+    ),
+    "spawn_external_cli.fallback_model_name": (
+        "Required. Select this model from the team model pool, choosing one whose model API protocol is "
+        "compatible with the protocol supported by this third-party agent. It is used for automatic fallback "
+        "when the agent uses its own default model but authentication is unavailable. It applies only to "
+        "authentication failures explicitly reported by the runtime. If the model is unavailable, incompatible, "
+        "or the agent does not support authentication fallback, its own default model can still be used without "
+        "automatic fallback"
+    ),
     # ===== shutdown_member =====================================================
     # shutdown_member._desc lives in descs/en/member/shutdown_member.md
     "shutdown_member.member_name": (
@@ -402,16 +415,19 @@ STRINGS: dict[str, str] = {
     # ===== send_message ========================================================
     # send_message._desc lives in descs/en/message/send_message.md
     "send_message.to": (
-        'Recipient: member_name for a point-to-point DM (e.g. "backend-dev-1"), '
+        'Single recipient: member_name for a point-to-point DM (e.g. "backend-dev-1"), '
         "visible only to you and that member; "
-        'array of member names (e.g. ["m1","m2"]) for multicast — same content sent '
-        "as separate messages to each member, cost is linear in recipient count and "
-        "MORE expensive than broadcast for the same audience, use only when truly needed "
-        'and cannot mix with "*"/"user"; '
         '"user" (teammates only, to reply to the user; leader calls are rejected); '
         '"*" to broadcast on the team channel, visible to all members — one broadcast '
         "wakes every member for a full LLM turn, so cost scales linearly with team size; "
-        "reserve it for announcements everyone must see and use it sparingly"
+        "reserve it for announcements everyone must see and use it sparingly. "
+        "For multicast, leave this field unset and use targets"
+    ),
+    "send_message.targets": (
+        'Multicast recipient array (e.g. ["m1","m2"]): the same content is sent as '
+        "separate messages to each member; cost grows linearly with recipient count and "
+        'is higher than broadcast for the same audience. Cannot contain "*" or "user". '
+        "Do not provide together with to"
     ),
     "send_message.content": "Message content with clear action guidance or information",
     "send_message.summary": "5-10 word summary for message preview and logging",

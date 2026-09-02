@@ -1179,12 +1179,12 @@ class DeepAgent(BaseAgent):
             self.ability_manager.add(mcp_config)
 
     async def _resolve_read_image_multimodal(self) -> None:
-        """Resolve read_file image modality when it is set to auto.
+        """Warm the native-image capability decision when it is set to auto.
 
         A probe costs a full LLM round-trip, so it never blocks startup: a
-        cached verdict is applied straight away, otherwise the probe runs in the
-        background and this run stays metadata-only (``None`` is falsy at every
-        read site). Later agents on the same endpoint and model reuse the cache.
+        cached verdict is consumed dynamically by image-input call sites;
+        otherwise the probe runs in the background. The config remains ``None``
+        so auto mode follows later probe completion and main-model changes.
         """
         config = self._deep_config
         if config is None or config.enable_read_image_multimodal is not None:
@@ -1192,14 +1192,12 @@ class DeepAgent(BaseAgent):
 
         if config.model is None:
             logger.debug(
-                "[DeepAgent] no model configured; disabling read_file image multimodal",
+                "[DeepAgent] no model configured; native image input remains unavailable",
             )
-            config.enable_read_image_multimodal = False
             return
 
         cached = get_cached_image_support(config.model)
         if cached is not None:
-            config.enable_read_image_multimodal = cached
             logger.info(
                 "[DeepAgent] read_file image multimodal from probe cache: %s",
                 cached,
@@ -1208,7 +1206,7 @@ class DeepAgent(BaseAgent):
 
         logger.info(
             "[DeepAgent] read_file image multimodal not probed yet; "
-            "probing in background and degrading to metadata-only for this run",
+            "probing in background and using metadata-only until resolved",
         )
         schedule_image_support_probe(config.model)
 
@@ -1444,13 +1442,22 @@ class DeepAgent(BaseAgent):
                 language=self._deep_config.language
             )
 
+        subagent_rails = None
+        if spec.rails is not None:
+            subagent_rails = []
+            for rail in spec.rails:
+                fork_for_agent = getattr(rail, "fork_for_agent", None)
+                subagent_rails.append(
+                    fork_for_agent() if callable(fork_for_agent) else rail
+                )
+
         create_kwargs = {
             "model": spec.model or self._deep_config.model,
             "card": spec.agent_card,
             "system_prompt": spec.system_prompt,
             "tools": spec.tools,
             "mcps": spec.mcps,
-            "rails": spec.rails,
+            "rails": subagent_rails,
             "enable_task_loop": spec.enable_task_loop,
             "max_iterations": (
                 spec.max_iterations
@@ -1542,7 +1549,7 @@ class DeepAgent(BaseAgent):
                     )
                     factory_kwargs.setdefault(
                         "enable_read_image_multimodal",
-                        parent_image_support is True,
+                        parent_image_support,
                     )
                 if browser_capabilities is not None:
                     factory_kwargs["browser_capabilities"] = list(browser_capabilities)
@@ -2208,9 +2215,22 @@ class DeepAgent(BaseAgent):
         self._registered_rails.append(rail)
 
     async def _run_single_round_invoke(
-        self, ctx: AgentCallbackContext, session: Optional[Session]
+        self,
+        ctx: AgentCallbackContext,
+        session: Optional[Session],
+        *,
+        streaming: bool = False,
     ) -> Dict[str, Any]:
-        """Invoke inner ReActAgent exactly once."""
+        """Invoke inner ReActAgent exactly once.
+
+        Args:
+            ctx: Callback context carrying the normalized invocation inputs.
+            session: Session shared with the long-lived interaction.
+            streaming: Whether model chunks should be written to the session stream.
+
+        Returns:
+            The completed ReAct invocation result.
+        """
         modified = ctx.inputs
         if not isinstance(modified, InvokeInputs):
             raise build_error(
@@ -2224,10 +2244,14 @@ class DeepAgent(BaseAgent):
                 error_msg="DeepAgent not configured. Call configure() first.",
             )
 
-        return await self._react_agent.invoke(
-            self._to_effective_inputs(modified),
-            session,
-        )
+        effective_inputs = self._to_effective_inputs(modified)
+        if streaming:
+            return await self._react_agent.invoke(
+                effective_inputs,
+                session,
+                _streaming=True,
+            )
+        return await self._react_agent.invoke(effective_inputs, session)
 
     async def _setup_task_loop(
         self,
@@ -3220,7 +3244,11 @@ class DeepAgent(BaseAgent):
             ):
                 await self._sync_expert_role_attachment(invoke_inputs, session)
                 if is_resume_input:
-                    result = await self._run_single_round_invoke(ctx, session)
+                    result = await self._run_single_round_invoke(
+                        ctx,
+                        session,
+                        streaming=True,
+                    )
                 else:
                     await controller.submit_round(
                         session,

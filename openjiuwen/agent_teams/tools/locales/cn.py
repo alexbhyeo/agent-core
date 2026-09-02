@@ -174,6 +174,16 @@ STRINGS: dict[str, str] = {
         "取值必须命中 spec.external_cli_agents 中预先声明的某条静态配置——"
         "具体启动命令、工作目录、MCP 注入等都在那条配置里，本字段只负责按名引用"
     ),
+    "spawn_external_cli.model_name": (
+        "可选。仅当用户明确指定该第三方 Agent 使用的模型名称时填写。"
+        "你不得自行选择、推断或补全；用户未明确指定时必须省略，使该 Agent 使用其自身默认模型"
+    ),
+    "spawn_external_cli.fallback_model_name": (
+        "必填。必须从团队模型池中选择，并根据该第三方 Agent 支持的模型调用协议选择兼容模型。"
+        "该第三方 Agent 使用自身默认模型但认证不可用时，将使用此模型自动回退；"
+        "仅对运行时明确报告的认证失败生效。模型不存在、协议不兼容或该 Agent 不支持认证回退时，"
+        "仍可使用其自身默认模型，但不启用自动回退"
+    ),
     # ===== shutdown_member =====================================================
     # shutdown_member._desc lives in descs/cn/member/shutdown_member.md
     "shutdown_member.member_name": "要请求关闭的成员 member_name（语义化 slug，不是显示名）",
@@ -282,13 +292,16 @@ STRINGS: dict[str, str] = {
     # ===== send_message ========================================================
     # send_message._desc lives in descs/cn/message/send_message.md
     "send_message.to": (
-        '收件人：填 member_name（如 "backend-dev-1"）发送点对点 DM/私聊，仅你与该成员可见；'
-        '填成员名数组（如 ["m1","m2"]）多播——同一份内容分别发给每个成员，'
-        "开销随接收人数线性增长，同等规模下比广播更贵，仅在必要时使用，"
-        '禁止与 "*"/"user" 混用；'
+        '单个收件人：填 member_name（如 "backend-dev-1"）发送点对点 DM/私聊，仅你与该成员可见；'
         '填 "user"（仅 teammate 用于回复用户，leader 调用会被拒绝）；'
         '填 "*" 广播到团队频道 channel，所有成员可见——一次广播会唤醒每一个成员各跑一轮 '
-        "LLM 交互，开销与团队规模成正比，仅用于全员必须知晓的公告，务必慎用"
+        "LLM 交互，开销与团队规模成正比，仅用于全员必须知晓的公告，务必慎用。"
+        "多播不要填写本字段，改用 targets"
+    ),
+    "send_message.targets": (
+        '多播收件人数组（如 ["m1","m2"]）：同一份内容分别发给每个成员，'
+        "开销随接收人数线性增长，同等规模下比广播更贵，仅在必要时使用；"
+        '禁止包含 "*" 或 "user"。不能与 to 同时填写'
     ),
     "send_message.content": "消息内容，应包含明确的行动指引或信息",
     "send_message.summary": "5-10 词摘要，用于消息预览和日志",
