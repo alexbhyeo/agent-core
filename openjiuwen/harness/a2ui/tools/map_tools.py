@@ -28,7 +28,7 @@ from openjiuwen.harness.tools.web import _http
 from openjiuwen.harness.tools.web._common import _REQUEST_HEADERS
 from openjiuwen.harness.tools.web._decode import _decode_response_text
 
-from .. import config, genui
+from ..core import config, genui
 
 # Places API (New) -- unlike the legacy Geocoding API, one Text Search call
 # here also returns a place's real star rating and a real photo when Google

@@ -7,7 +7,7 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
-from openjiuwen.harness.a2ui import genui
+from openjiuwen.harness.a2ui.core import genui
 from openjiuwen.harness.a2ui.tools import weather_tools
 
 

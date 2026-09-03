@@ -17,8 +17,8 @@ of Mermaid):
 
 ```bash
 cp openjiuwen/harness/a2ui/.env.example openjiuwen/harness/a2ui/.env   # fill in API_KEY etc., or export env vars directly
-uv run python -m openjiuwen.harness.a2ui.server
-# or: uv run uvicorn openjiuwen.harness.a2ui.server:create_app --factory --host 0.0.0.0 --port 8090
+uv run python -m openjiuwen.harness.a2ui.server.server
+# or: uv run uvicorn openjiuwen.harness.a2ui.server.server:create_app --factory --host 0.0.0.0 --port 8090
 ```
 
 Point any envelope-protocol client at the resulting `ws://`/`wss://.../ws`
@@ -201,13 +201,19 @@ no separate control channel.
 ### 8. Top-level files
 
 The per-tool-module breakdown lives in the [Tool inventory](#6-tool-inventory)
-table above; these are everything else.
+table above; these are everything else, split into `core/` (agent logic and
+A2UI rendering) and `server/` (transport layer). `core/config.py` computes
+`.env`/`certs/` paths one level up from itself (`Path(__file__).parent.parent`)
+since both still live at the `a2ui/` package root, not inside `core/`.
 
+`core/`:
 - `config.py` -- env-driven config (model creds, host/port, catalog id).
-- `models.py` -- the `Envelope` wire schema (`id`/`type`/`conversationId`/`timestamp`/`payload`).
 - `genui.py` -- A2UI v0.9 message builders (`createSurface`, `updateComponents`, `summary_card`, ...).
 - `rails.py` -- `A2uiToolEventRail`, captures raw tool results for the WS layer.
 - `agent.py` -- builds and configures the `ReActAgent`.
+
+`server/`:
+- `models.py` -- the `Envelope` wire schema (`id`/`type`/`conversationId`/`timestamp`/`payload`).
 - `ws_session.py` -- `ConnectionSession` + the OutputSchema-chunk-to-wire-event translator.
 - `server.py` -- FastAPI app factory + `/ws` endpoint + entrypoint. Also serves two small HTML pages the client's custom WebView components load directly: `/youtube-embed` (wraps a YouTube URL in a real `<iframe>`) and `/map-embed` (an interactive Google Maps JavaScript API page with default markers, see `tools/map_tools.py`).
 

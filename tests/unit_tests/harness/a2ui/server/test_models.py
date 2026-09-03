@@ -1,8 +1,8 @@
 # -*- coding: UTF-8 -*-
 # Copyright (c) Huawei Technologies Co., Ltd. 2025. All rights reserved.
-"""Unit tests for openjiuwen.harness.a2ui.models."""
+"""Unit tests for openjiuwen.harness.a2ui.server.models."""
 
-from openjiuwen.harness.a2ui.models import Envelope, make_envelope
+from openjiuwen.harness.a2ui.server.models import Envelope, make_envelope
 
 
 class TestEnvelope:

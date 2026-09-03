@@ -10,11 +10,11 @@ Public API re-exports for simplified imports:
     from openjiuwen.harness.a2ui import build_agent, create_app, ConnectionSession
 """
 
-from openjiuwen.harness.a2ui.agent import build_agent
-from openjiuwen.harness.a2ui.models import Envelope, make_envelope
-from openjiuwen.harness.a2ui.rails import A2uiToolEventRail
-from openjiuwen.harness.a2ui.server import create_app
-from openjiuwen.harness.a2ui.ws_session import ConnectionSession
+from openjiuwen.harness.a2ui.core.agent import build_agent
+from openjiuwen.harness.a2ui.core.rails import A2uiToolEventRail
+from openjiuwen.harness.a2ui.server.models import Envelope, make_envelope
+from openjiuwen.harness.a2ui.server.server import create_app
+from openjiuwen.harness.a2ui.server.ws_session import ConnectionSession
 
 __all__ = [
     "build_agent",

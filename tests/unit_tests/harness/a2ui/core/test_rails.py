@@ -1,13 +1,13 @@
 # -*- coding: UTF-8 -*-
 # Copyright (c) Huawei Technologies Co., Ltd. 2025. All rights reserved.
-"""Unit tests for openjiuwen.harness.a2ui.rails.A2uiToolEventRail."""
+"""Unit tests for openjiuwen.harness.a2ui.core.rails.A2uiToolEventRail."""
 
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
 
-from openjiuwen.harness.a2ui.rails import A2uiToolEventRail
+from openjiuwen.harness.a2ui.core.rails import A2uiToolEventRail
 
 
 def _make_ctx(session, tool_name="show_card", tool_args=None, tool_result=None, call_id=None, exception=None):

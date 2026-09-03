@@ -20,7 +20,7 @@ from openjiuwen.harness.tools.web import _http
 from openjiuwen.harness.tools.web._common import _REQUEST_HEADERS
 from openjiuwen.harness.tools.web._decode import _decode_response_text
 
-from .. import config, genui
+from ..core import config, genui
 
 _SHOPPING_SEARCH_ENDPOINT = "https://serpapi.com/search.json"
 _SHOPPING_ENGINE = "amazon"

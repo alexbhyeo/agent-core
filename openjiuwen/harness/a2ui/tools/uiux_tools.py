@@ -24,7 +24,7 @@ from pydantic import BaseModel, Field
 
 from openjiuwen.core.foundation.tool import tool
 
-from .. import genui
+from ..core import genui
 from .finance_tools import search_finance, show_finance_results
 from .flight_tools import search_flights, show_flight_results
 from .hotel_tools import search_hotels, show_hotel_results

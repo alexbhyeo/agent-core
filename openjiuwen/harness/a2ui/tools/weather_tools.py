@@ -26,7 +26,7 @@ from openjiuwen.harness.tools.web import _http
 from openjiuwen.harness.tools.web._common import _REQUEST_HEADERS
 from openjiuwen.harness.tools.web._decode import _decode_response_text
 
-from .. import config, genui
+from ..core import config, genui
 
 _PLACES_SEARCH_ENDPOINT = "https://places.googleapis.com/v1/places:searchText"
 _WEATHER_BASE = "https://weather.googleapis.com/v1"

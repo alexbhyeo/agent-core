@@ -8,10 +8,18 @@ from typing import Any
 
 from dotenv import load_dotenv
 
-# Auto-load a local .env next to this file (never committed -- see .gitignore)
-# so `python server.py` works without requiring `uv run --env-file`. Real
-# environment variables already set take precedence (override=False default).
-load_dotenv(Path(__file__).resolve().parent / ".env")
+# This module lives one level down from the package root (core/config.py),
+# but .env/certs/ live at the root itself (openjiuwen/harness/a2ui/) -- they
+# weren't moved when agent.py/config.py/genui.py/rails.py were split out
+# into core/, so both paths below go up an extra level (.parent.parent, not
+# .parent) to still find them there.
+_A2UI_ROOT = Path(__file__).resolve().parent.parent
+
+# Auto-load a local .env next to the package root (never committed -- see
+# .gitignore) so `python server.py` works without requiring
+# `uv run --env-file`. Real environment variables already set take
+# precedence (override=False default).
+load_dotenv(_A2UI_ROOT / ".env")
 
 # openjiuwen.harness.tools.web.WebFreeSearchTool reads this env var directly at
 # call time (it's a harness-wide flag, not one of this app's own _DEFAULTS).
@@ -19,7 +27,7 @@ load_dotenv(Path(__file__).resolve().parent / ".env")
 # unless the environment already says otherwise.
 os.environ.setdefault("FREE_SEARCH_DDG_ENABLED", "true")
 
-_CERTS_DIR = Path(__file__).resolve().parent / "certs"
+_CERTS_DIR = _A2UI_ROOT / "certs"
 
 _DEFAULTS: dict[str, Any] = {
     "API_KEY": os.getenv("API_KEY", ""),

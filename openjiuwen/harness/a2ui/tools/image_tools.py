@@ -23,7 +23,7 @@ from openjiuwen.harness.tools.web import _http
 from openjiuwen.harness.tools.web._common import _REQUEST_HEADERS, _parse_html
 from openjiuwen.harness.tools.web._decode import _decode_response_text
 
-from .. import config
+from ..core import config
 
 _SERPAPI_ENDPOINT = "https://serpapi.com/search"
 _SERPAPI_ENGINE = "google_images_light"

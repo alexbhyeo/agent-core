@@ -1,13 +1,13 @@
 # -*- coding: UTF-8 -*-
 # Copyright (c) Huawei Technologies Co., Ltd. 2025. All rights reserved.
-"""Unit tests for openjiuwen.harness.a2ui.ws_session."""
+"""Unit tests for openjiuwen.harness.a2ui.server.ws_session."""
 
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
 import pytest
 
-from openjiuwen.harness.a2ui.ws_session import (
+from openjiuwen.harness.a2ui.server.ws_session import (
     ConnectionSession,
     _describe_ui_actions,
     _extract_result,
@@ -318,7 +318,7 @@ class TestConnectionSessionDispatch:
             yield _chunk("llm_output", {"content": "hi there"})
 
         with patch(
-            "openjiuwen.harness.a2ui.ws_session.Runner.run_agent_streaming",
+            "openjiuwen.harness.a2ui.server.ws_session.Runner.run_agent_streaming",
             side_effect=fake_stream,
         ):
             await session._dispatch({"type": "chat.start", "conversationId": "c1", "payload": {"text": "hi"}})
@@ -345,7 +345,7 @@ class TestConnectionSessionDispatch:
             )
 
         with patch(
-            "openjiuwen.harness.a2ui.ws_session.Runner.run_agent_streaming",
+            "openjiuwen.harness.a2ui.server.ws_session.Runner.run_agent_streaming",
             side_effect=fake_stream,
         ):
             await session._dispatch({"type": "chat.start", "conversationId": "c1", "payload": {"text": "hi"}})
@@ -375,7 +375,7 @@ class TestConnectionSessionDispatch:
             yield _chunk("llm_output", {"content": "Here's what I found."})
 
         with patch(
-            "openjiuwen.harness.a2ui.ws_session.Runner.run_agent_streaming",
+            "openjiuwen.harness.a2ui.server.ws_session.Runner.run_agent_streaming",
             side_effect=fake_stream,
         ):
             await session._dispatch({"type": "chat.start", "conversationId": "c1", "payload": {"text": "hi"}})
