@@ -7,12 +7,6 @@ client that speaks the envelope protocol (HarmonyOS `a2ui_HOS_app`, Flutter
 `a2ui_mobile_app`'s `WsService`/`ChatBridge`, or your own). No REST layer,
 no database: one socket, one agent, twenty-three tools.
 
-Interactive versions of the diagrams below (hand-tuned inline SVG instead
-of Mermaid):
-
-- High-level overview: <https://claude.ai/code/artifact/f4ecfc78-0ddd-468c-bf38-c2f06137d8a1>
-- Full engineering detail: <https://claude.ai/code/artifact/7ecd2dc0-8605-4d1c-919b-9c6cf9dc6872>
-
 ## Run it
 
 ```bash
