@@ -45,15 +45,13 @@ _DEFAULTS: dict[str, Any] = {
     # returning nothing.
     "YOUTUBE_API_KEY": os.getenv("YOUTUBE_API_KEY", ""),
     # SerpApi key, shared by every SerpApi-backed tool: `image_tools.
-    # search_images` (Google Images Light engine, a real image search API
-    # keyed by a natural-language query, instead of relying on already
-    # knowing a specific page to scrape an og:image from -- see
-    # `fetch_page_image`) and `hotel_tools.search_hotels` (Google Hotels
-    # engine, real hotel availability/pricing). Empty API key means those
-    # tools report an error instead of silently returning nothing.
+    # search_images` (Google Images Light engine), `hotel_tools.
+    # search_hotels` (Google Hotels engine), `flight_tools.search_flights`
+    # (Google Flights engine), `finance_tools.search_finance` (Google
+    # Finance engine), and `shopping_tools.search_products` (Google
+    # Shopping engine). Empty API key means those tools report an error
+    # instead of silently returning nothing.
     "SERPAPI_API_KEY": os.getenv("SERPAPI_API_KEY", ""),
-    "SERPAPI_ENGINE": os.getenv("SERPAPI_ENGINE", "google_images_light"),
-    "SERPAPI_LICENSES": os.getenv("SERPAPI_LICENSES", ""),
     # Optional locale defaults applied to every `search_images`/
     # `search_hotels` call (country/language bias for results) -- left empty
     # (omitted from the request, SerpApi/Google falls back to its own

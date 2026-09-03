@@ -26,6 +26,7 @@ from openjiuwen.harness.tools.web._decode import _decode_response_text
 from .. import config
 
 _SERPAPI_ENDPOINT = "https://serpapi.com/search"
+_SERPAPI_ENGINE = "google_images_light"
 
 _ASPECT_RATIO_CODES = {"square": "s", "tall": "t", "wide": "w", "panoramic": "xw"}
 _SIZE_CODES = {"large": "l", "medium": "m", "icon": "i"}
@@ -68,13 +69,10 @@ async def search_images(  # pylint: disable=huawei-too-many-arguments -- flat pa
     max_results = max(1, min(max_results, 10))
 
     params: dict[str, str] = {
-        "engine": config.get("SERPAPI_ENGINE", "google_images_light"),
+        "engine": _SERPAPI_ENGINE,
         "q": query,
         "api_key": api_key,
     }
-    licenses = config.get("SERPAPI_LICENSES")
-    if licenses:
-        params["licenses"] = licenses
     gl = config.get("SERPAPI_GL")
     if gl:
         params["gl"] = gl

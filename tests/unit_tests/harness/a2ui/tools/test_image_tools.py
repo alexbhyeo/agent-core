@@ -97,9 +97,8 @@ class TestSearchImages:
             }
         ).encode("utf-8")
         mock_request = AsyncMock(return_value=(200, {"Content-Type": "application/json"}, body, "url", False))
-        config_values = {"SERPAPI_API_KEY": "test-key", "SERPAPI_ENGINE": "google_images_light", "SERPAPI_LICENSES": "fmc"}
         with (
-            patch.object(image_tools.config, "get", side_effect=_config_get(config_values)),
+            patch.object(image_tools.config, "get", side_effect=_config_get({"SERPAPI_API_KEY": "test-key"})),
             patch.object(image_tools._http, "request", mock_request),
         ):
             result = await image_tools.search_images.invoke({"query": "Shanghai skyline"})
