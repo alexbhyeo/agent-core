@@ -329,6 +329,29 @@ class TestConnectionSessionDispatch:
         assert sent_types == ["chat.accepted", "chat.token", "chat.completed"]
 
     @pytest.mark.asyncio
+    async def test_malformed_ui_action_sends_error_instead_of_hanging(self):
+        # Regression test: parsing uiActions used to run before the try
+        # block, so a malformed entry (e.g. a client sending "action" as a
+        # bare string, not the documented {"name": ...} object) raised
+        # uncaught inside the fire-and-forget _run_chat task -- no
+        # error.agent, no chat.completed, the connection just hung forever.
+        websocket = SimpleNamespace(send_json=AsyncMock())
+        session = ConnectionSession(websocket, agent=object(), user_id="u1")
+
+        await session._dispatch(
+            {
+                "type": "chat.start",
+                "conversationId": "c1",
+                "payload": {"text": "", "uiActions": [{"action": "select_forecast_day_1"}]},
+            }
+        )
+        assert session._active_task is not None
+        await session._active_task
+
+        sent_types = [call.args[0]["type"] for call in websocket.send_json.await_args_list]
+        assert sent_types == ["chat.accepted", "error.agent"]
+
+    @pytest.mark.asyncio
     async def test_falls_back_to_presentation_text_when_model_says_nothing(self):
         websocket = SimpleNamespace(send_json=AsyncMock())
         session = ConnectionSession(websocket, agent=object(), user_id="u1")

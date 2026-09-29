@@ -80,7 +80,6 @@ class ConnectionSession:
         await self.send("error.validation", {"message": f"Unknown message type: {msg_type}"}, conversation_id)
 
     async def _run_chat(self, conversation_id: Optional[str], payload: dict[str, Any]) -> None:
-        text = payload.get("text", "") or _describe_ui_actions(payload.get("uiActions"))
         await self.send("chat.accepted", {}, conversation_id)
 
         # ``llm_output`` is token-streamed for each model turn. ``answer``
@@ -104,6 +103,16 @@ class ConnectionSession:
             "geocode_pending": 0,
         }
         try:
+            # Inside the try, not computed above chat.accepted -- a malformed
+            # uiActions entry (e.g. a client sending "action" as a bare string
+            # instead of the documented {"name": ..., ...} object) used to
+            # raise here uncaught, since this ran before the try existed.
+            # _run_chat is wrapped in asyncio.create_task with nothing
+            # awaiting it, so that exception just vanished into "Task
+            # exception was never retrieved" -- no error.* event, no
+            # chat.completed, the client hangs forever on a turn that
+            # already silently died server-side.
+            text = payload.get("text", "") or _describe_ui_actions(payload.get("uiActions"))
             async for chunk in Runner.run_agent_streaming(self.agent, {"query": text}, session=conversation_id):
                 for event_type, event_payload in _translate(chunk, state):
                     await self.send(event_type, event_payload, conversation_id)
