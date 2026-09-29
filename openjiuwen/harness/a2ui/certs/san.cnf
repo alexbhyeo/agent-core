@@ -1,0 +1,18 @@
+[req]
+distinguished_name = req_distinguished_name
+x509_extensions = v3_req
+prompt = no
+
+[req_distinguished_name]
+CN = a2ui-agent-backend
+
+[v3_req]
+keyUsage = critical, digitalSignature, keyEncipherment
+extendedKeyUsage = serverAuth
+subjectAltName = @alt_names
+
+[alt_names]
+IP.1 = 4.145.114.205
+IP.2 = 127.0.0.1
+IP.3 = 10.0.2.2
+DNS.1 = localhost
