@@ -11,8 +11,10 @@ __pycache__/
 build/
 !openjiuwen/symphony/retrieval/build/
 !openjiuwen/symphony/retrieval/build/**
+openjiuwen/symphony/retrieval/build/**/__pycache__/
 !tests/unit_tests/symphony/retrieval/build/
 !tests/unit_tests/symphony/retrieval/build/**
+tests/unit_tests/symphony/retrieval/build/**/__pycache__/
 develop-eggs/
 dist/
 downloads/
@@ -278,6 +280,7 @@ tests/system_tests/config_llm_local.yaml
 /memory/
 /messages/
 /skills/
+/sub_agents/
 /todo/
 
 # context_evolver unit test store, written next to the test
