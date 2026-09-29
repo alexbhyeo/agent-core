@@ -4,19 +4,42 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any, AsyncIterator, List, Optional
+from typing import TYPE_CHECKING, Any, AsyncIterator, Collection, List, Optional
 
 from openjiuwen.core.common.exception.codes import StatusCode
 from openjiuwen.core.common.exception.errors import build_error
 from openjiuwen.core.foundation.tool import Input, Output, Tool, ToolCard
 from openjiuwen.harness.prompts.tools import ToolCardBuildOptions, build_tool_card
 from openjiuwen.harness.subagent_runtime.config import WAIT_TIMEOUT_MS_DEFAULT
-from openjiuwen.harness.tools.base_tool import ToolOutput
+from openjiuwen.harness.tools.base_tool import ToolOutput, render_fields
 from openjiuwen.harness.tools.subagent._control_registry import get_subagent_control
 from openjiuwen.harness.subagent_runtime.status_events import map_status_to_view
 
 if TYPE_CHECKING:
     from openjiuwen.harness.deep_agent import DeepAgent
+
+
+_SUBAGENT_ROW_KEYS = (
+    "subagent_id",
+    "display_name",
+    "subagent_type",
+    "role",
+    "status",
+    "turn_outcome",
+    "closed_reason",
+    "error",
+    "task_description",
+)
+
+
+def _render_subagent_rows(title: str, rows: list[dict[str, Any]]) -> str:
+    if not rows:
+        return f"{title}: none"
+    lines = [
+        "- " + render_fields({key: row.get(key) for key in _SUBAGENT_ROW_KEYS}, separator=" | ")
+        for row in rows
+    ]
+    return f"{title}:\n" + "\n".join(lines)
 
 
 def _attach_call_timeout(card: ToolCard, timeout_s: float) -> ToolCard:
@@ -91,14 +114,30 @@ class SubagentSpawnTool(Tool):
         card: ToolCard,
         parent_agent: "DeepAgent",
         language: str = "cn",
+        allowed_subagent_types: Collection[str] | None = None,
     ) -> None:
         super().__init__(card)
         self._parent_agent = parent_agent
         self._language = language
+        self.set_allowed_subagent_types(allowed_subagent_types)
+
+    def set_allowed_subagent_types(
+        self,
+        allowed_subagent_types: Collection[str] | None,
+    ) -> None:
+        """Restrict which configured subagents may use the persistent runtime."""
+        self._allowed_subagent_types = (
+            None
+            if allowed_subagent_types is None
+            else frozenset(
+                str(name).strip()
+                for name in allowed_subagent_types
+                if str(name).strip()
+            )
+        )
 
     async def invoke(self, inputs: Input, **kwargs) -> ToolOutput:
         payload = _require_dict_inputs(inputs)
-        control = get_subagent_control(self._parent_agent, kwargs.get("session"))
 
         subagent_type = payload.get("subagent_type")
         task_description = payload.get("task_description")
@@ -106,9 +145,23 @@ class SubagentSpawnTool(Tool):
         role = payload.get("role")
         _validate_spawn_payload(payload)
 
-        browser_capabilities = _parse_browser_capabilities(payload, str(subagent_type))
+        normalized_type = str(subagent_type).strip()
+        if (
+            self._allowed_subagent_types is not None
+            and normalized_type not in self._allowed_subagent_types
+        ):
+            raise build_error(
+                StatusCode.TOOL_SESSION_TOOL_INVOKED,
+                reason=(
+                    f"Subagent type '{normalized_type}' is not available through "
+                    "subagent_spawn"
+                ),
+            )
+
+        control = get_subagent_control(self._parent_agent, kwargs.get("session"))
+        browser_capabilities = _parse_browser_capabilities(payload, normalized_type)
         result = await control.spawn(
-            str(subagent_type),
+            normalized_type,
             str(task_description),
             display_name=str(display_name),
             role=str(role),
@@ -124,6 +177,10 @@ class SubagentSpawnTool(Tool):
                 "status": result.status.kind.value,
             },
         )
+
+    def render_for_llm(self, output: ToolOutput) -> str:
+        """Render the spawned subagent's identifiers and initial status."""
+        return render_fields(output.data)
 
     async def stream(self, inputs: Input, **kwargs) -> AsyncIterator[Output]:
         yield await self.invoke(inputs, **kwargs)
@@ -176,6 +233,18 @@ class SubagentWaitTool(Tool):
             },
         )
 
+    def render_for_llm(self, output: ToolOutput) -> str:
+        """Render each waited subagent's final status and result as its own section."""
+        data = output.data
+        sections = [
+            render_fields({"subagent_id": sid, "status": status, "output_file": data["output_files"].get(sid)})
+            + f"\nresult:\n{data['results'].get(sid) or '(no result)'}"
+            for sid, status in data["statuses"].items()
+        ]
+        if data["timed_out"]:
+            sections.append("Timed out before every subagent reached a final status.")
+        return "\n\n".join(sections)
+
     async def stream(self, inputs: Input, **kwargs) -> AsyncIterator[Output]:
         yield await self.invoke(inputs, **kwargs)
 
@@ -198,10 +267,19 @@ class SubagentListTool(Tool):
         control = get_subagent_control(self._parent_agent, kwargs.get("session"))
         return ToolOutput(
             success=True,
-            data={
-                "capacity": control.capacity(),
-                "subagents": control.describe_live(),
-            },
+            data=control.describe_list(),
+        )
+
+    def render_for_llm(self, output: ToolOutput) -> str:
+        """Render capacity plus one line per live and closed subagent."""
+        data = output.data
+        capacity = data["capacity"]
+        return "\n\n".join(
+            [
+                f"Capacity: {capacity['used']}/{capacity['max']} subagents in use.",
+                _render_subagent_rows("Live subagents", data["live_subagents"]),
+                _render_subagent_rows("Closed subagents (resumable)", data["closed_subagents"]),
+            ]
         )
 
     async def stream(self, inputs: Input, **kwargs) -> AsyncIterator[Output]:
@@ -262,6 +340,10 @@ class SubagentSendInputTool(Tool):
             },
         )
 
+    def render_for_llm(self, output: ToolOutput) -> str:
+        """Render the target subagent, its new task and status."""
+        return render_fields(output.data)
+
     async def stream(self, inputs: Input, **kwargs) -> AsyncIterator[Output]:
         yield await self.invoke(inputs, **kwargs)
 
@@ -300,6 +382,10 @@ class SubagentCloseTool(Tool):
                 "previous_status": previous.kind.value,
             },
         )
+
+    def render_for_llm(self, output: ToolOutput) -> str:
+        """Render the closed subagent and the status it had."""
+        return render_fields(output.data)
 
     async def stream(self, inputs: Input, **kwargs) -> AsyncIterator[Output]:
         yield await self.invoke(inputs, **kwargs)
@@ -343,6 +429,10 @@ class SubagentResumeTool(Tool):
             data["message"] = result.message
         return ToolOutput(success=True, data=data)
 
+    def render_for_llm(self, output: ToolOutput) -> str:
+        """Render the resumed subagent's status and restore outcome."""
+        return render_fields(output.data)
+
     async def stream(self, inputs: Input, **kwargs) -> AsyncIterator[Output]:
         yield await self.invoke(inputs, **kwargs)
 
@@ -353,6 +443,7 @@ def build_subagent_tools(
     language: str = "cn",
     available_agents: str = "",
     agent_id: Optional[str] = None,
+    allowed_subagent_types: Collection[str] | None = None,
 ) -> List[Tool]:
     """Build runtime subagent tools (spawn, wait, list, send_input, close, resume)."""
     format_args = {"available_agents": available_agents}
@@ -395,7 +486,12 @@ def build_subagent_tools(
         agent_id=agent_id,
     )
     return [
-        SubagentSpawnTool(spawn_card, parent_agent, language=language),
+        SubagentSpawnTool(
+            spawn_card,
+            parent_agent,
+            language=language,
+            allowed_subagent_types=allowed_subagent_types,
+        ),
         SubagentWaitTool(wait_card, parent_agent, language=language),
         SubagentListTool(list_card, parent_agent, language=language),
         SubagentSendInputTool(send_input_card, parent_agent, language=language),

@@ -8,6 +8,8 @@ from __future__ import annotations
 import json
 import threading
 import uuid
+from collections.abc import Iterator
+from contextlib import contextmanager
 from copy import deepcopy
 from contextvars import ContextVar
 from dataclasses import dataclass
@@ -19,6 +21,7 @@ from opentelemetry.trace import Span
 from openjiuwen.core.common.logging import logger
 from openjiuwen.core.foundation.llm.call_scope import get_current_llm_call_id
 from openjiuwen.extensions.observability.semconv import (
+    GEN_AI_OPERATION_NAME,
     OJ_SPAN_FORCED_CLOSE,
     OJ_SPAN_FORCED_CLOSE_REASON,
     OJ_TRACE_FORCED_CLOSE,
@@ -43,17 +46,25 @@ def _is_root_span(span: Span, root_span: Span | None) -> bool:
     return False
 
 
+def _is_llm_call(span: Span) -> bool:
+    return span.attributes.get(GEN_AI_OPERATION_NAME) in {
+        "chat",
+        "generate_content",
+        "text_completion",
+    }
+
+
 def _is_open_llm_call_of(span: Span, parent_id: int) -> bool:
-    """Report whether *span* is a still-open ``llm.call`` span under *parent_id*.
+    """Report whether *span* is a still-open GenAI inference under *parent_id*.
 
     Args:
         span: Candidate span from the tracker's active set.
         parent_id: Span id of the parent the caller is resolving against.
 
     Returns:
-        True when the span is a recording ``llm.call`` whose parent matches.
+        True when the span is a recording inference whose parent matches.
     """
-    if span.name != "llm.call" or not span.is_recording():
+    if not _is_llm_call(span) or not span.is_recording():
         return False
     return span.parent is not None and span.parent.span_id == parent_id
 
@@ -179,7 +190,7 @@ class ActiveSpanTracker(SpanProcessor):
         with self._lock:
             spans = list(self._spans_by_trace.get(trace_id, set()))
         for span in spans:
-            if span.name != "llm.call" or not span.is_recording():
+            if not _is_llm_call(span) or not span.is_recording():
                 continue
             parent = span.parent
             if parent is None or parent.span_id != parent_span_id:
@@ -451,6 +462,13 @@ class LlmSpanState:
         reasoning_last_ns: Monotonic-ns of the last reasoning chunk.
         reasoning_start_wall_ns: Wall-clock epoch (time.time_ns) captured
             at the first reasoning chunk.
+        stream_phase: Kind and tool-call id of the stream phase in progress,
+            None before the first chunk and after the stream is closed.
+        stream_phase_last_sequence: Frame sequence of the most recent chunk
+            in the current phase. A phase's closing marker can only be written
+            once the phase is known to be over, so the frame that ended it has
+            to be remembered until then.
+        stream_opened: Whether the opening marker for this stream was written.
     """
 
     span: Span
@@ -472,6 +490,12 @@ class LlmSpanState:
     # is a monotonic delta (reasoning_last_ns - reasoning_first_ns). end_time
     # is set to start + that delta so the UI span duration equals reasoning time.
     reasoning_start_wall_ns: int | None = None
+    # Stream phase tracking. Individual frames travel on the stream-frame
+    # channel; the span itself keeps only phase markers, so its event count
+    # grows with the number of phases rather than with the answer's length.
+    stream_phase: tuple[str, str] | None = None
+    stream_phase_last_sequence: int = 0
+    stream_opened: bool = False
 
 
 _root_span_ctx: ContextVar[Span | None] = ContextVar("observability_root_span", default=None)
@@ -489,11 +513,10 @@ _trajectory_subject_states: dict[
     tuple[str, tuple[tuple[str, str], ...]],
 ] = {}
 _trajectory_subject_state_lock = threading.Lock()
-_pending_context_window_compactions: dict[
-    tuple[str, str, str, str],
-    list[str],
-] = {}
-_pending_context_window_compactions_lock = threading.Lock()
+# One subject's compaction operations, in the order they were first seen, so
+# every attempt of one operation reports the same number.
+_context_compaction_numbers: dict[tuple[str, str], dict[str, int]] = {}
+_context_compaction_number_lock = threading.Lock()
 _ambient_root_span: Span | None = None
 
 
@@ -527,71 +550,65 @@ def next_execution_subject_request_number(
     return request_number
 
 
-def queue_context_window_compaction(
+def context_compaction_number(
     *,
     session_id: str,
     subject_id: str,
-    request_id: str,
-    step_id: str,
     operation_id: str,
-) -> bool:
-    """Queue one completed compaction for its next matching context window."""
-    key = _context_window_transition_key(
-        session_id=session_id,
-        subject_id=subject_id,
-        request_id=request_id,
-        step_id=step_id,
-    )
-    resolved_operation_id = str(operation_id or "").strip()
-    if key is None or not resolved_operation_id:
-        return False
-    with _pending_context_window_compactions_lock:
-        pending = _pending_context_window_compactions.setdefault(key, [])
-        if resolved_operation_id not in pending:
-            pending.append(resolved_operation_id)
-    return True
+) -> int:
+    """Return which compaction this operation is for one subject.
+
+    The number belongs to the operation, not to the model call that carries
+    it: a throttled compaction is retried, and every attempt must state the
+    same number so a reader sees one compaction that took several tries
+    rather than several compactions.
+
+    Args:
+        session_id: Session the compaction belongs to.
+        subject_id: Execution subject whose context is being compacted.
+        operation_id: Identity of the compaction operation.
+
+    Returns:
+        The operation's number within the subject, counting from one. Zero
+        when the caller cannot name the session, subject or operation.
+    """
+    normalized_operation = str(operation_id or "").strip()
+    normalized_subject = str(subject_id or "").strip()
+    session = _normalize_session_id(session_id)
+    if not normalized_operation or not normalized_subject or not session:
+        return 0
+    key = (session, normalized_subject)
+    with _context_compaction_number_lock:
+        assigned = _context_compaction_numbers.setdefault(key, {})
+        existing = assigned.get(normalized_operation)
+        if existing is not None:
+            return existing
+        number = len(assigned) + 1
+        assigned[normalized_operation] = number
+    return number
 
 
-def consume_context_window_compaction(
+def current_context_window_messages(
     *,
     session_id: str,
     subject_id: str,
-    request_id: str,
-    step_id: str,
-) -> str | None:
-    """Consume the oldest compaction for exactly one routed context window."""
-    key = _context_window_transition_key(
-        session_id=session_id,
-        subject_id=subject_id,
-        request_id=request_id,
-        step_id=step_id,
-    )
-    if key is None:
-        return None
-    with _pending_context_window_compactions_lock:
-        pending = _pending_context_window_compactions.get(key)
-        if not pending:
+) -> list[dict[str, Any]] | None:
+    """Return the messages of one subject's last committed context window.
+
+    The canonical state keeps each message as its serialized fingerprint,
+    which is the message itself in JSON form, so the window is rebuilt from
+    it without a second copy of every message.
+
+    Returns:
+        The messages in window order, or None when the subject has not
+        committed a window yet.
+    """
+    key = (_normalize_session_id(session_id), str(subject_id))
+    with _trajectory_subject_state_lock:
+        state = _trajectory_subject_states.get(key)
+        if state is None:
             return None
-        operation_id = pending.pop(0)
-        if not pending:
-            _pending_context_window_compactions.pop(key, None)
-        return operation_id
-
-
-def _context_window_transition_key(
-    *,
-    session_id: str,
-    subject_id: str,
-    request_id: str,
-    step_id: str,
-) -> tuple[str, str, str, str] | None:
-    values = tuple(
-        str(value or "").strip()
-        for value in (session_id, subject_id, request_id, step_id)
-    )
-    if any(not value for value in values):
-        return None
-    return cast(tuple[str, str, str, str], values)
+        return [json.loads(fingerprint) for _message_id, fingerprint in state[1]]
 
 
 def advance_context_window(
@@ -914,6 +931,40 @@ def pop_current_llm_span() -> Span | None:
 _tool_span_map: ContextVar[dict[str, list[Span]]] = ContextVar("_otel_tool_span_map", default={})
 
 
+# A tool executed on behalf of an agent that records its own trajectory (an
+# external harness member reaching a local tool through this process) must not
+# also be recorded here: the span would land in the lane of whichever agent
+# happens to own this context, which is not the caller.
+_suppressed_tool_names: ContextVar[frozenset[str]] = ContextVar(
+    "_otel_suppressed_tool_names",
+    default=frozenset(),
+)
+
+
+@contextmanager
+def suppressed_tool_spans(tool_name: str) -> Iterator[None]:
+    """Run ``tool_name`` without recording a tool span for it in this context.
+
+    For a tool call the caller records itself, in a lane of its own. Only the
+    caller knows that; nothing about the execution says so. The suppression
+    names the one tool it covers, so work the call goes on to dispatch keeps
+    being recorded.
+
+    Args:
+        tool_name: The tool whose span this context does not record.
+    """
+    token = _suppressed_tool_names.set(_suppressed_tool_names.get() | {tool_name})
+    try:
+        yield
+    finally:
+        _suppressed_tool_names.reset(token)
+
+
+def tool_spans_suppressed(tool_name: str) -> bool:
+    """Return whether this context records a span for ``tool_name``."""
+    return tool_name in _suppressed_tool_names.get()
+
+
 def push_tool_span(tool_name: str, span: Span) -> None:
     """Push a tool span keyed by tool_name."""
     mapping = dict(_tool_span_map.get())
@@ -1001,8 +1052,8 @@ def reset_state() -> None:
         _trajectory_sequence_epoch = uuid.uuid4().hex
         _trajectory_subject_sequences.clear()
         _trajectory_subject_states.clear()
-    with _pending_context_window_compactions_lock:
-        _pending_context_window_compactions.clear()
+    with _context_compaction_number_lock:
+        _context_compaction_numbers.clear()
 
 
 def flush_child_spans(*, trace_id: int | None = None) -> int:

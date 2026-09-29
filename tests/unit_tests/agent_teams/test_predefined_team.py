@@ -7,6 +7,10 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 import pytest_asyncio
 
+from openjiuwen.agent_teams.context import (
+    reset_session_id,
+    set_session_id,
+)
 from openjiuwen.agent_teams.messager import Messager
 from openjiuwen.agent_teams.schema.blueprint import TeamAgentSpec
 from openjiuwen.agent_teams.schema.status import (
@@ -14,18 +18,17 @@ from openjiuwen.agent_teams.schema.status import (
     MemberStatus,
 )
 from openjiuwen.agent_teams.schema.team import (
+    ExternalCliAgentSpec,
+    ExternalCliMemberSpec,
     TeamMemberSpec,
     TeamRole,
-)
-from openjiuwen.agent_teams.context import (
-    reset_session_id,
-    set_session_id,
 )
 from openjiuwen.agent_teams.tools.database import (
     DatabaseConfig,
     DatabaseType,
     TeamDatabase,
 )
+from openjiuwen.agent_teams.tools.member_options import get_member_cli_agent
 from openjiuwen.agent_teams.tools.team import TeamBackend
 from openjiuwen.agent_teams.tools.team_tools import (
     create_team_tools,
@@ -71,6 +74,31 @@ def predefined_members():
             desc="Senior frontend engineer",
         ),
     ]
+
+
+def test_predefined_external_cli_member_round_trips() -> None:
+    spec = TeamAgentSpec(
+        agents={},
+        predefined_members=[
+            ExternalCliMemberSpec(
+                member_name="reviewer",
+                display_name="Reviewer",
+                prompt="Review the code",
+                external_cli=ExternalCliAgentSpec(
+                    cli_agent="codex",
+                    skills=[{"dir": "/skills/review", "mode": "all"}],
+                ),
+            )
+        ],
+    )
+
+    restored = TeamAgentSpec.model_validate(spec.model_dump(mode="json"))
+
+    member = restored.predefined_members[0]
+    assert isinstance(member, ExternalCliMemberSpec)
+    assert member.role_type == TeamRole.EXTERNAL_CLI
+    assert member.external_cli.cli_agent == "codex"
+    assert member.external_cli.skills == [{"dir": "/skills/review", "mode": "all"}]
 
 
 def test_team_agent_spec_defaults_teammate_mode_to_build_mode():
@@ -165,6 +193,35 @@ class TestBuildTeamWithPredefinedMembers:
         assert leader.status == MemberStatus.BUSY.value
         assert leader.execution_status == ExecutionStatus.RUNNING.value
 
+    @pytest.mark.asyncio
+    async def test_predefined_external_member_persists_cli_routing(self, db, message_bus):
+        member = ExternalCliMemberSpec(
+            member_name="reviewer",
+            display_name="Reviewer",
+            prompt="Review the code",
+            external_cli=ExternalCliAgentSpec(cli_agent="codex"),
+        )
+        team = TeamBackend(
+            team_name="external_team",
+            member_name="leader1",
+            is_leader=True,
+            db=db,
+            messager=message_bus,
+            predefined_members=[member],
+        )
+
+        assert team.get_external_cli_agent("reviewer") == "codex"
+        await team.build_team(
+            display_name="External Team",
+            desc="desc",
+            leader_display_name="Leader",
+            leader_desc="PM",
+        )
+
+        stored = await db.member.get_member("reviewer", "external_team")
+        assert stored.role == TeamRole.EXTERNAL_CLI.value
+        assert get_member_cli_agent(stored) == "codex"
+
 
 class TestBuildTeamWithoutPredefinedMembers:
     """Ensure backward compatibility: empty predefined_members behaves like before."""
@@ -199,11 +256,13 @@ class TestToolExclusion:
 
     @pytest.mark.level0
     def test_exclude_spawn_teammate_when_predefined(self, predefined_members):
-        agent_team = AsyncMock()
+        agent_team = MagicMock()
         agent_team.workspace_cache = None  # no evolvable-workspace cache in unit scope
         agent_team.hitt_enabled = MagicMock(return_value=False)
         agent_team.bridge_enabled = MagicMock(return_value=False)
         agent_team.external_cli_kinds = MagicMock(return_value=frozenset())
+        agent_team.current_model_name = None
+        agent_team.current_model_provider = None
         agent_team.is_leader = True
 
         tools = create_team_tools(
@@ -221,11 +280,13 @@ class TestToolExclusion:
 
     @pytest.mark.level1
     def test_no_exclusion_without_predefined(self):
-        agent_team = AsyncMock()
+        agent_team = MagicMock()
         agent_team.workspace_cache = None  # no evolvable-workspace cache in unit scope
         agent_team.hitt_enabled = MagicMock(return_value=False)
         agent_team.bridge_enabled = MagicMock(return_value=False)
         agent_team.external_cli_kinds = MagicMock(return_value=frozenset())
+        agent_team.current_model_name = None
+        agent_team.current_model_provider = None
         agent_team.is_leader = True
 
         tools = create_team_tools(
@@ -239,11 +300,13 @@ class TestToolExclusion:
 
     @pytest.mark.level1
     def test_exclude_does_not_affect_teammate_tools(self):
-        agent_team = AsyncMock()
+        agent_team = MagicMock()
         agent_team.workspace_cache = None  # no evolvable-workspace cache in unit scope
         agent_team.hitt_enabled = MagicMock(return_value=False)
         agent_team.bridge_enabled = MagicMock(return_value=False)
         agent_team.external_cli_kinds = MagicMock(return_value=frozenset())
+        agent_team.current_model_name = None
+        agent_team.current_model_provider = None
         agent_team.is_leader = False
 
         tools = create_team_tools(
@@ -258,11 +321,13 @@ class TestToolExclusion:
     @pytest.mark.level1
     def test_leader_has_approval_tools_in_plan_mode(self):
         """Leader must get approve_plan and approve_tool in plan_mode — required for plan review."""
-        agent_team = AsyncMock()
+        agent_team = MagicMock()
         agent_team.workspace_cache = None  # no evolvable-workspace cache in unit scope
         agent_team.hitt_enabled = MagicMock(return_value=False)
         agent_team.bridge_enabled = MagicMock(return_value=False)
         agent_team.external_cli_kinds = MagicMock(return_value=frozenset())
+        agent_team.current_model_name = None
+        agent_team.current_model_provider = None
         agent_team.is_leader = True
 
         tools = create_team_tools(
@@ -279,11 +344,13 @@ class TestToolExclusion:
     @pytest.mark.level1
     def test_leader_no_approval_tools_in_build_mode(self):
         """build_mode has no plan workflow — approval tools must be excluded from the leader."""
-        agent_team = AsyncMock()
+        agent_team = MagicMock()
         agent_team.workspace_cache = None  # no evolvable-workspace cache in unit scope
         agent_team.hitt_enabled = MagicMock(return_value=False)
         agent_team.bridge_enabled = MagicMock(return_value=False)
         agent_team.external_cli_kinds = MagicMock(return_value=frozenset())
+        agent_team.current_model_name = None
+        agent_team.current_model_provider = None
         agent_team.is_leader = True
 
         tools = create_team_tools(
@@ -300,11 +367,13 @@ class TestToolExclusion:
     @pytest.mark.level1
     def test_teammate_does_not_have_approval_tools(self):
         """approve_plan / approve_tool are leader-only, regardless of mode."""
-        agent_team = AsyncMock()
+        agent_team = MagicMock()
         agent_team.workspace_cache = None  # no evolvable-workspace cache in unit scope
         agent_team.hitt_enabled = MagicMock(return_value=False)
         agent_team.bridge_enabled = MagicMock(return_value=False)
         agent_team.external_cli_kinds = MagicMock(return_value=frozenset())
+        agent_team.current_model_name = None
+        agent_team.current_model_provider = None
         agent_team.is_leader = False
 
         for mode in ("build_mode", "plan_mode"):

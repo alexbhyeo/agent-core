@@ -13,11 +13,12 @@ Public surface:
         hands to an external agent (db + transport + identity).
     ExternalTeamClient — opens db + messager from a descriptor and exposes
         the collaboration operations (send / view / claim / ... + inbox).
-    external.protocol — provider-neutral Python SPI for third-party agent
-        harnesses. DSH implements it under ``external.dsh``; existing
-        Claude Code/Codex backends are not migrated yet.
-    ExternalHarnessMemberRuntime — adapts that public SPI to the internal
-        AgentTeam MemberRuntime behavior.
+    openjiuwen.harness_protocol — provider-neutral Python SPI for third-party
+        agent harnesses; ``openjiuwen.harness_providers`` implements it for
+        DeepAgent, Claude Code, Codex and DSH.
+    ExternalHarnessMemberRuntime — composes ``HarnessIOAdapter`` with the team
+        session, reliability and observability layers so any protocol harness
+        acts as an AgentTeam MemberRuntime (Claude Code / Codex members use it).
 """
 
 from openjiuwen.agent_teams.external.client import ExternalTeamClient
@@ -25,6 +26,7 @@ from openjiuwen.agent_teams.external.descriptor import (
     TEAM_JOIN_ENV,
     TeamJoinDescriptor,
 )
+from openjiuwen.agent_teams.external.manifest import external_cli_agent_spec_from_template
 from openjiuwen.agent_teams.external.member_runtime import ExternalHarnessMemberRuntime
 
 __all__ = [
@@ -32,4 +34,5 @@ __all__ = [
     "ExternalTeamClient",
     "ExternalHarnessMemberRuntime",
     "TeamJoinDescriptor",
+    "external_cli_agent_spec_from_template",
 ]

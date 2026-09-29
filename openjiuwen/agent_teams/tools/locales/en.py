@@ -142,6 +142,30 @@ STRINGS: dict[str, str] = {
         "member via HumanAgentInbox; the model and startup prompt are managed "
         "by the framework template, so do not provide them here"
     ),
+    # ===== spawn_passive_human =================================================
+    # spawn_passive_human._desc lives in descs/en/member/spawn_passive_human.md
+    "spawn_passive_human.member_name": (
+        "[PUBLIC] Unique name for the passive human member (semantic slug, "
+        "e.g. product-owner, DNS-label kebab-case). **First character must be a "
+        "lowercase ASCII letter (a-z); the rest may be lowercase letters, "
+        "digits (0-9) or hyphen (-)** — no uppercase, underscore, whitespace, "
+        "CJK or any other non-ASCII characters. Serves as the primary "
+        "identifier and routing key; must be unique within the team"
+    ),
+    "spawn_passive_human.display_name": (
+        "[PUBLIC] Human-readable display label for the passive human member "
+        "(e.g. 'Product Owner'); purely presentational, not used for routing. "
+        "Injected into every other member's system prompt and returned by "
+        "list_members — do not put private content here"
+    ),
+    "spawn_passive_human.desc": (
+        "[PUBLIC] Role profile and responsibilities of the passive human "
+        "member, used for display and description persistence and injected "
+        "into other members' system prompts / returned by list_members. This "
+        "member has no internal avatar: the real human communicates and "
+        "relays tool calls through their external channel, and may be "
+        "assigned tasks"
+    ),
     # ===== spawn_bridge_agent ==================================================
     # spawn_bridge_agent._desc lives in descs/en/member/spawn_bridge_agent.md
     "spawn_bridge_agent.member_name": (
@@ -232,12 +256,36 @@ STRINGS: dict[str, str] = {
         "a model so the agent uses its own default model"
     ),
     "spawn_external_cli.fallback_model_name": (
-        "Required. Select this model from the team model pool, choosing one whose model API protocol is "
-        "compatible with the protocol supported by this third-party agent. It is used for automatic fallback "
+        "Required, but may be null when no compatible model exists. When a compatible model is available, "
+        "select it from the team model pool according to the model API protocol supported by this third-party "
+        "agent. Prefer the current model when it is present in the pool and its protocol is compatible; when the "
+        "current model is absent from the pool or its protocol is incompatible, select another compatible model. "
+        "Never invent an unavailable or incompatible model. It is used for automatic fallback "
         "when the agent uses its own default model but authentication is unavailable. It applies only to "
-        "authentication failures explicitly reported by the runtime. If the model is unavailable, incompatible, "
-        "or the agent does not support authentication fallback, its own default model can still be used without "
-        "automatic fallback"
+        "authentication failures explicitly reported by the runtime. Use null only when the team model pool has "
+        "no compatible model; the agent can then use its own default model without automatic fallback"
+    ),
+    "spawn_external_cli.builtin_model": (
+        "Optional. A built-in model from this cli_agent's entry in the catalog below, running on the CLI's "
+        "own login (e.g. a subscription); pick it to fit the member's workload. Mutually exclusive with "
+        "model_name. Omit to let the CLI use its own default model"
+    ),
+    "spawn_external_cli.effort": (
+        "Optional. Reasoning effort, one of the chosen builtin_model's efforts; requires builtin_model. "
+        "Omit to take the model's default_effort"
+    ),
+    # ===== set_member_model ====================================================
+    # set_member_model._desc lives in descs/en/member/set_member_model.md
+    "set_member_model.member_name": (
+        "member_name of the external CLI member to switch (semantic slug, not display label)"
+    ),
+    "set_member_model.model": (
+        "Optional. The new built-in model, from the member's cli_agent entry in the catalog below; omit to "
+        "keep the current model and change only effort"
+    ),
+    "set_member_model.effort": (
+        "Optional. The new reasoning effort, one of the chosen model's efforts; omitted with model set it "
+        "takes the model's default_effort, omitted without model it stays unchanged"
     ),
     # ===== shutdown_member =====================================================
     # shutdown_member._desc lives in descs/en/member/shutdown_member.md
@@ -436,10 +484,11 @@ STRINGS: dict[str, str] = {
     ),
     "send_message.error_content_too_long": (
         "'content' is too long ({actual} chars, limit {limit}): a body this size is an "
-        "artifact, not a message. Write it to a file under the shared team workspace "
-        ".team/ with write_file, then resend this message carrying only the file path "
-        "plus a one- or two-sentence summary. Do not split the body across several "
-        "messages to get around this limit."
+        "artifact, not a message. Write it to a file under the shared team deliverables "
+        "directory (see the \"Final deliverables directory\" under \"Team Shared Workspace\" "
+        "in the team info block) with write_file, then resend this message carrying only "
+        "the file path plus a one- or two-sentence summary. Do not split the body across "
+        "several messages to get around this limit."
     ),
     # ===== send_message_scheduled (scheduled-mode member variant) ==============
     # send_message_scheduled._desc lives in descs/en/message/send_message_scheduled.md

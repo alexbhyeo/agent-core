@@ -77,6 +77,43 @@ def _stream_chunk(content: str, *, finish_reason: str | None = None) -> _Obj:
     )
 
 
+def test_stream_chunk_reads_tool_calls_from_final_message():
+    client = _make_client()
+    chunk = _Obj(
+        choices=[
+            _Obj(
+                delta=_Obj(content=""),
+                message=_Obj(
+                    content="",
+                    tool_calls=[
+                        _Obj(
+                            id="call-1",
+                            index=0,
+                            function=_Obj(
+                                name="task_tool",
+                                arguments='{"subagent_type":"explore_agent"}',
+                            ),
+                        )
+                    ],
+                ),
+                finish_reason="tool_calls",
+                token_ids=None,
+                logprobs=None,
+            )
+        ],
+        usage=None,
+        prompt_token_ids=None,
+    )
+
+    parsed = client._parse_stream_chunk(chunk)
+
+    assert parsed is not None
+    assert parsed.finish_reason == "tool_calls"
+    assert parsed.tool_calls is not None
+    assert parsed.tool_calls[0].id == "call-1"
+    assert parsed.tool_calls[0].name == "task_tool"
+
+
 async def _stream_response(*contents: str):
     for content in contents:
         yield _stream_chunk(content)
@@ -408,9 +445,14 @@ class TestDisabledThinkingIntent:
         assert sent_call["extra_body"] == {
             "routing": "blue",
             "thinking": {"type": "disabled"},
+            "enable_thinking": False,
+            "chat_template_kwargs": {
+                "enable_thinking": False,
+                "template": "keep",
+            },
         }
-        assert sent_call["enable_thinking"] is False
-        assert sent_call["chat_template_kwargs"]["enable_thinking"] is False
+        assert "enable_thinking" not in sent_call
+        assert "chat_template_kwargs" not in sent_call
         assert sent_call["reasoning"]["enabled"] is False
         assert sent_call["reasoning_effort"] == "off"
 
@@ -437,21 +479,51 @@ class TestDisabledThinkingIntent:
         assert sdk_client.chat.completions.create.call_count == 1
 
 
-def test_deepseek_endpoint_profile_adds_reasoning_content_to_assistant_messages():
+def _build_messages_params(model: str, messages: list, *, endpoint_profile: str | None = "vllm") -> dict:
     client_config = ModelClientConfig(
         client_provider="OpenAI",
-        endpoint_profile="deepseek",
+        endpoint_profile=endpoint_profile,
         api_key="sk-test-key",
-        api_base="https://api.deepseek.com/v1",
+        api_base="https://example.invalid/v1",
         verify_ssl=False,
     )
-    client = OpenAIModelClient(ModelRequestConfig(model="deepseek-chat"), client_config)
+    client = OpenAIModelClient(ModelRequestConfig(model=model), client_config)
+    return client._build_request_params(
+        messages=messages,
+        tools=None,
+        temperature=None,
+        top_p=None,
+        model=model,
+        stop=None,
+        max_tokens=None,
+        stream=False,
+    )
+
+
+def test_unset_sampling_params_are_omitted_from_chat_request():
+    params = _build_messages_params(
+        "gpt-4o-mini",
+        [{"role": "user", "content": "hello"}],
+    )
+
+    assert "temperature" not in params
+    assert "top_p" not in params
+
+
+def test_configured_sampling_params_are_forwarded_on_chat_request():
+    client_config = ModelClientConfig(
+        client_provider="OpenAI",
+        api_key="sk-test-key",
+        api_base="https://example.invalid/v1",
+        verify_ssl=False,
+    )
+    client = OpenAIModelClient(
+        ModelRequestConfig(model="gpt-4o-mini", temperature=0.2, top_p=0.8),
+        client_config,
+    )
 
     params = client._build_request_params(
-        messages=[
-            {"role": "user", "content": "hello"},
-            {"role": "assistant", "content": "hi"},
-        ],
+        messages=[{"role": "user", "content": "hello"}],
         tools=None,
         temperature=None,
         top_p=None,
@@ -461,7 +533,44 @@ def test_deepseek_endpoint_profile_adds_reasoning_content_to_assistant_messages(
         stream=False,
     )
 
+    assert params["temperature"] == 0.2
+    assert params["top_p"] == 0.8
+
+
+def test_deepseek_model_name_adds_empty_reasoning_content_without_profile():
+    params = _build_messages_params(
+        "DeepSeek-V4-Pro",
+        [
+            {"role": "user", "content": "hello"},
+            {"role": "assistant", "content": "hi"},
+        ],
+    )
+
     assert params["messages"][1]["reasoning_content"] == ""
+
+
+def test_non_deepseek_model_does_not_add_reasoning_content():
+    params = _build_messages_params(
+        "GLM-5.2",
+        [
+            {"role": "user", "content": "hello"},
+            {"role": "assistant", "content": "hi"},
+        ],
+    )
+
+    assert "reasoning_content" not in params["messages"][1]
+
+
+def test_deepseek_model_keeps_existing_reasoning_content():
+    params = _build_messages_params(
+        "deepseek-v4-pro",
+        [
+            {"role": "user", "content": "hello"},
+            {"role": "assistant", "content": "hi", "reasoning_content": "real thinking"},
+        ],
+    )
+
+    assert params["messages"][1]["reasoning_content"] == "real thinking"
 
 
 def test_openai_none_auth_uses_placeholder_sdk_key():
@@ -570,35 +679,6 @@ def test_openrouter_profile_adds_prompt_cache_markers_on_openai_client():
 
     assert params["messages"][0]["content"][0]["cache_control"] == {"type": "ephemeral"}
     assert params["tools"][0]["cache_control"] == {"type": "ephemeral"}
-
-
-def test_kv_release_fields_move_to_extra_body_for_openai_sdk():
-    client_config = ModelClientConfig(
-        client_provider="OpenAI",
-        api_key="sk-test-key",
-        api_base="https://example.test/v1",
-        extensions={"kv_cache": {"mode": "release"}},
-        verify_ssl=False,
-    )
-    client = OpenAIModelClient(ModelRequestConfig(model="qwen"), client_config)
-
-    params = client._build_request_params(
-        messages=[{"role": "user", "content": "hello"}],
-        tools=None,
-        temperature=None,
-        top_p=None,
-        model=None,
-        stop=None,
-        max_tokens=None,
-        stream=False,
-        session_id="session-1",
-        enable_cache_sharing=True,
-    )
-    client._move_openai_extra_body_extensions(params)
-
-    assert params["extra_body"]["cache_salt"] == "session-1"
-    assert params["extra_body"]["cache_sharing"] is True
-    assert "cache_salt" not in params
 
 
 def test_kv_affinity_agent_hint_moves_to_extra_body_for_openai_sdk():

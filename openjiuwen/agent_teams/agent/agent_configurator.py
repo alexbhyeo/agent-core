@@ -9,6 +9,7 @@ import os
 from typing import (
     TYPE_CHECKING,
     Any,
+    Awaitable,
     Callable,
     Optional,
 )
@@ -18,7 +19,6 @@ from openjiuwen.agent_teams.agent.infra import TeamInfra
 from openjiuwen.agent_teams.agent.payload import SpawnPayloadBuilder
 from openjiuwen.agent_teams.agent.resources import PrivateAgentResources
 from openjiuwen.agent_teams.harness import TeamHarness
-from openjiuwen.agent_teams.kv_cache import kv_cache_hooks
 from openjiuwen.agent_teams.messager import (
     Messager,
     create_messager,
@@ -40,8 +40,10 @@ from openjiuwen.agent_teams.skill.rail_spec import (
     build_team_skill_rail_spec,
     complete_declared_team_skill_rails,
 )
+from openjiuwen.agent_teams.tools.tool_group_chat import group_chat_prompt
 from openjiuwen.agent_teams.tools.team import TeamBackend
 from openjiuwen.core.common.logging import team_logger
+from openjiuwen.core.foundation.llm import ProviderType
 from openjiuwen.core.runner.spawn.agent_config import (
     SpawnAgentConfig,
 )
@@ -66,13 +68,14 @@ _TEAM_WORKTREE_BASH_DENY_PATTERNS = [
 def _resolve_team_mode(spec: TeamAgentSpec) -> str:
     if spec.team_mode is not None:
         return spec.team_mode
-    # HUMAN_AGENT predefined members are HITT roster declarations, and
-    # BRIDGE_AGENT entries are bridge-to-remote declarations — neither
-    # is a signal to flip the team away from "default". A roster of
-    # ordinary predefined teammates derives "hybrid": the leader keeps
-    # its spawn_* tools so the roster can still grow at runtime.
-    # Lock it down by setting an explicit "predefined" team_mode.
-    avatar_roles = {TeamRole.HUMAN_AGENT, TeamRole.BRIDGE_AGENT}
+    # HUMAN_AGENT / PASSIVE_HUMAN predefined members are HITT roster
+    # declarations, and BRIDGE_AGENT entries are bridge-to-remote
+    # declarations — none is a signal to flip the team away from
+    # "default". A roster of ordinary predefined teammates derives
+    # "hybrid": the leader keeps its spawn_* tools so the roster can
+    # still grow at runtime. Lock it down by setting an explicit
+    # "predefined" team_mode.
+    avatar_roles = {TeamRole.HUMAN_AGENT, TeamRole.PASSIVE_HUMAN, TeamRole.BRIDGE_AGENT}
     non_avatar_predefined = [m for m in spec.predefined_members if m.role_type not in avatar_roles]
     return "hybrid" if non_avatar_predefined else "default"
 
@@ -250,10 +253,12 @@ class AgentConfigurator:
         spec: TeamAgentSpec,
         ctx: TeamRuntimeContext,
         *,
-        on_teammate_created=None,
-        on_before_team_cleaned=None,
-        on_team_cleaned=None,
-        on_team_built=None,
+        on_teammate_created: Callable[[str], Awaitable[None]] | None = None,
+        on_teammate_restarted: Callable[[str], Awaitable[bool]] | None = None,
+        on_teammate_stopped: Callable[[str], Awaitable[None]] | None = None,
+        on_before_team_cleaned: Callable[[], Awaitable[None]] | None = None,
+        on_team_cleaned: Callable[[], Awaitable[None]] | None = None,
+        on_team_built: Callable[[], Awaitable[None]] | None = None,
     ) -> None:
         """Phase 1: set spec/context, create messager, workspace manager, prepare team backend."""
         agent_spec = self.resolve_agent_spec(spec, ctx.role, ctx.member_name)
@@ -291,9 +296,6 @@ class AgentConfigurator:
 
             self.model_allocator = build_model_allocator(spec, ctx.team_spec)
 
-        if ctx.role == TeamRole.LEADER:
-            kv_cache_hooks.ensure_leader_registry(self)
-
         self.setup_team_backend(
             spec,
             ctx,
@@ -301,6 +303,8 @@ class AgentConfigurator:
             on_before_team_cleaned=on_before_team_cleaned,
             on_team_cleaned=on_team_cleaned,
             on_team_built=on_team_built,
+            on_member_restarted=on_teammate_restarted,
+            on_member_stopped=on_teammate_stopped,
         )
 
         if ctx.role == TeamRole.LEADER and spec.worktree and spec.worktree.enabled:
@@ -483,12 +487,29 @@ class AgentConfigurator:
 
         # cwd is a separate layer from the workspace. The workspace stays the
         # member's private artifact directory (memory, Skill visibility
-        # declaration, .team mount); cwd is where shell runs and relative paths
-        # resolve. Team isolation moves cwd into the worktree without dragging
-        # the workspace along -- otherwise the member's artifacts and its Skill
-        # grants would live inside an ephemeral checkout and vanish with it.
-        member_cwd = ctx.worktree_path or agent_spec.cwd or None
-        member_project_root = agent_spec.project_root or agent_spec.cwd or None
+        # declaration); cwd is where shell runs and relative paths resolve. Team
+        # isolation moves cwd into the worktree without dragging the workspace
+        # along -- otherwise the member's artifacts and its Skill grants would
+        # live inside an ephemeral checkout and vanish with it. A projectless
+        # team member (no project, no worktree) instead runs in its own
+        # isolated ``work/<member>/`` under the shared artifact root, so its
+        # intermediate files stay per-member instead of piling up together.
+        worktree_path = ctx.worktree_path
+        project_root_or_cwd = agent_spec.project_root or agent_spec.cwd or None
+        if worktree_path:
+            member_cwd = worktree_path
+        elif project_root_or_cwd:
+            member_cwd = project_root_or_cwd
+        elif spec.build_context is not None:
+            # No project and no worktree: the platform may allocate a per-member
+            # work directory. Derive a member view (so the per-team root and the
+            # member name combine) and ask the platform for the work dir.
+            member_cwd = spec.build_context.derive(
+                member_name=ctx.member_name,
+            ).resolve_member_work_dir()
+        else:
+            member_cwd = None
+        member_project_root = project_root_or_cwd
 
         workspace_root_path = ws_spec.root_path if ws_spec is not None else None
         # The workspace is now always the member's own directory (never the
@@ -496,9 +517,6 @@ class AgentConfigurator:
         # clean up.
         if workspace_root_path and self.team_backend is not None:
             self.team_backend.register_cleanup_path(workspace_root_path)
-
-        if self.workspace_manager and ws_spec and ws_spec.root_path:
-            self.workspace_manager.mount_into_workspace(ws_spec.root_path)
 
         model_config = ctx.member_model or agent_spec.model
 
@@ -538,11 +556,18 @@ class AgentConfigurator:
         resolved_team_name = (ctx.team_spec.team_name if ctx.team_spec else None) or spec.team_name
         teammate_mode = str(spec.teammate_mode)
 
-        team_workspace_mount: str | None = None
         team_workspace_path: str | None = None
         if self.workspace_manager:
-            team_workspace_mount = f".team/{resolved_team_name}/"
             team_workspace_path = self.workspace_manager.workspace_path
+        # The team's shared final-deliverables directory travels on the build
+        # context (platform-filled for projectless members, None for members
+        # bound to a project). Surfaced to the team info body by the policy
+        # rail only when set, so members with a project keep the bullet off.
+        team_outputs_dir: str | None = (
+            spec.build_context.team_outputs_dir
+            if spec.build_context is not None
+            else None
+        )
 
         # Decide which team rails this member gets, as declarative RailSpecs.
         # Live handles ride on the build context's extras (injected below); only
@@ -602,7 +627,7 @@ class AgentConfigurator:
             RailSpec(
                 type=TEAM_POLICY,
                 params={
-                    "prompt": ctx.prompt or "",
+                    "prompt": (ctx.prompt or "") + group_chat_prompt(spec),
                     "display_name": ctx.display_name or "",
                     "member_workspace_path": workspace_root_path,
                     "lifecycle": spec.lifecycle,
@@ -610,8 +635,8 @@ class AgentConfigurator:
                     "team_mode": _resolve_team_mode(spec),
                     "dispatch_mode": spec.dispatch_mode,
                     "base_prompt": agent_spec.system_prompt,
-                    "team_workspace_mount": team_workspace_mount,
                     "team_workspace_path": team_workspace_path,
+                    "team_outputs_dir": team_outputs_dir,
                     "expose_human_agents_to_teammates": spec.expose_human_agents_to_teammates,
                     "steer_batch_size": spec.steer_batch_size,
                     "fork_source": ctx.fork_source or "",
@@ -936,9 +961,11 @@ class AgentConfigurator:
         ctx: TeamRuntimeContext,
         messager: Messager,
         *,
-        on_before_team_cleaned=None,
-        on_team_cleaned=None,
-        on_team_built=None,
+        on_before_team_cleaned: Callable[[], Awaitable[None]] | None = None,
+        on_team_cleaned: Callable[[], Awaitable[None]] | None = None,
+        on_team_built: Callable[[], Awaitable[None]] | None = None,
+        on_member_restarted: Callable[[str], Awaitable[bool]] | None = None,
+        on_member_stopped: Callable[[str], Awaitable[None]] | None = None,
     ) -> TeamBackend:
         """Construct the TeamBackend and register cleanup paths.
 
@@ -958,6 +985,10 @@ class AgentConfigurator:
             on_team_built: Optional async callback threaded into the
                 ``TeamBackend`` so the hosting ``TeamAgent`` can persist
                 DB lifecycle state after ``build_team`` succeeds.
+            on_member_restarted: Optional async callback used to rebuild a
+                member runtime after ERROR is claimed for recovery.
+            on_member_stopped: Optional async callback used to clean a stale
+                runtime handle when an ERROR member is shut down directly.
         """
         from openjiuwen.agent_teams.schema.status import MemberMode
         from openjiuwen.agent_teams.spawn.shared_resources import get_shared_db
@@ -967,6 +998,16 @@ class AgentConfigurator:
 
         is_leader = ctx.role == TeamRole.LEADER
         current_member_name = ctx.member_name or (ctx.team_spec.leader_member_name if ctx.team_spec else "")
+        current_agent_spec = self.resolve_agent_spec(spec, ctx.role, ctx.member_name)
+        current_model_config = ctx.member_model or current_agent_spec.model
+        current_model_name = None
+        current_model_provider = None
+        if current_model_config is not None:
+            request_config = current_model_config.model_request_config
+            if request_config is not None:
+                current_model_name = request_config.model_name
+            provider = current_model_config.model_client_config.client_provider
+            current_model_provider = provider.value if isinstance(provider, ProviderType) else provider
         agent_team = TeamBackend(
             team_name=team_name,
             member_name=current_member_name,
@@ -977,6 +1018,9 @@ class AgentConfigurator:
             predefined_members=spec.predefined_members or None,
             model_config_allocator=self.model_allocator.allocate if self.model_allocator else None,
             leader_allocation=self.leader_allocation if is_leader else None,
+            model_pool_provider=lambda: list(ctx.team_spec.model_pool) if ctx.team_spec is not None else [],
+            current_model_name=current_model_name,
+            current_model_provider=current_model_provider,
             leader_prompt=ctx.prompt if is_leader else "",
             enable_hitt=spec.enable_hitt,
             enable_bridge=spec.enable_bridge,
@@ -990,6 +1034,8 @@ class AgentConfigurator:
             on_team_cleaned=on_team_cleaned,
             on_team_built=on_team_built,
             on_member_started=self._on_teammate_created,
+            on_member_restarted=on_member_restarted,
+            on_member_stopped=on_member_stopped,
             leader_member_name=ctx.team_spec.leader_member_name if ctx.team_spec else None,
         )
 
@@ -1001,6 +1047,7 @@ class AgentConfigurator:
                     return len(native.get_current_context())
             return 0
 
+        agent_team.group_chat_spec = spec
         agent_team.set_snapshot_length(_snapshot_length)
 
         self.team_backend = agent_team

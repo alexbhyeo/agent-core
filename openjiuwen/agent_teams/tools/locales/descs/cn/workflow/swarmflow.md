@@ -57,7 +57,8 @@ META = {
     "description": "一行描述，权限对话框里展示",
     "whenToUse": "适合做什么（可选，工作流列表里展示）",
     "phases": [{"title": "Search", "detail": "并行检索"}, {"title": "Verify", "model": "..."}],  # title 也可为纯字符串
-    "workflow_token_limit": 200000,  # 本次 run 独立 token 额度；用户给出预算时必填（见「预算」节）
+    # 仅当用户明确给出预算数字时才写这行（见「预算」节）；用户没给时【必须省略】：
+    # "workflow_token_limit": 200000,
 }
 
 async def run(args):
@@ -67,7 +68,7 @@ async def run(args):
 ```
 
 - `META` 必须是**纯字面量**——不能有变量、函数调用、f-string、字符串拼接（加载期静态提取）。
-- 必填 `name` / `description`；可选 `whenToUse`（工作流列表展示）、`phases`、`workflow_token_limit`（本次 run 的独立 token 额度，纯整数；见「预算 budget」节）。
+- 必填 `name` / `description`；可选 `whenToUse`（工作流列表展示）、`phases`、`workflow_token_limit`（本次 run 的独立 token 额度，纯整数；**仅当用户明确给出预算数字时才写**，用户没给时**必须省略**——见「预算 budget」节）。
 - `phases[].title` 与脚本里 `phase()` 调用的标题**精确匹配**；没有对应 `phase()` 的项自成一个进度组。某阶段项可带 `model` 覆盖该阶段默认模型（`{"title": "Verify", "model": "..."}`）。
 - **返回值语义**：worker 被告知"它的最终文本**就是**返回值"（不是给人看的消息），所以它返回**原始数据**。`run(args)` 的返回值（通常是 dict）即工作流最终结果，自动回灌给调用者。
 
@@ -79,7 +80,7 @@ async def run(args):
   - `options` 是调优 / 前向兼容参数袋（dict），键经引擎 + backend 白名单校验，未知键 fail-fast。当前可用键：
     - `model` 覆盖本次 worker 的模型。**默认省略**——worker 继承团队 teammate 模型（几乎总是正确）；只有当你高度确信某 worker 需要不同档位时才设。
     - `timeout` 本次 worker 调用的超时秒数。
-    - `isolation='worktree'`：在全新 git worktree 里跑 worker，**昂贵**（每 worker 约 200-500ms 设置 + 磁盘开销），**仅当** worker 并行改文件且会互相冲突时才用；worktree 若无更改则自动回收。
+    - `isolation='worktree'`：在全新 git worktree 里跑 worker，**昂贵**（每 worker 约 200-500ms 设置 + 磁盘开销），**仅当** worker 并行改文件且会互相冲突时才用；worktree 若无更改则自动回收。**缓存命中重放时不重建 worktree**——resume/relaunch 命中的 `agent()` 调用直接复用 journal 结果、跳过 worker 执行，其 worktree 内的文件产物不会重新出现；worker 的产出应通过返回值（文本/schema）交付，不要假设 worktree 文件在重放后仍存在。**同 run_id 续跑复用**：pause 后 resume 重跑被打断的 `isolation` worker 时，它会在自己上次留下的同一个 worktree 里继续（含上次未完成的修改）；给已完成的调用新增/移除 `isolation` 会使该调用重算。
     - `agent_type`：用具名专家 subagent（如团队里某类 teammate）替代默认 worker，从与团队相同的注册表解析；与 `schema` 组合使用（专家系统提示词会被追加结构化输出指令）。（接口就位、执行推进中。）
 - `await verify(reviewers, *, threshold=0.85, label=None, phase=None, options=None)` —— 对一份产物跑一轮**多 reviewer 验收判定**并返回结构化 `VerifyResult`（`{verdict: "pass"|"fail"|None, votes, feedback, passed}`）。每个 reviewer 是并行的一次结构化 `agent()`：`verdict` 类投 pass/fail（一票否决），`score` 类投 0~1 分（平均分 ≥ `threshold` 才通过）。任一 reviewer 未投票 → `verdict=None`（undecided），脚本自行决定重试或放弃。**单次判定、不驱动返工**——返回 `feedback` 供脚本组织执行者重做后再 `verify()`。**推荐用业务辅助 `build_reviewers(deliverable, specs, ...)` 从 `type`（`verifier` / `inspector` / `challenger`）+ 产物（文本或文件路径）构建 reviewer**（省 token、提示词一致、自动映射 kind）；仅在需要完全定制提示词时才直接构造 `Reviewer{kind, prompt, label, options}`（见「验证（verify）」一节）。
 - `agent_session(label=, phase=, instructions=, options=)` + `await s.send(prompt, *, schema=, notify=False)` —— **有状态**多轮 agent，跨轮记忆，第二轮无需重述第一轮上下文。`notify=True` 单向推送、返回 `None`。
@@ -133,8 +134,9 @@ c = await parallel([... for x in b])
 - 校验失败由模型自动重试；耗尽返回 `None`。用 `compact()` / `.filter` 过滤 `None` 再用。
 
 ## 预算 budget（硬天花板）
-- **两层预算**：`budget.*` 是**会话共享总额**（由部署方配置）；`META["workflow_token_limit"]` 是**本次 run 的独立额度**。用户在请求里给出 token / 预算数字（如"预算 90K""控制在 20 万 token 内"）时，**必须**把它换算成整数写进 `META["workflow_token_limit"]`——引擎按 run 计账、UI 显示为 run 预算徽标，超限时你会收到反馈并需重设脚本；不写则该 run 无独立上限（只受会话总额约束，UI 也无 run 徽标）。
-- `budget.total`（用户本轮 token 目标，由部署方配置，未设为 `None`）、`budget.spent()`（已花 token，**取自模型返回的真实用量**、含输入+输出；跨主循环 + 所有工作流共享，非按工作流独立）、`budget.remaining()`（`max(0, total - spent())`，无目标时为 `None`）。
+- **两层预算，但 `budget.*` 只读 run 层**：`budget.*` 读的是**本次 run 的独立额度**（`META["workflow_token_limit"]`，没写则无上限）；会话共享总额（由部署方配置）对脚本不可见，但同样在背后约束本 run（任一层撞顶都会终止运行）。用户在请求里给出 token / 预算数字（如"预算 90K""控制在 20 万 token 内"）时，**必须**把它换算成整数写进 `META["workflow_token_limit"]`——引擎按 run 计账、UI 显示为 run 预算徽标，超限时你会收到反馈并需重设脚本。
+- **用户没有给出预算数字时，【必须省略】`workflow_token_limit` 字段**——不要自行估算、不要从会话总额推导、不要照抄示例里的数值。自行设上限会导致工作流中途撞顶失败，任务跑不完。
+- `budget.total`（本 run 的 token 上限，即 `META["workflow_token_limit"]`；用户没给时为 `None`）、`budget.spent()`（本 run 已花 token，**取自模型返回的真实用量**、含输入+输出；只计本次 run 内所有 agent 的消耗，不含主循环、不含其他工作流）、`budget.remaining()`（`max(0, total - spent())`，无上限时为 `None`）。
 - **硬天花板**：`spent()` 达到 `total` 后，在跑的 agent 会在它下一次模型调用处被就地终止，后续 `agent()` 直接报错终止整个运行（该错误 `except Exception` 拦不住）。据此动态决定深度（`while budget.total and budget.remaining() > N`）或静态伸缩扇出（`FLEET = budget.total // 100_000 if budget.total else 5`）。没设 `total` 时 `remaining()` 是 `None`——动态循环必须 `guard budget.total`，否则会一直跑到 1000 上限。
 - `spent()` 是**实时**的：并发 agent 的消耗一返回就入账，所以轮询到的是全局真账，不是上一轮的旧值。天花板是兜底——**脚本自己按 `remaining()` 收尾**才能干净结束；撞上天花板则整个运行判失败。单次调用的用量只有返回后才入账，故 `spent()` 允许小幅越过 `total`。
 

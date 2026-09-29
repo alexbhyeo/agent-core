@@ -112,6 +112,23 @@ STRINGS: dict[str, str] = {
         "并注入其他成员的 system prompt、由 list_members 返回。"
         "真人通过 HumanAgentInbox 驱动该成员；模型与启动提示由框架内置模板托管，无需在此提供"
     ),
+    # ===== spawn_passive_human =================================================
+    # spawn_passive_human._desc lives in descs/cn/member/spawn_passive_human.md
+    "spawn_passive_human.member_name": (
+        "[公开] 被动人类成员唯一名（语义化 slug，如 product-owner，DNS label 风格 kebab-case）。"
+        "**首字符必须是小写英文字母（a-z），其后仅允许小写字母、数字（0-9）和连字符（-）**；"
+        "禁止大写字母、下划线、空白、中文及其他非 ASCII 字符。"
+        "同时作为主键和消息/任务路由键，在同一团队内必须唯一"
+    ),
+    "spawn_passive_human.display_name": (
+        "[公开] 被动人类成员的显示名（如「产品负责人」），仅用于展示，不用于路由。"
+        "会注入所有其他成员的 system prompt 并由 list_members 返回，禁止写入私密信息"
+    ),
+    "spawn_passive_human.desc": (
+        "[公开] 被动人类成员的角色画像与职责范围，用于展示与持久化描述，"
+        "并注入其他成员的 system prompt、由 list_members 返回。"
+        "该成员没有内部代理（avatar）：真人经外部通道通讯与透传工具操作，可被指派任务"
+    ),
     # ===== spawn_bridge_agent ==================================================
     # spawn_bridge_agent._desc lives in descs/cn/member/spawn_bridge_agent.md
     "spawn_bridge_agent.member_name": (
@@ -179,10 +196,31 @@ STRINGS: dict[str, str] = {
         "你不得自行选择、推断或补全；用户未明确指定时必须省略，使该 Agent 使用其自身默认模型"
     ),
     "spawn_external_cli.fallback_model_name": (
-        "必填。必须从团队模型池中选择，并根据该第三方 Agent 支持的模型调用协议选择兼容模型。"
+        "必填，但在没有兼容模型时允许为 null。存在兼容模型时，必须从团队模型池中选择，并根据"
+        "该第三方 Agent 支持的模型调用协议选择兼容模型。当前模型在模型池中且协议兼容时，优先选择"
+        "当前模型；当前模型不在模型池中或协议不兼容时，再选择其他兼容模型；不得随意填写不存在或"
+        "不兼容的模型。"
         "该第三方 Agent 使用自身默认模型但认证不可用时，将使用此模型自动回退；"
-        "仅对运行时明确报告的认证失败生效。模型不存在、协议不兼容或该 Agent 不支持认证回退时，"
-        "仍可使用其自身默认模型，但不启用自动回退"
+        "仅对运行时明确报告的认证失败生效。只有团队模型池中不存在兼容模型时才能传 null，"
+        "此时仍可使用其自身默认模型，但不启用自动回退"
+    ),
+    "spawn_external_cli.builtin_model": (
+        "可选。从下方目录中该 cli_agent 的条目里选择一个内置模型，使用 CLI 自身登录（如订阅）运行，"
+        "按成员工作量选择；与 model_name 互斥。省略时由 CLI 使用其自身默认模型"
+    ),
+    "spawn_external_cli.effort": (
+        "可选。推理强度，必须是所选 builtin_model 的 efforts 之一；需同时指定 builtin_model，"
+        "省略时取该模型的 default_effort"
+    ),
+    # ===== set_member_model ====================================================
+    # set_member_model._desc lives in descs/cn/member/set_member_model.md
+    "set_member_model.member_name": "要切换模型的外部 CLI 成员 member_name（语义化 slug，不是显示名）",
+    "set_member_model.model": (
+        "可选。新的内置模型，必须来自下方目录中该成员 cli_agent 的条目；省略时保持当前模型，只调整 effort"
+    ),
+    "set_member_model.effort": (
+        "可选。新的推理强度，必须是所选模型的 efforts 之一；指定了 model 而省略时取其 default_effort，"
+        "未指定 model 而省略时保持不变"
     ),
     # ===== shutdown_member =====================================================
     # shutdown_member._desc lives in descs/cn/member/shutdown_member.md
@@ -308,7 +346,7 @@ STRINGS: dict[str, str] = {
     "send_message.error_leader_to_user": "Leader 不能 send_message 给 'user'。请直接用普通回复输出给用户。",
     "send_message.error_content_too_long": (
         "'content' 过长（{actual} 字符，上限 {limit}）：这个体量的内容是产物，不是消息。"
-        "先用 write_file 把正文写到团队共享工作空间 .team/ 下的文件，再重发本消息，"
+        "先用 write_file 把正文写到团队共享产物目录（见团队信息块「团队共享工作空间」的最终产物目录）下的文件，再重发本消息，"
         "content 里只写文件路径加一两句摘要。不要为了绕过本限制而把正文拆成多条消息。"
     ),
     # ===== send_message_scheduled (scheduled-mode member variant) ==============

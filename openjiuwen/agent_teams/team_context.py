@@ -98,14 +98,20 @@ class TeamContextTracker:
             ``None`` degrades the tracker to the identity channel only (unit
             tests that only care about the static content).
         member_name: This member's semantic identifier.
-        role: This member's team role; gates the ``[human]`` roster tag.
+        role: This member's team role; gates the ``[human]`` roster tag
+            (the tag itself covers both human flavors — ``human_agent``
+            avatars and ``passive_human`` members).
         display_name: This member's human-readable label.
         member_workspace_path: This member's own artifact directory.
         member_prompt: This member's private working agreement.
-        team_workspace_mount: Agent-relative mount of the shared workspace.
         team_workspace_path: Absolute path of the shared workspace.
+        team_outputs_dir: Absolute path of the shared final-deliverables
+            directory, surfaced in the team info body for projectless members
+            only. Members bound to a project pass ``None`` and the bullet is
+            suppressed (they keep deliverables in the project).
         expose_human_agents_to_teammates: Team switch letting teammates see the
-            ``[human]`` tag (leaders and human agents always see it).
+            ``[human]`` tag (leaders and human members always see it; the tag
+            marks both the avatar and passive flavors).
         language: Rendering language ('cn' or 'en').
         fork_source: When this member was forked from another (spawned with
             ``fork="..."``), the source member's name. ``None`` for a normal
@@ -121,8 +127,8 @@ class TeamContextTracker:
         display_name: str = "",
         member_workspace_path: str | None = None,
         member_prompt: str = "",
-        team_workspace_mount: str | None = None,
         team_workspace_path: str | None = None,
+        team_outputs_dir: str | None = None,
         expose_human_agents_to_teammates: bool = False,
         language: str = "cn",
         fork_source: str | None = None,
@@ -133,8 +139,8 @@ class TeamContextTracker:
         self._display_name = display_name
         self._member_workspace_path = member_workspace_path
         self._member_prompt = member_prompt
-        self._team_workspace_mount = team_workspace_mount
         self._team_workspace_path = team_workspace_path
+        self._team_outputs_dir = team_outputs_dir
         self._mark_humans = role in (TeamRole.LEADER, TeamRole.HUMAN_AGENT) or expose_human_agents_to_teammates
         self._language = language
         self._fork_source = fork_source
@@ -397,8 +403,8 @@ class TeamContextTracker:
                 "display_name": info.display_name,
                 "desc": info.desc or "",
             },
-            team_workspace_mount=self._team_workspace_mount,
             team_workspace_path=self._team_workspace_path,
+            team_outputs_dir=self._team_outputs_dir,
             language=self._language,
         )
 

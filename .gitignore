@@ -293,3 +293,7 @@ tests/unit_tests/extensions/context_evolver/memory_file/
 # key must never be committed. The .crt is regenerable/public but there's no
 # reason to track it either; both live in certs/ as deploy-time artifacts.
 openjiuwen/harness/a2ui/certs/
+
+/records/
+/auto_harness/
+/.idea_bak/

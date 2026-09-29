@@ -14,12 +14,29 @@ from openjiuwen.agent_teams.external.cli_agent.spawn import (
     build_cli_runtime,
     descriptor_from_context,
 )
-from openjiuwen.agent_teams.external.cli_agent.codex.runtime import CodexSdkRuntime
+from openjiuwen.agent_teams.external.member_runtime import ExternalHarnessMemberRuntime
 from openjiuwen.agent_teams.external.runtime import ExternalCliRuntime, ReinvokeCliRuntime
 from openjiuwen.agent_teams.messager.base import MessagerTransportConfig
-from openjiuwen.agent_teams.schema.team import TeamRole, TeamRuntimeContext, TeamSpec
+from openjiuwen.agent_teams.schema.blueprint import TeamAgentSpec
+from openjiuwen.agent_teams.schema.build_context import BuildContext
+from openjiuwen.agent_teams.schema.team import (
+    ExternalCliAgentSpec,
+    ExternalCliMemberSpec,
+    ExternalCliModelConfig,
+    TeamRole,
+    TeamRuntimeContext,
+    TeamSpec,
+)
+from openjiuwen.agent_teams.spawn.external_cli_spawn import (
+    _external_cli_config_for_member,
+    external_cli_spawn,
+)
 from openjiuwen.agent_teams.tools.database import DatabaseConfig, DatabaseType
 from openjiuwen.core.common.exception.errors import BaseError
+from openjiuwen.harness_protocol import ModelSelection
+from openjiuwen.harness_providers.claudecode import ClaudeCodeHarness
+from openjiuwen.harness_providers.codex import CodexHarness
+from tests.test_logger import logger
 
 # A streaming stand-in CLI: read a line from stdin, echo it, then emit the
 # generic adapter's turn-completion marker. Exercises the real subprocess +
@@ -45,6 +62,99 @@ _FAKE_ONESHOT_DRIBBLE = (
 )
 
 _EVENT_WS_URL = "ws://gateway:19000/ws"
+
+
+def test_predefined_member_config_wins_over_dynamic_kind_config() -> None:
+    member_config = ExternalCliAgentSpec(
+        cli_agent="codex",
+        skills=[{"dir": "/member-skill"}],
+    )
+    spec = TeamAgentSpec(
+        agents={},
+        predefined_members=[
+            ExternalCliMemberSpec(
+                member_name="reviewer",
+                display_name="Reviewer",
+                external_cli=member_config,
+            )
+        ],
+        external_cli_agents=[
+            ExternalCliAgentSpec(cli_agent="codex", skills=[{"dir": "/dynamic-skill"}])
+        ],
+    )
+
+    assert _external_cli_config_for_member(spec, "reviewer", "codex") is member_config
+    assert _external_cli_config_for_member(spec, "other", "codex") is spec.external_cli_agents[0]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("cli_agent", "relative"),
+    [("codex", ".agents/skills"), ("claude", ".claude/skills")],
+)
+async def test_predefined_member_installs_skills_in_project_with_worktree(
+    tmp_path, monkeypatch, cli_agent, relative,
+):
+    from openjiuwen.agent_teams.agent import team_agent as team_agent_module
+    from openjiuwen.agent_teams.spawn import external_cli_spawn as spawn_module
+    from openjiuwen.core.runner.runner import Runner
+
+    project, worktree, source = (tmp_path / name for name in ("project", "worktree", "source"))
+    for path in (project, worktree, source):
+        path.mkdir()
+    (source / "SKILL.md").write_text("---\nname: expert-proof\ndescription: Test skill\n---\nUse me.\n")
+    existing = project / relative / "expert-proof"
+    existing.mkdir(parents=True)
+    (existing / "SKILL.md").write_text("---\nname: expert-proof\ndescription: Existing\n---\nKeep me.\n")
+    config = ExternalCliAgentSpec(cli_agent=cli_agent, skills=[{"dir": str(source)}], skill_conflict="append")
+    spec = TeamAgentSpec(
+        agents={},
+        predefined_members=[ExternalCliMemberSpec(member_name="dev-1", display_name="Developer", external_cli=config)],
+        build_context=BuildContext(project_dir=str(project)),
+    )
+    ctx = _ctx(member="dev-1", cli_agent=cli_agent)
+    ctx.worktree_path = str(worktree)
+    captured = {}
+
+    class FakeRuntime:
+        def bind_team_context_tracker(self, _tracker):
+            pass
+
+        async def stop(self):
+            pass
+
+    class FakeTeamAgent:
+        team_backend = None
+
+        def __init__(self, _card):
+            pass
+
+        def configure(self, _spec, _ctx, *, member_runtime):
+            assert isinstance(member_runtime, FakeRuntime)
+
+    async def fake_build_cli_runtime(_ctx, **kwargs):
+        captured.update(kwargs)
+        return FakeRuntime()
+
+    async def fake_run_agent_team(*_args, **_kwargs):
+        return None
+
+    async def fake_prompt(*_args, **_kwargs):
+        return None
+
+    monkeypatch.setattr(team_agent_module, "TeamAgent", FakeTeamAgent)
+    monkeypatch.setattr(spawn_module, "build_cli_runtime", fake_build_cli_runtime)
+    monkeypatch.setattr(spawn_module, "_build_member_system_prompt", fake_prompt)
+    monkeypatch.setattr(Runner, "run_agent_team", fake_run_agent_team)
+    leader = SimpleNamespace(team_backend=None, share_workspace_cache_with=lambda _member: None)
+
+    handle = await external_cli_spawn(team_agent=leader, spec=spec, ctx=ctx, hitt_enabled=False)
+    await handle._task
+
+    assert captured["cwd"] == str(worktree)
+    assert (project / relative / "expert-proof" / "SKILL.md").is_file()
+    assert "Keep me." in (existing / "SKILL.md").read_text()
+    assert "name: expert-proof-2" in (project / relative / "expert-proof-2" / "SKILL.md").read_text()
 
 
 def _ctx(
@@ -232,21 +342,7 @@ async def test_reinvoke_surfaces_chunks_live_during_turn():
 
 @pytest.mark.asyncio
 @pytest.mark.level0
-async def test_build_cli_runtime_dispatches_codex_to_sdk_backend(monkeypatch):
-    class FakeCodexConfig:
-        def __init__(self, **kwargs):
-            self.kwargs = kwargs
-
-    sdk = SimpleNamespace(
-        CodexConfig=FakeCodexConfig,
-        AsyncCodex=object,
-        ApprovalMode=SimpleNamespace(deny_all="deny-all"),
-        Sandbox=SimpleNamespace(full_access="full-access"),
-    )
-    monkeypatch.setattr(
-        "openjiuwen.agent_teams.external.cli_agent.codex.runtime.load_codex_sdk",
-        lambda: sdk,
-    )
+async def test_build_cli_runtime_dispatches_codex_to_protocol_harness():
     token = set_session_id("sess-1")
     try:
         runtime = await build_cli_runtime(
@@ -260,29 +356,69 @@ async def test_build_cli_runtime_dispatches_codex_to_sdk_backend(monkeypatch):
             codex_turn_idle_timeout_s=45.0,
             codex_turn_idle_retries=2,
             system_prompt="ROLE: isolated developer",
+            system_prompt_mode="append",
+            skills=({"dir": "/portable-skills"},),
+            skill_conflict="replace",
             member_agent_id="ext_team_dev-1",
         )
     finally:
         reset_session_id(token)
 
-    assert isinstance(runtime, CodexSdkRuntime)
-    assert runtime._thread_options == {
-        "ephemeral": False,
-        "config": {"model_reasoning_summary": "detailed"},
-        "cwd": "/workspace",
-        "developer_instructions": "ROLE: isolated developer",
-        "approval_mode": "deny-all",
-        "sandbox": "full-access",
-    }
-    assert runtime._config.kwargs["cwd"] == "/workspace"
-    assert runtime._config.kwargs["codex_bin"] == "/opt/codex-cli"
-    assert (
-        'mcp_servers.openjiuwen_team.default_tools_approval_mode="approve"'
-        in runtime._config.kwargs["config_overrides"]
-    )
-    assert runtime._member_agent_id == "ext_team_dev-1"
-    assert runtime._turn_idle_timeout_s == 45.0
-    assert runtime._turn_idle_retries == 2
+    assert isinstance(runtime, ExternalHarnessMemberRuntime)
+    assert isinstance(runtime.harness, CodexHarness)
+    assert runtime.provider_name == "codex"
+    assert runtime.reliability_agent_kind == "codex"
+    assert runtime.inject_mcp is True
+    config = runtime.harness._config
+    assert config.skills[0].dir == "/portable-skills"
+    assert config.skill_conflict == "replace"
+    assert config.system_prompt_mode == "append"
+    assert config.cwd == "/workspace"
+    assert config.codex_bin == "/opt/codex-cli"
+    assert config.bypass_approvals_and_sandbox is True
+    assert config.turn_idle_timeout_s == 45.0
+    assert config.turn_idle_retries == 2
+    assert config.mcp_default_tools_approval_mode == "approve"
+    assert "OPENJIUWEN_TEAM_JOIN" in config.env
+    mcp_servers = runtime._extra_mcp_servers
+    assert [server.name for server in mcp_servers] == ["openjiuwen-team"]
+    assert mcp_servers[0].command == ("openjiuwen-team-mcp",)
+    context = runtime._context_source
+    assert context.agent_id == "ext_team_dev-1"
+    assert context.system_prompt == "ROLE: isolated developer"
+    assert context.host_session_id == "sess-1"
+
+
+@pytest.mark.asyncio
+@pytest.mark.level0
+async def test_build_cli_runtime_dispatches_claude_to_protocol_harness():
+    token = set_session_id("sess-1")
+    try:
+        runtime = await build_cli_runtime(
+            _ctx(member="dev-1", cli_agent="claude"),
+            cwd="/workspace",
+            add_dirs=("/shared",),
+            cli_path="/opt/claude",
+            inject_mcp=True,
+            system_prompt="ROLE: isolated developer",
+            member_agent_id="ext_team_dev-1",
+        )
+    finally:
+        reset_session_id(token)
+
+    assert isinstance(runtime, ExternalHarnessMemberRuntime)
+    assert isinstance(runtime.harness, ClaudeCodeHarness)
+    assert runtime.provider_name == "claude-code"
+    assert runtime.reliability_agent_kind == "claude"
+    config = runtime.harness._config
+    assert config.cwd == "/workspace"
+    assert config.add_dirs == ("/shared",)
+    assert config.cli_path == "/opt/claude"
+    assert config.inherit_process_env is False
+    assert "OPENJIUWEN_TEAM_JOIN" in config.env
+    assert not any(key.startswith("CLAUDECODE") for key in config.env)
+    # Claude mounts the team MCP server in process after configure; nothing yet.
+    assert runtime._extra_mcp_servers == []
 
 
 @pytest.mark.asyncio
@@ -314,3 +450,51 @@ async def test_build_cli_runtime_codex_rejects_full_command_override():
             )
     finally:
         reset_session_id(token)
+
+
+_POOL_FALLBACK = ExternalCliModelConfig(provider="jiuwen", model="pool-model", api_base="https://pool", api_key="k")
+
+
+@pytest.mark.asyncio
+@pytest.mark.level0
+@pytest.mark.parametrize("cli_agent", ["claude", "codex"])
+async def test_builtin_model_reaches_the_provider_and_keeps_the_auth_fallback(cli_agent: str):
+    token = set_session_id("sess-1")
+    try:
+        runtime = await build_cli_runtime(
+            _ctx(member="dev-1", cli_agent=cli_agent),
+            inject_mcp=False,
+            external_model_config=ExternalCliModelConfig(model="small", effort="low"),
+            fallback_external_model_config=_POOL_FALLBACK,
+            member_agent_id="ext_team_dev-1",
+        )
+    finally:
+        reset_session_id(token)
+
+    config = runtime.harness._config
+    assert (config.model.model, config.model.effort) == ("small", "low")
+    assert config.model.api_base is None
+    # A built-in model runs on the CLI's own login, which the fallback guards.
+    assert config.fallback_model is not None and config.fallback_model.model == "pool-model"
+    # Picking the model and effort does not change the harness until it runs.
+    assert await runtime.set_model_selection(ModelSelection(effort="high")) is False
+
+
+@pytest.mark.asyncio
+@pytest.mark.level1
+@pytest.mark.parametrize("cli_agent", ["claude", "codex"])
+async def test_member_on_an_endpoint_takes_no_auth_fallback(cli_agent: str):
+    token = set_session_id("sess-1")
+    try:
+        runtime = await build_cli_runtime(
+            _ctx(member="dev-1", cli_agent=cli_agent),
+            inject_mcp=False,
+            external_model_config=ExternalCliModelConfig(provider="jiuwen", model="m", api_base="https://gw"),
+            fallback_external_model_config=_POOL_FALLBACK,
+            member_agent_id="ext_team_dev-1",
+        )
+    finally:
+        reset_session_id(token)
+
+    assert runtime.harness._config.fallback_model is None
+    logger.info("%s member on an endpoint runs without an auth fallback", cli_agent)

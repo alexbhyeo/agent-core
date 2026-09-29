@@ -46,16 +46,17 @@ from openjiuwen.core.common.logging import logger
 from openjiuwen.core.single_agent.rail.base import AgentCallbackContext
 from openjiuwen.extensions.observability.redaction import (
     redact_completion,
+    redact_error_summary,
     redact_prompt,
 )
 from openjiuwen.extensions.observability.demand import publish_span_snapshot
+from openjiuwen.extensions.observability.error_reporting import record_span_error
 from openjiuwen.extensions.observability.tool_outcome import (
     TOOL_REPORTED_FAILURE,
     tool_failure_reason,
     tool_result_for_exception,
 )
 from openjiuwen.extensions.observability.semconv import (
-    DA_AGENT_NAME,
     DA_TASK_IS_FOLLOW_UP,
     DA_TASK_ITERATION,
     DA_TASK_LOOP_EVENT,
@@ -70,30 +71,25 @@ from openjiuwen.extensions.observability.semconv import (
     GEN_AI_TOOL_CALL_ID,
     GEN_AI_TOOL_CALL_RESULT,
     GEN_AI_TOOL_DESCRIPTION,
-    GEN_AI_TOOL_ID,
-    GEN_AI_TOOL_INPUT,
     GEN_AI_TOOL_NAME,
-    GEN_AI_TOOL_OUTPUT,
     GEN_AI_TOOL_TYPE,
-    LANGFUSE_OBSERVATION_INPUT,
-    LANGFUSE_OBSERVATION_OUTPUT,
-    LANGFUSE_OBSERVATION_TYPE,
-    LANGFUSE_SESSION_ID,
     OJ_REQUEST_ID,
     OJ_RUN_ID,
-    OJ_SESSION_ID,
     OJ_EXECUTION_SUBJECT_DISPLAY_NAME,
     OJ_EXECUTION_SUBJECT_ID,
     OJ_EXECUTION_SUBJECT_KIND,
     OJ_EXECUTION_SUBJECT_PARENT_ID,
     OJ_EXECUTION_SUBJECT_SESSION_ID,
+    OJ_SPAN_INPUT,
+    OJ_SPAN_OUTPUT,
     OJ_STEP_ID,
     OJ_STEP_NUMBER,
     OJ_TOOL_AUTHORITATIVE,
+    OJ_TOOL_PROTOCOL,
     OJ_TOOL_RESOURCE_ID,
-    OJ_TOOL_TYPE,
     OJ_TRACE_ROOT,
-    OJ_TRACE_SCHEMA_VERSION,
+    OJ_TRAJECTORY_SCHEMA_VERSION,
+    TRAJECTORY_SPAN_SCHEMA_VERSION,
     OJ_TRAJECTORY_RECORD_KIND,
     OJ_TURN_ID,
     OJ_TURN_NUMBER,
@@ -118,6 +114,11 @@ from openjiuwen.harness.rails.base import DeepAgentRail
 
 _TRACER_NAME = "openjiuwen.harness.observability.rail"
 _ORPHAN_AGENT_FORCED_CLOSE_REASON = "missing_agent_terminal_callback"
+
+# Session-state key holding the open Step's identity. A HITL resume finishes
+# that Step in a request of its own, with no Step span left to inherit from;
+# this is what lets the replayed work name the Step it belongs to.
+OPEN_STEP_STATE_KEY = "_observability_open_step"
 
 
 def serialize_ability_value(value: Any) -> str:
@@ -254,7 +255,7 @@ class AgentSpanScope:
         if output is not None:
             output_str = str(output)
             redacted = redact_completion(output_str, self._config) if self._config else output_str
-            span.set_attribute(LANGFUSE_OBSERVATION_OUTPUT, redacted)
+            span.set_attribute(OJ_SPAN_OUTPUT, redacted)
             for key in self._output_attribute_keys:
                 span.set_attribute(key, redacted)
 
@@ -262,12 +263,10 @@ class AgentSpanScope:
             cascade_close_children()
 
         if exception is not None:
-            span.record_exception(exception)
-            span.set_attribute(ERROR_TYPE, type(exception).__name__)
-            span.set_status(Status(StatusCode.ERROR, str(exception)))
+            record_span_error(span, exception=exception, config=self._config)
         else:
             span.set_status(Status(StatusCode.OK))
-        span.end()
+            span.end()
 
         # Restore the parent agent span (None when there was none) so the
         # parent's subsequent llm/tool spans resume nesting correctly.
@@ -328,29 +327,17 @@ class ToolSpanScope:
         recorded_output = (
             tool_result_for_exception(exception) if exception is not None else output
         )
-        raw_output = serialize_ability_value(recorded_output)
-        raw_call_result = (
-            "null" if recorded_output is None else raw_output
-        )
-        redacted = (
-            redact_completion(raw_output, self._config)
-            if self._config
-            else raw_output
-        )
+        raw_call_result = "null" if recorded_output is None else serialize_ability_value(recorded_output)
         redacted_call_result = (
             redact_completion(raw_call_result, self._config)
             if self._config
             else raw_call_result
         )
-        span.set_attribute(GEN_AI_TOOL_OUTPUT, redacted)
         span.set_attribute(GEN_AI_TOOL_CALL_RESULT, redacted_call_result)
-        span.set_attribute(LANGFUSE_OBSERVATION_OUTPUT, redacted)
+        span.set_attribute(OJ_SPAN_OUTPUT, redacted_call_result)
 
         if exception is not None:
-            span.record_exception(exception)
-            span.set_attribute(ERROR_TYPE, type(exception).__name__)
-            span.set_status(Status(StatusCode.ERROR, str(exception)))
-            span.end()
+            record_span_error(span, exception=exception, config=self._config)
             return
 
         failure_reason = tool_failure_reason(output)
@@ -358,7 +345,10 @@ class ToolSpanScope:
             span.set_status(Status(StatusCode.OK))
         else:
             span.set_attribute(ERROR_TYPE, TOOL_REPORTED_FAILURE)
-            span.set_status(Status(StatusCode.ERROR, failure_reason))
+            span.set_status(Status(
+                StatusCode.ERROR,
+                redact_error_summary(failure_reason, self._config),
+            ))
         span.end()
 
 
@@ -405,6 +395,58 @@ class AgentObservabilityRail(DeepAgentRail):
         from openjiuwen.extensions.observability.setup import get_config
 
         return get_config()
+
+    @staticmethod
+    def _publish_open_step(ctx: AgentCallbackContext, step_id: str, step_number: int) -> None:
+        """Record the open Step's identity so a resume can rejoin it.
+
+        A HITL resume finishes the interrupted Step's tools in a request of its
+        own, where no Step span is open to inherit from and the original span id
+        is long gone. Persisting the identity keeps ``openjiuwen.step.id`` a fact
+        the replayed work can carry, rather than something a consumer has to
+        infer from step numbers.
+
+        Args:
+            ctx: Callback context whose session holds the identity.
+            step_id: The open Step's id.
+            step_number: The open Step's 1-based number.
+        """
+        session = getattr(ctx, "session", None)
+        if session is None:
+            return
+        try:
+            session.update_state({
+                OPEN_STEP_STATE_KEY: {"step_id": step_id, "step_number": step_number},
+            })
+        except Exception as exc:
+            logger.debug("[AgentObservability] open step publish failed: %s", exc)
+
+    @staticmethod
+    def _resolve_persisted_step(ctx: AgentCallbackContext) -> tuple[str, int] | None:
+        """Read back the Step identity a resume is continuing.
+
+        Args:
+            ctx: Callback context whose session holds the identity.
+
+        Returns:
+            The persisted ``(step_id, step_number)``, or None when absent or
+            unusable — an unreadable snapshot must not fail the tool call.
+        """
+        session = getattr(ctx, "session", None)
+        if session is None:
+            return None
+        try:
+            stored = session.get_state(OPEN_STEP_STATE_KEY)
+        except Exception as exc:
+            logger.debug("[AgentObservability] open step read failed: %s", exc)
+            return None
+        if not isinstance(stored, dict):
+            return None
+        step_id = str(stored.get("step_id") or "")
+        step_number = stored.get("step_number")
+        if not step_id or not isinstance(step_number, int) or step_number <= 0:
+            return None
+        return step_id, step_number
 
     @staticmethod
     def _root_span_for(ctx: AgentCallbackContext) -> Span | None:
@@ -490,6 +532,7 @@ class AgentObservabilityRail(DeepAgentRail):
                 agent_name=agent_name,
                 decoration=decoration,
                 root_span=root_span,
+                scope_parent=iteration_parent,
             )
             span.set_attribute(DA_TASK_ITERATION, iteration)
             span.set_attribute(DA_TASK_IS_FOLLOW_UP, is_follow_up)
@@ -497,7 +540,7 @@ class AgentObservabilityRail(DeepAgentRail):
             query = getattr(inputs, "query", "") or ""
             if query:
                 redacted_query = redact_prompt(query, config) if config else str(query)
-                span.set_attribute(LANGFUSE_OBSERVATION_INPUT, redacted_query)
+                span.set_attribute(OJ_SPAN_INPUT, redacted_query)
                 for key in decoration.input_attribute_keys:
                     span.set_attribute(key, redacted_query)
             loop_event = getattr(inputs, "loop_event", None)
@@ -667,12 +710,13 @@ class AgentObservabilityRail(DeepAgentRail):
                 agent_name=agent_name,
                 decoration=decoration,
                 root_span=root_span,
+                scope_parent=parent_span,
             )
 
             query = getattr(inputs, "query", "") or ""
             if query:
                 redacted_query = redact_prompt(query, config) if config else str(query)
-                span.set_attribute(LANGFUSE_OBSERVATION_INPUT, redacted_query)
+                span.set_attribute(OJ_SPAN_INPUT, redacted_query)
                 for key in decoration.input_attribute_keys:
                     span.set_attribute(key, redacted_query)
 
@@ -772,8 +816,7 @@ class AgentObservabilityRail(DeepAgentRail):
 
             agent = ctx.agent
             agent_name = str(
-                scope_parent.attributes.get(DA_AGENT_NAME)
-                or scope_parent.attributes.get(GEN_AI_AGENT_NAME)
+                scope_parent.attributes.get(GEN_AI_AGENT_NAME)
                 or self.resolve_agent_name(agent)
                 or "unknown"
             )
@@ -789,11 +832,16 @@ class AgentObservabilityRail(DeepAgentRail):
                 agent_name=agent_name,
                 decoration=AgentSpanDecoration.collect(ctx),
                 root_span=root_span,
+                scope_parent=scope_parent,
             )
             span.set_attribute(OJ_TRAJECTORY_RECORD_KIND, "step")
-            span.set_attribute(DA_TASK_ITERATION, iteration)
-            span.set_attribute(OJ_STEP_ID, f"{span.context.span_id:016x}")
+            span.set_attribute(OJ_TRAJECTORY_SCHEMA_VERSION, TRAJECTORY_SPAN_SCHEMA_VERSION)
+            step_id = f"{span.context.span_id:016x}"
+            span.set_attribute(OJ_STEP_ID, step_id)
+            # The ReAct counter is the step number. ``deepagent.task.iteration``
+            # counts the outer task loop and belongs on the task span only.
             span.set_attribute(OJ_STEP_NUMBER, iteration)
+            self._publish_open_step(ctx, step_id, iteration)
 
             self._open_react_step_span = span
             self._open_react_step_parent = scope_parent
@@ -824,12 +872,10 @@ class AgentObservabilityRail(DeepAgentRail):
         if span.is_recording():
             cascade_close_children()
             if exception is not None:
-                span.record_exception(exception)
-                span.set_attribute(ERROR_TYPE, type(exception).__name__)
-                span.set_status(Status(StatusCode.ERROR, str(exception)))
+                record_span_error(span, exception=exception, config=self._config())
             else:
                 span.set_status(Status(StatusCode.OK))
-            span.end()
+                span.end()
         set_current_agent_span(
             parent if parent is not None and parent.is_recording() else None
         )
@@ -843,20 +889,19 @@ class AgentObservabilityRail(DeepAgentRail):
     # ------------------------------------------------------------------
 
     async def before_tool_call(self, ctx: AgentCallbackContext) -> None:
-        """Open the authoritative span around one AbilityManager execution."""
+        """Open the authoritative span around one AbilityManager execution.
+
+        Every agent this rail is mounted on gets it, a Team member included.
+        Only this hook sees the model's tool call, so only this span can state
+        the call id; the global tool callback span a Team member used to get
+        stated none, and nothing could join the call to the tool message the
+        model read for it.
+        """
         try:
             inputs = getattr(ctx, "inputs", None)
             tool_name = str(getattr(inputs, "tool_name", "") or "unknown")
             current_agent = get_current_agent_span()
             root_span = self._root_span_for(ctx)
-            if (
-                root_span is None
-                or not root_span.attributes.get(OJ_TRACE_ROOT)
-            ):
-                # This authoritative Ability scope is the single-Agent
-                # integration. Team roots keep their existing global Tool
-                # callback behavior until the later Team trajectory phase.
-                return
             parent = (
                 current_agent
                 if current_agent is not None and current_agent.is_recording()
@@ -867,14 +912,13 @@ class AgentObservabilityRail(DeepAgentRail):
 
             parent_ctx = set_span_in_context(parent, otel_context.get_current())
             span = self._tracer().start_span(
-                name=f"tool.{tool_name}",
+                name=f"execute_tool {tool_name}",
                 context=parent_ctx,
                 kind=SpanKind.INTERNAL,
             )
-            span.set_attribute(LANGFUSE_OBSERVATION_TYPE, "tool")
             span.set_attribute(GEN_AI_OPERATION_NAME, "execute_tool")
             span.set_attribute(GEN_AI_TOOL_NAME, tool_name)
-            span.set_attribute(OJ_TRACE_SCHEMA_VERSION, "1")
+            span.set_attribute(OJ_TRAJECTORY_SCHEMA_VERSION, TRAJECTORY_SPAN_SCHEMA_VERSION)
             span.set_attribute(OJ_TRAJECTORY_RECORD_KIND, "tool")
             span.set_attribute(OJ_TOOL_AUTHORITATIVE, True)
 
@@ -886,15 +930,17 @@ class AgentObservabilityRail(DeepAgentRail):
             card = self._resolve_ability_card(ctx, tool_name)
             resource_id = str(getattr(card, "id", "") or "")
             if resource_id:
-                span.set_attribute(GEN_AI_TOOL_ID, resource_id)
                 span.set_attribute(OJ_TOOL_RESOURCE_ID, resource_id)
             description = str(getattr(card, "description", "") or "")
             if description:
                 span.set_attribute(GEN_AI_TOOL_DESCRIPTION, description)
-            ability_type = self._ability_type(ctx, card, tool_name)
-            if ability_type:
-                span.set_attribute(GEN_AI_TOOL_TYPE, ability_type)
-                span.set_attribute(OJ_TOOL_TYPE, ability_type)
+            # AbilityManager executes tools inside the agent-controlled
+            # runtime, which is an OTel GenAI "extension".  Transport details
+            # such as MCP are separate OpenJiuwen correlation metadata.
+            span.set_attribute(GEN_AI_TOOL_TYPE, "extension")
+            ability_protocol = self._ability_protocol(ctx, card, tool_name)
+            if ability_protocol:
+                span.set_attribute(OJ_TOOL_PROTOCOL, ability_protocol)
 
             raw_arguments = serialize_ability_value(
                 getattr(inputs, "tool_args", None)
@@ -903,10 +949,22 @@ class AgentObservabilityRail(DeepAgentRail):
             redacted_arguments = (
                 redact_prompt(raw_arguments, config) if config else raw_arguments
             )
-            span.set_attribute(GEN_AI_TOOL_INPUT, redacted_arguments)
             span.set_attribute(GEN_AI_TOOL_CALL_ARGUMENTS, redacted_arguments)
-            span.set_attribute(LANGFUSE_OBSERVATION_INPUT, redacted_arguments)
+            span.set_attribute(OJ_SPAN_INPUT, redacted_arguments)
             self._copy_parent_correlation(parent, span)
+            # A resume replays the interrupted Step's tools before the loop
+            # reopens a Step span, so the parent here is the run root and has no
+            # Step identity to inherit. Recover it from the session instead, so
+            # the replayed work states which Step it belongs to rather than
+            # leaving a consumer to infer it.
+            if parent.attributes.get(OJ_STEP_ID) is None:
+                persisted = self._resolve_persisted_step(ctx)
+                react_iteration = int(getattr(inputs, "react_iteration", 0) or 0)
+                if persisted is not None and persisted[1] == react_iteration:
+                    span.set_attribute(OJ_STEP_ID, persisted[0])
+                    span.set_attribute(OJ_STEP_NUMBER, persisted[1])
+                elif react_iteration > 0:
+                    span.set_attribute(OJ_STEP_NUMBER, react_iteration)
 
             push_tool_span(tool_name, span)
             ToolSpanScope(span=span, tool_name=tool_name, config=config).attach(ctx)
@@ -946,7 +1004,7 @@ class AgentObservabilityRail(DeepAgentRail):
             return None
 
     @staticmethod
-    def _ability_type(
+    def _ability_protocol(
         ctx: AgentCallbackContext,
         card: Any,
         tool_name: str,
@@ -961,26 +1019,18 @@ class AgentObservabilityRail(DeepAgentRail):
                 # Fall through to the card class name heuristic below.
                 logger.debug("otel: mcp scope resolution failed for {} - {}", tool_name, exc)
         class_name = type(card).__name__.lower() if card is not None else ""
-        if "workflow" in class_name:
-            return "workflow"
-        if "agent" in class_name:
-            return "subagent"
         if "mcp" in class_name:
             return "mcp"
-        if "tool" in class_name:
-            return "tool"
         return None
 
     @staticmethod
     def _copy_parent_correlation(parent: Span, span: Span) -> None:
         for key in (
-            LANGFUSE_SESSION_ID,
             GEN_AI_CONVERSATION_ID,
             GEN_AI_AGENT_DESCRIPTION,
             GEN_AI_AGENT_ID,
             GEN_AI_AGENT_NAME,
             GEN_AI_AGENT_VERSION,
-            OJ_SESSION_ID,
             OJ_REQUEST_ID,
             OJ_RUN_ID,
             OJ_TURN_ID,
@@ -1030,7 +1080,7 @@ class AgentObservabilityRail(DeepAgentRail):
             # to nest under — not a leftover, and ending it here would cut the
             # request's span short at its first round.
             return
-        prev_name = prev.attributes.get(DA_AGENT_NAME, "")
+        prev_name = prev.attributes.get(GEN_AI_AGENT_NAME, "")
         prev_trace_id = getattr(getattr(prev, "context", None), "trace_id", None)
         same_run = prev_trace_id == root_span.context.trace_id
         if prev_name == agent_name and same_run:
@@ -1097,14 +1147,31 @@ class AgentObservabilityRail(DeepAgentRail):
         agent_name: str,
         decoration: AgentSpanDecoration,
         root_span: Span | None,
+        scope_parent: Span | None,
     ) -> None:
-        """Apply the attributes shared by iteration and invoke spans."""
-        span.set_attribute(LANGFUSE_OBSERVATION_TYPE, "agent")
+        """Apply the attributes shared by iteration, invoke and Step spans.
+
+        Correlation comes from the run root, except the turn identity, which
+        the scope parent overrides when it states one. A single agent's root
+        states the turn and every agent span copies it, so the parent's value
+        is the root's and nothing changes there. A Team root states no turn —
+        one trace holds many member turns — so the member span states it and
+        its Step and nested sub-agent spans inherit it from there. A
+        decoration still has the last word.
+
+        Args:
+            span: The agent-tier span being opened.
+            agent: The agent the span belongs to.
+            agent_name: Resolved agent name for the span.
+            decoration: Attributes another rail contributed to this span.
+            root_span: The run root this span belongs to, if any.
+            scope_parent: The span this one opens inside (run root, invoke,
+                iteration or agent span), if any.
+        """
         span.set_attribute(GEN_AI_OPERATION_NAME, "invoke_agent")
-        span.set_attribute(OJ_TRACE_SCHEMA_VERSION, "1")
+        span.set_attribute(OJ_TRAJECTORY_SCHEMA_VERSION, TRAJECTORY_SPAN_SCHEMA_VERSION)
         span.set_attribute(OJ_TRAJECTORY_RECORD_KIND, "agent")
         if agent_name:
-            span.set_attribute(DA_AGENT_NAME, agent_name)
             span.set_attribute(GEN_AI_AGENT_NAME, agent_name)
         card = getattr(agent, "card", None)
         if card is not None:
@@ -1122,7 +1189,6 @@ class AgentObservabilityRail(DeepAgentRail):
         if root_span is not None:
             for key in (
                 GEN_AI_CONVERSATION_ID,
-                OJ_SESSION_ID,
                 OJ_REQUEST_ID,
                 OJ_RUN_ID,
                 OJ_TURN_ID,
@@ -1134,6 +1200,11 @@ class AgentObservabilityRail(DeepAgentRail):
                 OJ_EXECUTION_SUBJECT_SESSION_ID,
             ):
                 value = root_span.attributes.get(key)
+                if value is not None:
+                    span.set_attribute(key, value)
+        if scope_parent is not None and scope_parent.attributes.get(OJ_TURN_ID) is not None:
+            for key in (OJ_TURN_ID, OJ_TURN_NUMBER):
+                value = scope_parent.attributes.get(key)
                 if value is not None:
                     span.set_attribute(key, value)
         subject = current_execution_subject()
@@ -1156,14 +1227,17 @@ class AgentObservabilityRail(DeepAgentRail):
                 )
         # Preserve the root trajectory owner. A subagent's isolated runtime
         # session is already represented by OJ_EXECUTION_SUBJECT_SESSION_ID.
+        # A value already copied from the root is authoritative and is never
+        # overwritten here; the resolved id only fills a missing
+        # ``gen_ai.conversation.id`` so the export adapter can always derive a
+        # session.
         session_id = str(
-            span.attributes.get(OJ_SESSION_ID)
-            or span.attributes.get(GEN_AI_CONVERSATION_ID)
+            span.attributes.get(GEN_AI_CONVERSATION_ID)
             or current_session_id()
             or ""
         )
-        if session_id:
-            span.set_attribute(LANGFUSE_SESSION_ID, session_id)
+        if session_id and not span.attributes.get(GEN_AI_CONVERSATION_ID):
+            span.set_attribute(GEN_AI_CONVERSATION_ID, session_id)
         for key, value in decoration.attributes.items():
             span.set_attribute(key, value)
 

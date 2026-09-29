@@ -53,7 +53,17 @@ def clear_team_span() -> None:
     clear_root_span()
 
 
-def get_or_create_team_span(team_name: str, tracer) -> Span | None:
+def get_or_create_team_span(team_name: str, tracer, *, session_id: str | None = None) -> Span | None:
+    """Return the team's root span, creating and registering it when absent.
+
+    Args:
+        team_name: The team the root stands for.
+        tracer: Tracer to open the root with.
+        session_id: The session the root belongs to. A caller that knows it
+            states it here; the context vars are only a fallback, and an
+            unregistered root is invisible to a teammate running in a task
+            of its own.
+    """
     if not team_name:
         return None
     span = get_bound_root_span()
@@ -63,33 +73,25 @@ def get_or_create_team_span(team_name: str, tracer) -> Span | None:
     from opentelemetry.trace import SpanKind
     from openjiuwen.agent_teams.context import get_session_id
     from openjiuwen.extensions.observability.semconv import (
+        AT_TEAM_ID,
         AT_TEAM_NAME,
         GEN_AI_CONVERSATION_ID,
-        LANGFUSE_SESSION_ID,
-        LANGFUSE_TRACE_NAME,
-        LANGFUSE_TRACE_TAGS,
         OJ_AGENT_MODE,
-        OJ_SESSION_ID,
-        OJ_TEAM_ID,
-        OJ_TEAM_NAME,
-        OJ_TEAM_SESSION_ID,
     )
 
-    session_id = get_session_id() or ""
+    session_id = str(session_id or "") or get_session_id() or get_current_session_id() or ""
 
     span = tracer.start_span(name=f"team.{team_name}", kind=SpanKind.SERVER)
     span.set_attribute(AT_TEAM_NAME, team_name)
     span.set_attribute(OJ_AGENT_MODE, "team")
-    span.set_attribute(OJ_TEAM_ID, team_name)
-    span.set_attribute(OJ_TEAM_NAME, team_name)
+    span.set_attribute(AT_TEAM_ID, team_name)
     if session_id:
-        span.set_attribute(OJ_TEAM_SESSION_ID, session_id)
-        span.set_attribute(OJ_SESSION_ID, session_id)
         span.set_attribute(GEN_AI_CONVERSATION_ID, session_id)
-        span.set_attribute(LANGFUSE_SESSION_ID, session_id)
-    span.set_attribute(LANGFUSE_TRACE_NAME, f"team.{team_name}")
-    span.set_attribute(LANGFUSE_TRACE_TAGS, [team_name])
-    set_root_span(span)
+    # Registered under the session, not only in this task's ContextVar: an
+    # in-process teammate runs in a task of its own and looks the root up by
+    # the session its callback carries. Left unregistered, that lookup finds
+    # nothing and the teammate's whole round goes unrecorded.
+    set_root_span(span, session_id=session_id or None)
     team_logger.info(
         "otel: get_or_create_team_span CREATE new team span team_name={} "
         "trace_id={:032x} span_id={:016x}",

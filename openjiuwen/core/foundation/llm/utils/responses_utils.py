@@ -84,9 +84,29 @@ def build_request_body(
 
     if include_reasoning_encrypted_content:
         body["include"] = ["reasoning.encrypted_content"]
-    if extra_body:
-        body.update(extra_body)
+    expanded = expand_nested_extra_body(extra_body)
+    if expanded:
+        body.update(expanded)
     return body
+
+
+def expand_nested_extra_body(extra_body: Optional[dict[str, Any]]) -> dict[str, Any]:
+    """Flatten a one-level nested ``extra_body`` into root request fields.
+
+    Callers often pass ``model_config.model_dump()`` which may itself contain
+    an ``extra_body`` key (e.g. ``{"extra_body": {"thinking": ...}}``). The
+    Responses wire format needs those fields at the body root, not nested.
+    Outer keys win over nested keys on conflict.
+    """
+    if not extra_body:
+        return {}
+    pending = dict(extra_body)
+    nested = pending.pop("extra_body", None)
+    expanded: dict[str, Any] = {}
+    if isinstance(nested, dict):
+        expanded.update(nested)
+    expanded.update(pending)
+    return expanded
 
 
 def build_headers(
@@ -579,6 +599,11 @@ def _usage_from_payload(usage: Any, *, model_name: str) -> Optional[UsageMetadat
             _first_present(token_details, "cache_creation_tokens", "cache_write_tokens")
         )
 
+    reasoning_tokens = 0
+    output_details = usage.get("output_tokens_details") or usage.get("completion_tokens_details")
+    if isinstance(output_details, dict):
+        reasoning_tokens = _int_or_zero(output_details.get("reasoning_tokens"))
+
     return UsageMetadata(
         model_name=model_name,
         input_tokens=input_tokens,
@@ -590,6 +615,7 @@ def _usage_from_payload(usage: Any, *, model_name: str) -> Optional[UsageMetadat
         cache_source="provider_usage" if token_details is not None else None,
         cache_authoritative=token_details is not None,
         cache_creation_input_tokens=cache_creation_tokens,
+        reasoning_tokens=reasoning_tokens,
     )
 
 

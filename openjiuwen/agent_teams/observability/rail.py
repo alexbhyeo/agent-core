@@ -11,7 +11,10 @@ re-opening the span**: it runs first in the hook chain (higher priority) and
 
 * parks the ``agentteam.*`` identity block as an
   :class:`AgentSpanDecoration`, which the agent rail applies to the span it
-  opens (and mirrors the redacted output into when it closes), and
+  opens (and mirrors the redacted output into when it closes), together with
+  the member round's ``openjiuwen.turn.*`` identity — one Team trace holds
+  many member turns, so the turn is stated per member span, not on the root —
+  and
 * stamps the leader's round result as the Team trace's top-level output.
 
 Both rails are mounted side by side (``core.observability`` +
@@ -38,15 +41,14 @@ from openjiuwen.core.single_agent.rail.base import AgentCallbackContext
 from openjiuwen.extensions.observability.redaction import redact_completion
 from openjiuwen.extensions.observability.semconv import (
     AT_AGENT_ID,
-    AT_AGENT_INPUT,
-    AT_AGENT_NAME,
-    AT_AGENT_OUTPUT,
     AT_AGENT_ROLE,
-    AT_MEMBER_ID,
     AT_MEMBER_NAME,
-    AT_SESSION_ID,
     AT_TEAM_ID,
-    LANGFUSE_OBSERVATION_OUTPUT,
+    GEN_AI_CONVERSATION_ID,
+    OJ_SPAN_INPUT,
+    OJ_SPAN_OUTPUT,
+    OJ_TURN_ID,
+    OJ_TURN_NUMBER,
 )
 from openjiuwen.harness.observability.rail import (
     AgentObservabilityRail,
@@ -106,7 +108,7 @@ class TeamObservabilityRail(DeepAgentRail):
             config = get_config()
             output_str = str(output)
             redacted = redact_completion(output_str, config) if config else output_str
-            team_span.set_attribute(LANGFUSE_OBSERVATION_OUTPUT, redacted)
+            team_span.set_attribute(OJ_SPAN_OUTPUT, redacted)
         except Exception as exc:
             team_logger.warning("otel team rail after_task_iteration failed: {}", exc)
 
@@ -136,6 +138,35 @@ class TeamObservabilityRail(DeepAgentRail):
         return ""
 
     @staticmethod
+    def _member_turn_attributes(agent: Any) -> dict[str, Any]:
+        """Return the turn identity of the round this member is running.
+
+        One ``team.{name}`` trace carries every member's rounds, so the Team
+        root states no turn; each member round does. The agent rail copies the
+        identity from the span it opens down to its Step, model and tool spans.
+
+        Args:
+            agent: The agent whose span is about to be opened. Only a harness
+                with a live round (``active_round``) has a turn to state.
+
+        Returns:
+            ``openjiuwen.turn.id`` / ``openjiuwen.turn.number``, or empty when
+            the agent runs no round.
+        """
+        # Imported lazily: the harness package pulls in the whole DeepAgent
+        # runtime, which this rail module must not load at import time.
+        from openjiuwen.agent_teams.harness.turn import MemberTurn
+
+        active_round = getattr(agent, "active_round", None)
+        turn = getattr(active_round, "turn", None)
+        if not isinstance(turn, MemberTurn):
+            return {}
+        return {
+            OJ_TURN_ID: turn.turn_id,
+            OJ_TURN_NUMBER: turn.turn_number,
+        }
+
+    @staticmethod
     def _build_decoration(agent: Any) -> AgentSpanDecoration:
         """Build the ``agentteam.*`` block for the span this agent is about to open.
 
@@ -162,8 +193,8 @@ class TeamObservabilityRail(DeepAgentRail):
         elif member_name:
             attributes[AT_AGENT_ID] = member_name
         if member_name:
-            attributes[AT_AGENT_NAME] = member_name
-            attributes[AT_MEMBER_ID] = member_name
+            # ``gen_ai.agent.name`` is stamped by the agent rail from the same
+            # resolver; this block only adds the team-membership identity.
             attributes[AT_MEMBER_NAME] = member_name
         # AT_AGENT_ROLE carries the resolved role value (leader / teammate /
         # human_agent / ...) when the agent exposes one; sub-agents and shells
@@ -173,12 +204,13 @@ class TeamObservabilityRail(DeepAgentRail):
         if team_name:
             attributes[AT_TEAM_ID] = team_name
         if session_id:
-            attributes[AT_SESSION_ID] = session_id
+            attributes[GEN_AI_CONVERSATION_ID] = session_id
+        attributes.update(TeamObservabilityRail._member_turn_attributes(agent))
 
         return AgentSpanDecoration(
             attributes=attributes,
-            input_attribute_keys=(AT_AGENT_INPUT,),
-            output_attribute_keys=(AT_AGENT_OUTPUT,),
+            input_attribute_keys=(OJ_SPAN_INPUT,),
+            output_attribute_keys=(OJ_SPAN_OUTPUT,),
         )
 
 

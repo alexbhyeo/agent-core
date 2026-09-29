@@ -6,7 +6,7 @@
 |---|---|
 | 类型 | spec |
 | 关联模块 | `openjiuwen/agent_teams/prompts/`, `openjiuwen/agent_teams/rails/` |
-| 最近一次修订日期 | 2026-08-13 |
+| 最近一次修订日期 | 2026-09-16 |
 | 关联 feature | `F_18_hide-human-agent-role-from-teammate.md`、`F_25_external-cli-hardening-and-gemini.md`、`F_50_hitt-contract-roster-split-and-finish-md-externalization.md`、`F_51_external-cli-inbound-xml-and-tag-notice-relocation.md`、`F_52_unify-member-roster-and-static-sections.md`、`F_68_member-identity-out-of-prompt-prefix.md`、`F_70_team-context-into-history.md`、`F_72_nested-team-note-inside-annotated-block.md`、`F_73_avatar-controller-channel-separation.md`、`F_76_leader-progressive-policy-disclosure.md`、`F_78_steering-batch-quota-hook.md`、`F_80_fork-identity-conversion.md` |
 
 ## 范围 / 边界
@@ -30,9 +30,9 @@
 ### 装配路径
 
 1. **唯一装配路径 `sections.build_team_*_section`**：每片内容独立产出 `PromptSection`，读 `prompts/<lang>/*.md`。由 `TeamPolicyRail` 合并进 `SystemPromptBuilder`（进程内成员），或经 `build_team_member_system_prompt` 渲染成独立字符串（外部 CLI 成员）。模板正文修改即时生效。
-1a. **leader 的团队 section 走渐进式披露（[[F_76]]）**：进 builder 的 leader 团队 section 只有两个——`team_bootstrap`（P:11，身份 + `{{collaboration_mechanism}}` capability 槽 + "先调 build_team"）与 `team_extra`（P:17，调用方自定义指令，**不是团队协同准则**且必须建队前生效）。其余 section 由 `sections.build_leader_policy_disclosure(...)` 用**同一套 `build_team_static_sections` + `SystemPromptBuilder` 装配**渲染成文本，经 `tools/tool_team.BuildTeamTool.map_result` 附在建队结果之后下发。四条硬约束：
+1a. **leader 的团队 section 走渐进式披露（[[F_76]]）**：进 builder 的 leader 团队 section 只有两个——`team_bootstrap`（P:11，身份 + `{{collaboration_mechanism}}` capability 槽 + "先调 build_team"）与 `team_extra`（P:17，调用方自定义指令，**不是团队协同准则**且必须建队前生效）。其余 section 由 `sections.build_leader_policy_disclosure(...)` 用**同一套 `build_team_static_sections` + `SystemPromptBuilder` 装配**渲染成文本，经 `tools/tool_team.BuildTeamTool.render_for_llm` 附在建队结果之后下发。四条硬约束：
    - **披露只在成功路径**：`build_team` 失败时 leader 还在 bootstrap 路上，此时该重读的是分流规则而不是一份不存在的团队的规则。
-   - **HITT gate 读实际生效值**：`map_result` 取 `output.data["enable_hitt"]`（`build_team` 解析 spec 天花板 × 本次选择后的结果），**不是**构造期的 spec `hitt_enabled`。这正是把披露挪到 `build_team` 才能修掉的偏差。
+   - **HITT gate 读实际生效值**：`render_for_llm` 取 `output.data["enable_hitt"]`（`build_team` 解析 spec 天花板 × 本次选择后的结果），**不是**构造期的 spec `hitt_enabled`。这正是把披露挪到 `build_team` 才能修掉的偏差。
    - **只有 LEADER 走这条道**：其余角色的协同约定 spawn 时即固定，也没有 `build_team` 可挂载，一律走原来的全量静态集。分流在 `TeamPolicyRail._build_static_sections` 的一个 `role == LEADER` 分支，不下推到各 builder。
    - **披露内容会被压缩，须重注入**：`core.context_engine.processor.compressor.util.build_team_policy_reinjected_messages`（在 `FullCompactProcessor` 注册名 `team_policy`）在 full compact 后原样重注入那条 tool result，**不得截断**（返回 `list[UserMessage]` 绕开 `state_snapshot_max_chars`）。core 侧按工具名 `build_team` 匹配，**不 import `agent_teams`**——与既有 `TEAM_TOOL_CALL_NAMES` 同法，依赖方向不变。
 
@@ -310,8 +310,8 @@ def build_identity_text(*, member_name, display_name=None, member_workspace_path
                         member_prompt=None, language="cn",
                         fork_capable=False) -> str | None
 def build_identity_conversion(*, source, member_name, language="cn") -> str
-def build_team_info_text(*, team_info, team_workspace_mount=None,
-                         team_workspace_path=None, language="cn") -> str | None
+def build_team_info_text(*, team_info, team_workspace_path=None,
+                         team_outputs_dir=None, language="cn") -> str | None
 def build_roster_snapshot_text(*, members, mark_humans=False, language="cn") -> str | None
 def build_roster_delta_text(*, delta, mark_humans=False, language="cn") -> str | None
 ```
@@ -343,8 +343,8 @@ class TeamContextTracker:
         display_name: str = "",              # fallback only; the DB row wins
         member_workspace_path: str | None = None,
         member_prompt: str = "",
-        team_workspace_mount: str | None = None,
         team_workspace_path: str | None = None,
+        team_outputs_dir: str | None = None,
         expose_human_agents_to_teammates: bool = False,
         language: str = "cn",
         fork_source: str | None = None,   # fork 源名；None = 普通 spawn
@@ -400,8 +400,8 @@ class TeamPolicyRail(DeepAgentRail):
         language: str = "cn",
         team_mode: str = "default",
         base_prompt: str | None = None,
-        team_workspace_mount: str | None = None,
         team_workspace_path: str | None = None,
+        team_outputs_dir: str | None = None,
         team_backend: TeamBackend | None = None,
         expose_human_agents_to_teammates: bool = False,
     ) -> None: ...
@@ -593,6 +593,6 @@ TeamPermissionRail  ✗  conditional ✓ when team-coordinated
 - **S_03 schema**：`TeamRole` 枚举、`TeamAgentSpec.lifecycle / team_mode / teammate_mode / approval_required_tools` 字段定义在 schema 层，本 spec 的 builder / rail 仅消费这些字段。
 - **S_05 agent / TeamHarness**：rail 的实际挂载点（`TeamHarness.build`）、`agent_configurator` 决定挂哪些 rail 的逻辑由 agent spec 负责；本 spec 只规定 rail 各自的契约。
 - **S_07 tools**：`TeamToolRail` 与团队工具集合属于 tools spec；本 spec 仅指出 mount order（tool rail 必须先于 policy rail eager init）。`TeamToolApprovalRail` 调 `approve_tool` 工具的契约由 tools spec 定义。
-- **S_10 team_workspace**：`TeamWorkspaceRail` 与本 spec 平级，但本 spec 的 `team_info` 消息正文携带 `team_workspace_mount` / `team_workspace_path`——workspace 子系统对 prompt 的可见面只通过这两个参数。
+- **S_10 team_workspace**：`TeamWorkspaceRail` 与本 spec 平级，但本 spec 的 `team_info` 消息正文携带 `team_workspace_path` / `team_outputs_dir`——workspace 子系统对 prompt 的可见面只通过这两个参数（`team_outputs_dir` 仅无 project_dir 成员注入，见 [[F_89]] / [[S_26]]）。
 - **S_11 i18n（如有）**：`prompts/cn/` `prompts/en/` 与 `agent_teams/i18n.py` 的边界由本 spec 的不变量 10 落地；新增语言要求 `prompts/<lang>/*.md` 全套对齐 + `_LABELS` / `_I18N_LABELS` 增加映射。
 - **core S_x prompts**：`PromptSection` / `SystemPromptBuilder` / `PromptTemplate` 的契约属于 core；本 spec 假定它们的行为不变（priority 升序拼接 / `add_section` 同名覆盖 / `{{placeholder}}` 渲染）。

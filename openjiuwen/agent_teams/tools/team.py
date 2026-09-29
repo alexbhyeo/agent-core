@@ -22,6 +22,8 @@ from typing import (
 
 if TYPE_CHECKING:
     from openjiuwen.agent_teams.models.allocator import Allocation
+    from openjiuwen.agent_teams.schema.team import ModelPoolEntry
+    from openjiuwen.agent_teams.tools.member_options import MemberBuiltinModel
     from openjiuwen.agent_teams.team_workspace.manager import TeamWorkspaceManager
     from openjiuwen.agent_teams.team_workspace.workspace_cache import WorkspaceCache
 
@@ -50,6 +52,8 @@ from openjiuwen.agent_teams.schema.team import (
     BridgeMailboxInjectMode,
     BridgeMemberSpec,
     ExternalCliAgentSpec,
+    ExternalCliMemberSpec,
+    MemberModelSwitchResult,
     MemberOpResult,
     MemberRosterEntry,
     TeamCompletionSnapshot,
@@ -111,6 +115,9 @@ class TeamBackend:
         enable_hitt: bool = False,
         enable_bridge: bool = False,
         *,
+        model_pool_provider: Callable[[], list["ModelPoolEntry"]] | None = None,
+        current_model_name: str | None = None,
+        current_model_provider: str | None = None,
         dispatch_mode: str = "autonomous",
         enable_task_verification: bool = False,
         enable_fork: bool = False,
@@ -121,6 +128,8 @@ class TeamBackend:
         on_team_cleaned: Callable[[], Awaitable[None]] | None = None,
         on_team_built: Callable[[], Awaitable[None]] | None = None,
         on_member_started: Callable[[str], Awaitable[None]] | None = None,
+        on_member_restarted: Callable[[str], Awaitable[bool]] | None = None,
+        on_member_stopped: Callable[[str], Awaitable[None]] | None = None,
         plan_storage_dir: str | None = None,
         plan_id: str | None = None,
         leader_member_name: str | None = None,
@@ -148,6 +157,14 @@ class TeamBackend:
                 ``build_team`` as ``{model_name, model_index}`` so the
                 assignment is auditable and survives full-restart
                 recovery via positional lookup against the live pool.
+            model_pool_provider: Returns the current team model pool for
+                validating external CLI fallback choices. The callback keeps
+                runtime pool updates visible without copying credentials into
+                the backend.
+            current_model_name: Name of the model currently driving this
+                member, used to prioritize an allocatable fallback.
+            current_model_provider: Provider of the current member model,
+                used to derive its model API protocol.
             enable_hitt: Spec-level HITT capability ceiling. When
                 False, every human-agent spawn path returns failure;
                 when True, the runtime instance flag (mutated by
@@ -199,6 +216,10 @@ class TeamBackend:
                 ``autostart_unstarted``; leaving it None turns every
                 auto-start into a no-op, which is what an external
                 (out-of-process) backend wants — it has no process to spawn.
+            on_member_restarted: Optional async callback that replaces a dead
+                member runtime. Used after an atomic ERROR→RESTARTING claim.
+            on_member_stopped: Optional async callback that removes a dead
+                member's stale runtime handle after ERROR→SHUTDOWN settles.
             leader_prompt: The leader's private prompt (``LeaderSpec.prompt``
                 via ``ctx.prompt``). Persisted on the leader's DB row at
                 ``build_team`` so cold-recovery — which rebuilds the leader
@@ -207,6 +228,9 @@ class TeamBackend:
                 ``build_team`` caller (LLM-filled tool arg).
         """
         self.team_name = team_name
+        self.group_chat_spec = None
+        self.group_session_id = ""
+        self._group_conversation = None
         self.member_name = member_name
         self.is_leader = is_leader
         self.leader_member_name = str(leader_member_name or (member_name if is_leader else "")).strip()
@@ -223,6 +247,9 @@ class TeamBackend:
         self.teammate_mode = teammate_mode
         self.predefined_members = predefined_members or []
         self._allocate_model_config = model_config_allocator
+        self._model_pool_provider = model_pool_provider
+        self.current_model_name = str(current_model_name or "").strip() or None
+        self.current_model_provider = str(current_model_provider or "").strip() or None
         self.leader_allocation = leader_allocation
         # Leader's private prompt (LeaderSpec.prompt via ctx.prompt). Persisted
         # on the leader's DB row at build_team so cold-recovery, which rebuilds
@@ -277,6 +304,8 @@ class TeamBackend:
         # Spawns one member's agent process. The single injection point for
         # every auto-start path that goes through ``autostart_unstarted``.
         self._on_member_started = on_member_started
+        self._on_member_restarted = on_member_restarted
+        self._on_member_stopped = on_member_stopped
 
         self.task_manager = TeamTaskManager(
             self.team_name,
@@ -315,7 +344,11 @@ class TeamBackend:
         # A member listed here is driven by an external backend instead of a
         # local DeepAgent. Runtime recovery restores this process-local index
         # from ``TeamMember.options["cli_agent"]``.
-        self._external_cli_specs: dict[str, str] = {}
+        self._external_cli_specs: dict[str, str] = {
+            m.member_name: m.external_cli.cli_agent
+            for m in self.predefined_members
+            if isinstance(m, ExternalCliMemberSpec)
+        }
         # Static per-CLI launch configs from the spec, keyed by cli_agent
         # name. The non-empty key set is the capability ceiling: spawning an
         # external-CLI member requires a matching config here. The spawn path
@@ -348,8 +381,17 @@ class TeamBackend:
         self._snapshot_length: Callable[[], int] | None = None
         self._store_checkpoint_fn: Callable[..., dict | None] | None = None
         self._checkpoint_list_fn: Callable[[], dict] | None = None
+        # Leader-side hook switching a live external-CLI member's model; set by
+        # the hosting TeamAgent (see ``set_member_model_fn``).
+        self._member_model_fn: Callable[[str, "MemberBuiltinModel"], Awaitable[bool]] | None = None
 
         team_logger.info(f"AgentTeam manager initialized for {team_name}, member={member_name}")
+
+    def get_model_pool(self) -> list["ModelPoolEntry"]:
+        """Return a snapshot of the current team model pool."""
+        if self._model_pool_provider is None:
+            return []
+        return list(self._model_pool_provider())
 
     def register_cleanup_path(self, path: Optional[str]) -> None:
         """Register a filesystem path to remove on ``clean_team``.
@@ -376,6 +418,36 @@ class TeamBackend:
         """
         return self._enable_fork
 
+    def bind_group_session(self, session_id: str) -> None:
+        if self.group_chat_spec is None or not self.group_chat_spec.enable_group_chat:
+            return
+        if not isinstance(session_id, str) or not session_id.strip():
+            raise ValueError("Group chat requires a nonempty runtime session_id")
+        if self.group_session_id and self.group_session_id != session_id:
+            raise ValueError("A group backend cannot switch sessions; stop and rebuild the team")
+        self.group_session_id = session_id
+
+    async def group_conversation(self):
+        if self.group_chat_spec is None or not self.group_chat_spec.enable_group_chat:
+            raise ValueError("Group chat is disabled")
+        if self._group_conversation is None:
+            from openjiuwen.agent_teams.tools.group_conversation import GroupConversationLog
+
+            workspace = self.group_chat_spec.workspace
+            self._group_conversation = await asyncio.to_thread(
+                GroupConversationLog, self.team_name, self.group_session_id,
+                workspace_path=workspace.root_path if workspace else None,
+            )
+        return self._group_conversation
+
+    async def append_group_message(self, sender, content, *, client_message_id, mentions=(), attachments=()):
+        conversation = await self.group_conversation()
+        return await conversation.post(
+            self.message_manager, sender, content, client_message_id=client_message_id,
+            mentions=mentions, attachments=attachments, tail_count=self.group_chat_spec.group_context_tail,
+            language=self.group_chat_spec.language or "cn",
+        )
+
     def set_snapshot_length(self, fn) -> None:
         """Register the callback that returns this member's message count."""
         self._snapshot_length = fn
@@ -387,6 +459,15 @@ class TeamBackend:
         are passed through so the authoritative namespace can store them.
         """
         self._store_checkpoint_fn = fn
+
+    def set_member_model_fn(self, fn: Callable[[str, "MemberBuiltinModel"], Awaitable[bool]]) -> None:
+        """Register the hook that switches a running external-CLI member's model.
+
+        ``fn(member_name, builtin_model)`` returns True when the member was
+        running and switched now, False when it is not running (the persisted
+        selection then applies at its next start).
+        """
+        self._member_model_fn = fn
 
     def set_checkpoint_list_fn(self, fn) -> None:
         """Register the callback returning the authoritative checkpoint mapping."""
@@ -597,6 +678,7 @@ class TeamBackend:
         role: TeamRole = TeamRole.TEAMMATE,
         isolation: Optional[str] = None,
         cli_agent: Optional[str] = None,
+        builtin_model: Optional["MemberBuiltinModel"] = None,
         permissions_override: Optional[dict[str, str]] = None,
     ) -> MemberOpResult:
         """Create a team member record in the database.
@@ -627,6 +709,9 @@ class TeamBackend:
             cli_agent: External CLI backend name for external members.
                 Persisted so stopped or cold-recovered teams can rebuild
                 member runtime routing without relying on process memory.
+            builtin_model: Built-in CLI model (and effort) an external CLI
+                member runs on its own login; persisted so restarts and
+                cold recovery launch the CLI on the same model.
             permissions_override: Flat ``{tool_name: level_string}`` dict
                 from ``spawn_teammate.permissions``.  Only tightening
                 rules are valid (see ``narrow_permissions``).  Persisted
@@ -653,6 +738,7 @@ class TeamBackend:
         options = build_member_options(
             model_ref=allocation.to_db_ref() if allocation is not None else None,
             fallback_model_ref=(fallback_allocation.to_db_ref() if fallback_allocation is not None else None),
+            builtin_model=builtin_model,
             cli_agent=cli_agent,
             worktree_isolation=isolation,
             permissions_override=permissions_override,
@@ -833,6 +919,47 @@ class TeamBackend:
             raise
 
         return True
+
+    async def recover_member(self, member_name: str) -> bool:
+        """Restart one failed member after atomically claiming recovery.
+
+        Only ERROR members are eligible. The ERROR→RESTARTING CAS prevents a
+        direct message, scheduler handoff, and cold recovery from launching
+        duplicate runtimes. A failed restart returns the member to ERROR so a
+        later explicit nudge can try again.
+
+        Args:
+            member_name: The failed member to restart.
+
+        Returns:
+            True when this call restarted the member, otherwise False.
+        """
+        if not self.is_leader or self._on_member_restarted is None:
+            return False
+
+        transitioned = await self.db.member.try_transition_member_status(
+            member_name,
+            self.team_name,
+            MemberStatus.ERROR,
+            MemberStatus.RESTARTING,
+        )
+        if not transitioned:
+            return False
+
+        try:
+            restarted = await self._on_member_restarted(member_name)
+        except Exception as exc:
+            team_logger.error("Failed to recover member {}: {}", member_name, exc)
+            restarted = False
+
+        if not restarted:
+            await self.db.member.try_transition_member_status(
+                member_name,
+                self.team_name,
+                MemberStatus.RESTARTING,
+                MemberStatus.ERROR,
+            )
+        return restarted
 
     async def approve_plan(
         self,
@@ -1024,6 +1151,67 @@ class TeamBackend:
                     t("team.shutdown_human_active_tasks",
                       member_name=member_name, count=str(len(active_tasks)), task_ids=task_ids)
                 )
+
+        # ERROR means the member runtime has already failed and cannot consume
+        # a mailbox request or shutdown event. Settle it directly; the CAS also
+        # arbitrates against a concurrent ERROR→RESTARTING recovery claim.
+        if current_status == MemberStatus.ERROR:
+            transitioned = await self.db.member.try_transition_member_status(
+                member_name,
+                self.team_name,
+                MemberStatus.ERROR,
+                MemberStatus.SHUTDOWN,
+            )
+            if not transitioned:
+                return MemberOpResult.fail(f"Member {member_name} lifecycle changed while shutting down")
+            if self._on_member_stopped is not None:
+                try:
+                    await self._on_member_stopped(member_name)
+                except Exception as exc:
+                    team_logger.warning("Failed to clean stale runtime for member {}: {}", member_name, exc)
+            team_logger.info("Shutdown failed member {} directly", member_name)
+            return MemberOpResult.success()
+
+        # Passive humans have no process to consume a MEMBER_SHUTDOWN event,
+        # so the two-phase REQUESTED→SHUTDOWN dance would strand the row in
+        # SHUTDOWN_REQUESTED (a non-settled status) forever. Land the
+        # terminal state directly — READY→SHUTDOWN is a legal edge — and
+        # still publish the shutdown event so rosters and observers refresh.
+        # No shutdown notice message: the member is removed from the
+        # reachable set the moment the status flips.
+        if await self.is_passive_human(member_name):
+            from openjiuwen.agent_teams.schema.status import (
+                MEMBER_TRANSITIONS,
+                is_valid_transition,
+            )
+
+            if not is_valid_transition(current_status, MemberStatus.SHUTDOWN, MEMBER_TRANSITIONS):
+                return MemberOpResult.fail(
+                    f"Member {member_name} cannot shut down from status '{current_status.value}'"
+                )
+            success = await self.db.member.update_member_status(
+                member_name, self.team_name, MemberStatus.SHUTDOWN.value
+            )
+            if not success:
+                return MemberOpResult.fail(f"Database rejected status update for member {member_name}")
+
+            try:
+                await self.messager.publish(
+                    topic_id=TeamTopic.TEAM.build(get_session_id(), self.team_name),
+                    message=EventMessage.from_event(
+                        MemberShutdownEvent(
+                            team_name=self.team_name,
+                            member_name=member_name,
+                            force=force,
+                        )
+                    ),
+                )
+                team_logger.debug(f"Member shutdown event published: {member_name}")
+            except Exception as e:
+                team_logger.error(f"Failed to publish member shutdown event for member {member_name}: {e}")
+
+            team_logger.info(f"Passive human member {member_name} shut down directly (no runtime to notify)")
+            return MemberOpResult.success()
 
         # Validate state transition
         from openjiuwen.agent_teams.schema.status import (
@@ -1887,6 +2075,11 @@ class TeamBackend:
         for member_spec in self.predefined_members:
             if member_spec.role_type == TeamRole.HUMAN_AGENT:
                 continue
+            # Passive humans register as READY below (no runtime to start);
+            # the generic UNSTARTED path would feed them to the startup
+            # sweep, which must never spawn a runtime for them.
+            if member_spec.role_type == TeamRole.PASSIVE_HUMAN:
+                continue
             if isinstance(member_spec, BridgeMemberSpec) and not effective_enable_bridge:
                 skipped_bridge_specs.append(member_spec)
                 # Drop the index entry as well so downstream code does
@@ -1900,6 +2093,11 @@ class TeamBackend:
                 description=member_spec.desc,
             )
             allocation = self._allocate_model_config(member_spec.model_name) if self._allocate_model_config else None
+            cli_agent = (
+                member_spec.external_cli.cli_agent
+                if isinstance(member_spec, ExternalCliMemberSpec)
+                else None
+            )
             await self.spawn_member(
                 member_name=member_spec.member_name,
                 display_name=member_spec.display_name,
@@ -1911,6 +2109,7 @@ class TeamBackend:
                 mode=self.teammate_mode,
                 allocation=allocation,
                 role=member_spec.role_type,
+                cli_agent=cli_agent,
             )
         if skipped_bridge_specs:
             team_logger.warning(
@@ -1922,7 +2121,7 @@ class TeamBackend:
 
         # HITT: register every declared human member when the effective
         # capability is on. When the leader passed enable_hitt=False at
-        # build_team time, all predefined HUMAN_AGENT specs are skipped
+        # build_team time, all predefined human specs are skipped
         # (the ceiling itself stays open per the spec, but this run
         # declined to engage HITT).
         human_specs = [m for m in self.predefined_members if m.role_type == TeamRole.HUMAN_AGENT]
@@ -1939,6 +2138,24 @@ class TeamBackend:
                 "Skipped %d predefined HUMAN_AGENT(s) for team %s because "
                 "build_team(enable_hitt=False) overrode the spec capability",
                 len(human_specs),
+                team_name,
+            )
+
+        # Passive humans ride the same gate: predefined PASSIVE_HUMAN specs
+        # register (as READY roster identities) only when HITT is engaged.
+        passive_specs = [m for m in self.predefined_members if m.role_type == TeamRole.PASSIVE_HUMAN]
+        if effective_enable_hitt:
+            for passive_spec in passive_specs:
+                await self.spawn_passive_human(
+                    member_name=passive_spec.member_name,
+                    display_name=passive_spec.display_name,
+                    desc=passive_spec.desc,
+                )
+        elif passive_specs:
+            team_logger.warning(
+                "Skipped %d predefined PASSIVE_HUMAN(s) for team %s because "
+                "build_team(enable_hitt=False) overrode the spec capability",
+                len(passive_specs),
                 team_name,
             )
 
@@ -2039,8 +2256,95 @@ class TeamBackend:
             )
         return result
 
+    async def spawn_passive_human(
+        self,
+        *,
+        member_name: str,
+        display_name: Optional[str] = None,
+        desc: Optional[str] = None,
+    ) -> MemberOpResult:
+        """Register a passive human member that is READY from birth.
+
+        Public method called by ``build_team`` (for predefined
+        PASSIVE_HUMAN specs) and ``SpawnPassiveHumanTool`` (dynamic
+        spawn). A passive member has **no avatar**: no harness, no LLM,
+        no prompt, no coordination loop — just a roster row and a
+        message-bus address. Team-side traffic reaches the controlling
+        human through the HITT inbound callback, and the human acts back
+        via ``HumanAgentMessage`` (bus messages) or the
+        ``HumanAgentToolCall`` passthrough (tools executed by the runtime
+        under this member's identity).
+
+        Status starts at READY — a legal settled state — so the startup
+        sweep (which only looks for UNSTARTED rows) never picks the
+        member up and no recovery path may spawn a runtime for it.
+        Events: ``MemberSpawnedEvent`` is published here (best-effort)
+        because the shared ``_spawn_and_publish`` helper is owned by the
+        startup path this role deliberately skips.
+
+        Args:
+            member_name: Unique member identifier for the human.
+            display_name: Optional display label; falls back to the
+                framework-managed default when omitted.
+            desc: Optional member description; falls back to the
+                framework default.
+
+        Returns:
+            ``MemberOpResult``. Returns failure when HITT is disabled
+            (``MemberOpResult.fail``) or the underlying member create
+            fails.
+        """
+        if not self._enable_hitt:
+            return MemberOpResult.fail(
+                "Cannot spawn passive human: HITT capability is disabled "
+                "(enable_hitt=False on TeamAgentSpec or build_team)"
+            )
+
+        resolved_display_name = display_name or t("hitt.passive_human_display_name")
+        resolved_desc = desc or t("hitt.passive_human_default_desc")
+        member_card = AgentCard(
+            id=f"{self.team_name}_{member_name}",
+            name=resolved_display_name,
+            description=resolved_desc,
+        )
+        result = await self.spawn_member(
+            member_name=member_name,
+            display_name=resolved_display_name,
+            agent_card=member_card,
+            desc=resolved_desc,
+            status=MemberStatus.READY,
+            execution_status=ExecutionStatus.IDLE,
+            mode=MemberMode.BUILD_MODE,
+            role=TeamRole.PASSIVE_HUMAN,
+        )
+        if not result.ok:
+            team_logger.warning(
+                "Failed to register passive human '%s' for team %s: %s",
+                member_name,
+                self.team_name,
+                result.reason,
+            )
+            return result
+
+        try:
+            await self.messager.publish(
+                topic_id=TeamTopic.TEAM.build(get_session_id(), self.team_name),
+                message=EventMessage.from_event(
+                    MemberSpawnedEvent(
+                        team_name=self.team_name,
+                        member_name=member_name,
+                    ),
+                ),
+            )
+            team_logger.debug("Member spawned event published: {}", member_name)
+        except Exception as e:
+            team_logger.error("Failed to publish member spawned event for {}: {}", member_name, e)
+
+        team_logger.info("Passive human member {} registered as READY", member_name)
+        return result
+
     async def is_human_agent(self, member_name: Optional[str]) -> bool:
-        """Whether ``member_name`` is a registered human-agent member.
+        """Whether ``member_name`` is a registered human member (avatar or passive).
 
         Queries ``team_member.role`` from DB on every call — no in-memory
         cache, so the answer is always current regardless of when the
@@ -2053,10 +2357,26 @@ class TeamBackend:
             return False
         return await member_dao.is_human_agent(self.team_name, member_name)
 
-    async def is_live_human_agent(self, member_name: str | None) -> bool:
-        """Whether ``member_name`` is a human-agent member still on the team.
+    async def is_passive_human(self, member_name: Optional[str]) -> bool:
+        """Whether ``member_name`` is a registered passive human member.
 
-        Narrower than :meth:`is_human_agent`: a member whose status is in
+        The flavor probe that splits the human family: passive members
+        have no avatar, so they may drive the tool-call passthrough and
+        must never be routed through avatar-driving paths. Same DB-probe
+        discipline as :meth:`is_human_agent` (no in-memory cache).
+        """
+        if not member_name:
+            return False
+        member_dao = self.db.member
+        if member_dao is None:
+            return False
+        return await member_dao.is_passive_human(self.team_name, member_name)
+
+    async def is_live_human_agent(self, member_name: str | None) -> bool:
+        """Whether ``member_name`` is a human member still on the team.
+
+        Covers both flavors (avatar and passive). Narrower than
+        :meth:`is_human_agent`: a member whose status is in
         ``MEMBER_DEPARTED_STATUSES`` (shutdown requested / shut down) answers
         False. The HITT task lock in ``UpdateTaskTool`` keys on this, so
         shutting a human down releases the tasks it still holds back to the
@@ -2437,6 +2757,115 @@ class TeamBackend:
         """Return the set of ``cli_agent`` kinds declared in the spec."""
         return frozenset(self._external_cli_configs)
 
+    def builtin_models_enabled(self) -> bool:
+        """Return whether any declared CLI kind offers built-in models to pick."""
+        return any(config.builtin_models for config in self._external_cli_configs.values())
+
+    def resolve_builtin_model(
+        self,
+        cli_agent: str,
+        model: str,
+        effort: str | None,
+    ) -> tuple["MemberBuiltinModel | None", str]:
+        """Validate a built-in model choice against the kind's declared catalog.
+
+        Args:
+            cli_agent: The member's CLI kind.
+            model: The chosen built-in model name.
+            effort: The chosen effort; ``None`` takes the model's default.
+
+        Returns:
+            ``(selection, "")`` on success, ``(None, reason)`` otherwise.
+        """
+        from openjiuwen.agent_teams.tools.member_options import MemberBuiltinModel
+
+        config = self._external_cli_configs.get(cli_agent)
+        if config is None or not config.builtin_models:
+            return None, f"cli_agent '{cli_agent}' declares no builtin_models"
+        declared = config.find_builtin_model(model)
+        if declared is None:
+            names = ", ".join(item.name for item in config.builtin_models)
+            return None, f"builtin model '{model}' is not declared for cli_agent '{cli_agent}' (declared: {names})"
+        if effort is not None and effort not in declared.efforts:
+            allowed = ", ".join(declared.efforts) or "none"
+            return None, f"effort '{effort}' is not supported by builtin model '{model}' (supported: {allowed})"
+        return MemberBuiltinModel(model=model, effort=effort or declared.default_effort), ""
+
+    async def set_member_model(
+        self,
+        member_name: str,
+        *,
+        model: str | None,
+        effort: str | None,
+    ) -> MemberModelSwitchResult:
+        """Switch an external-CLI member's built-in model and/or effort.
+
+        The choice is persisted first, so restarts and cold recovery keep it,
+        then pushed to the running member through the hosting agent's hook.
+        Only members on the CLI's own login qualify: a member on a pool
+        endpoint (including a promoted auth fallback) cannot take a built-in
+        model without changing endpoints.
+
+        Args:
+            member_name: The external-CLI member to switch.
+            model: New built-in model; ``None`` keeps the current one.
+            effort: New effort; ``None`` keeps the current effort, or takes
+                the new model's default when ``model`` changes.
+
+        Returns:
+            The persisted selection and whether the running member switched now.
+        """
+        from openjiuwen.agent_teams.tools.member_options import (
+            get_member_builtin_model,
+            get_member_cli_agent,
+            get_member_model_ref,
+        )
+
+        if not self.is_leader:
+            return MemberModelSwitchResult(ok=False, reason="Only the leader can switch a member's model")
+        if model is None and effort is None:
+            return MemberModelSwitchResult(ok=False, reason="'model' or 'effort' is required")
+        row = await self.db.member.get_member(member_name, self.team_name)
+        if row is None:
+            return MemberModelSwitchResult(ok=False, reason=f"Member '{member_name}' not found")
+        cli_agent = get_member_cli_agent(row)
+        if cli_agent is None:
+            return MemberModelSwitchResult(ok=False, reason=f"Member '{member_name}' is not an external CLI member")
+        if get_member_model_ref(row) is not None:
+            return MemberModelSwitchResult(
+                ok=False,
+                reason=f"Member '{member_name}' runs on a team model pool endpoint; "
+                "built-in models apply only to members on the CLI's own login",
+            )
+        current = get_member_builtin_model(row)
+        target_model = model or (current.model if current is not None else None)
+        if target_model is None:
+            return MemberModelSwitchResult(
+                ok=False,
+                reason=f"Member '{member_name}' has no built-in model yet; 'model' is required",
+            )
+        # Changing only the effort keeps the current model; changing the model
+        # without an effort takes that model's declared default.
+        target_effort = effort if effort is not None or model is not None else current.effort
+        selection, reason = self.resolve_builtin_model(cli_agent, target_model, target_effort)
+        if selection is None:
+            return MemberModelSwitchResult(ok=False, reason=reason)
+        if not await self.db.member.update_member_builtin_model(member_name, self.team_name, selection):
+            return MemberModelSwitchResult(ok=False, reason=f"Failed to persist the model of '{member_name}'")
+        applied_live = False
+        if self._member_model_fn is not None:
+            try:
+                applied_live = await self._member_model_fn(member_name, selection)
+            except Exception as exc:
+                # Persisted already: the member picks it up on its next start.
+                team_logger.warning("Live model switch for member %s failed: %s", member_name, exc)
+        return MemberModelSwitchResult(
+            ok=True,
+            model=selection.model,
+            effort=selection.effort,
+            applied_live=applied_live,
+        )
+
     async def spawn_external_cli_agent(
         self,
         *,
@@ -2448,6 +2877,7 @@ class TeamBackend:
         model_name: Optional[str] = None,
         allocation: Optional["Allocation"] = None,
         fallback_allocation: Optional["Allocation"] = None,
+        builtin_model: Optional["MemberBuiltinModel"] = None,
     ) -> MemberOpResult:
         """Register an external-CLI teammate dynamically.
 
@@ -2474,12 +2904,20 @@ class TeamBackend:
                 refreshes propagate without re-spawning.
             fallback_allocation: Required fallback allocation used only when
                 the native CLI reports an authentication failure.
+            builtin_model: Built-in CLI model (and effort) resolved through
+                ``resolve_builtin_model``; mutually exclusive with
+                ``allocation`` because it runs on the CLI's own login.
 
         Returns:
-            ``MemberOpResult`` — failure if the backend name is unknown or the
-            underlying ``spawn_member`` rejects the registration.
+            ``MemberOpResult`` — failure if the backend name is unknown, its
+            optional SDK is not installed, or the underlying ``spawn_member``
+            rejects the registration.
         """
-        from openjiuwen.agent_teams.external.cli_agent.backends import available_backends, is_known_backend
+        from openjiuwen.agent_teams.external.cli_agent.backends import (
+            available_backends,
+            is_known_backend,
+            missing_sdk_requirement,
+        )
 
         if not prompt:
             return MemberOpResult.fail("spawn_external_cli_agent requires non-empty 'prompt'")
@@ -2494,6 +2932,16 @@ class TeamBackend:
             )
         if not is_known_backend(cli_agent):
             return MemberOpResult.fail(f"Unknown cli_agent '{cli_agent}'; known: {', '.join(available_backends())}")
+        # Fail at registration rather than at the lazy startup triggered by the
+        # first message: the SDK is only imported when the member process is
+        # spawned, which would otherwise surface as an opaque send failure.
+        missing_sdk = missing_sdk_requirement(cli_agent)
+        if missing_sdk is not None:
+            return MemberOpResult.fail(
+                f"cli_agent '{cli_agent}' is unavailable: Python package '{missing_sdk.distribution}' "
+                f"is not installed in this environment (install openjiuwen[{missing_sdk.extra}]); "
+                "do not retry this member kind until the dependency is installed"
+            )
 
         member_card = AgentCard(
             id=f"{self.team_name}_{member_name}",
@@ -2516,6 +2964,7 @@ class TeamBackend:
             cli_agent=cli_agent,
             allocation=allocation,
             fallback_allocation=fallback_allocation,
+            builtin_model=builtin_model,
         )
         if not result.ok:
             self._external_cli_specs.pop(member_name, None)
