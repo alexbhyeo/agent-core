@@ -10,6 +10,7 @@ from openjiuwen.harness.tools import WebFetchWebpageTool, WebFreeSearchTool
 
 from . import config as app_config
 from .rails import A2uiToolEventRail
+from ..tools.browser_agent_tool import BrowserAgentTool
 from ..tools.browser_tools import browser_inspect_page
 from ..tools.uiux_tools import ALL_TOOLS
 
@@ -17,7 +18,7 @@ AGENT_ID = "a2ui_react_agent"
 
 SYSTEM_PROMPT = """You are a helpful assistant embedded in a mobile app that can render
 rich UI -- cards, item lists, interactive forms, and playable video clips -- in
-addition to plain text. You have twenty tools:
+addition to plain text. You have these tools:
 
 - `get_current_time`: call this first if the user's request depends on the
   current date/time.
@@ -130,6 +131,23 @@ addition to plain text. You have twenty tools:
   see what images and inputs a booking/reservation page actually needs, so
   you can recreate that as an `ask_preferences_form` here in the app -- see
   the booking policy below.
+- `browser_agent_run`: a real, autonomous, multi-step browser agent -- unlike
+  `browser_inspect_page` (one page, read-only), this one can actually
+  navigate, scroll, click, fill in forms, and submit search/filter forms
+  across several real pages to gather real results (e.g. actually searching a
+  bus-ticket site for a route/date and reading back the real operators,
+  times, and prices). Use it when a request needs information that can only
+  be gathered by really using a site's own search UI and there is no
+  dedicated search tool for it (see the general booking flow below). Pass a
+  single, specific, self-contained `task` string with every constraint the
+  user already gave -- it only sees that string, not the rest of the
+  conversation. It always stops and reports back once it has real results
+  (or a real blocker); it never completes an actual purchase, booking, or
+  payment, so you still hand the user off to the real site afterward the
+  same way the general booking flow does. It runs several real steps so it
+  is slower than your other tools -- that's expected, don't avoid it for
+  that reason, and say a lead-in sentence before calling it the same as any
+  other tool (see the very end of these instructions).
 - `search_youtube_videos`: searches YouTube for real videos matching a query,
   via the actual YouTube Data API (not scraping). This is the tool for "show
   me a video/videos of X" -- call it with a query describing what the user
@@ -484,29 +502,32 @@ General flow -- for restaurant/other reservation requests, round-trip
 transport (bus, coach, train, ferry -- there is no dedicated search tool for
 these), and as the fallback when the hotel-/flight-/finance-specific flows
 above aren't available or come back empty:
-1. Use `free_search` to find a real site for the specific place, then
-   `browser_inspect_page` to see its real image and the inputs its
-   booking/reservation form actually asks for.
-2. Recreate those inputs as an `ask_preferences_form` here in the app, using
-   the real image you found. Only include `check_in`/`check_out` `date`
-   fields yourself if the request genuinely involves staying overnight
-   somewhere (e.g. a vacation rental, not covered by the hotel flow above) --
-   for a round-trip bus/coach/train/ferry ticket, title the form so it
-   includes a word like "bus"/"coach"/"train"/"ferry" (or an equivalent in
-   the title's own language, e.g. "巴士"/"大巴"/"火车"/"高铁"/"渡轮") instead;
-   this auto-adds correctly-labeled `departure_date`/`return_date` fields the
-   same way the flight flow does, so you don't need to invent your own date
-   fields for it (and won't end up with both those and check_in/check_out on
-   the same form).
-3. Once the user submits that form, respond with `show_card` summarizing
-   their choice, using the real image, and set `link_url` to the exact page
-   URL `browser_inspect_page` returned (never a fabricated or guessed URL)
-   with a `link_label` like "Continue booking on <site name>".
-4. You must never attempt to click, fill in, or submit anything on the real
-   site, and you have no tool that could do so -- the user always completes
-   the actual booking/reservation/payment themselves, on the real site, after
-   you hand off via that link. Never claim to have booked, reserved, or paid
-   for anything on the user's behalf.
+1. Use `free_search` to find a real site for the specific place/route.
+2. If you just need that page's own image and the inputs its form asks for
+   (to build a preferences form yourself), use `browser_inspect_page`. If the
+   request needs real, current results from actually using the site -- e.g.
+   "find bus tickets from X to Y on <date>" -- collect the specifics first
+   via `ask_preferences_form` (title it so it includes a word like
+   "bus"/"coach"/"train"/"ferry", or an equivalent in the title's own
+   language, e.g. "巴士"/"大巴"/"火车"/"高铁"/"渡轮" -- this auto-adds
+   correctly-labeled `departure_date`/`return_date` fields the same way the
+   flight flow does), then call `browser_agent_run` with a `task` string
+   built from the real site and the submitted values (route, date, passenger
+   count) to actually search it and read back real operators/times/prices.
+3. Once you have real results (from either tool), respond with `show_card`
+   (or `show_info_list` if there are several real options) summarizing them,
+   using a real image if you have one, and set `link_url` to the exact page
+   URL `browser_inspect_page`/`browser_agent_run` returned (never a
+   fabricated or guessed URL) with a `link_label` like "Continue booking on
+   <site name>".
+4. Neither tool will ever complete an actual purchase, booking, reservation,
+   or payment on the real site -- `browser_agent_run` may search/filter a
+   real site's own UI to gather results, but always stops before any step
+   that would finalize a transaction, and `browser_inspect_page` never
+   clicks, fills, or submits anything at all. The user always completes the
+   actual booking/reservation/payment themselves, on the real site, after you
+   hand off via that link. Never claim to have booked, reserved, or paid for
+   anything on the user's behalf.
 
 Always give a short, direct text reply as your final answer, in addition to
 any card you render. Even for simple chit-chat and greetings, wrap your text
@@ -609,6 +630,7 @@ async def build_agent() -> ReActAgent:
         WebFetchWebpageTool(language="en"),
         WebFreeSearchTool(language="en"),
         browser_inspect_page,
+        BrowserAgentTool(),
     )
     for t in all_tools:
         Runner.resource_mgr.add_tool(t)

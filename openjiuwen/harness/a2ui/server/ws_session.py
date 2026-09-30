@@ -296,6 +296,14 @@ def _translate(chunk: Any, state: dict[str, Any]) -> list[tuple[str, dict[str, A
         events.append(("error.tool", {"tool": tool_name, "callId": call_id, "message": message}))
         return events
 
+    if chunk_type == "browser_agent_step":
+        # Emitted by BrowserAgentTool.invoke while its inner browser subagent
+        # runs, one per navigate/click/fill/probe/etc. -- see
+        # browser_agent_tool.py. Passed through mostly as-is for the client's
+        # expandable action-log panel (see ChatBridge.onBrowserAgentStep).
+        events.append(("browser.step", dict(payload or {})))
+        return events
+
     # llm_reasoning / llm_usage / anything else: internal, not surfaced.
     return events
 

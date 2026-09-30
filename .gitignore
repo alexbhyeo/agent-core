@@ -241,6 +241,9 @@ openjiuwen/integrations/retriever/upload/
 
 .cursor/
 
+# Playwright MCP server's own snapshot/screenshot output directory
+.playwright-mcp/
+
 # browser_move local runtime artifacts
 openjiuwen/deepagents/tools/browser_move/screenshots/
 openjiuwen/deepagents/tools/browser_move/.browser/
