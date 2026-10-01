@@ -34,15 +34,21 @@ import json
 import os
 import re
 import uuid
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
+from openjiuwen.core.common.constants.constant import INTERACTION
 from openjiuwen.core.foundation.llm import ModelClientConfig, ModelRequestConfig
-from openjiuwen.core.foundation.tool import Tool, ToolCard, ToolOutput
+from openjiuwen.core.foundation.llm.schema.tool_call import ToolCall
+from openjiuwen.core.foundation.tool import Tool, ToolCard, ToolOutput, tool
 from openjiuwen.core.runner import Runner
+from openjiuwen.core.session.interaction.interactive_input import InteractiveInput
 from openjiuwen.core.session.stream.base import OutputSchema
 from openjiuwen.core.single_agent import ReActAgent, ReActAgentConfig
+from openjiuwen.core.single_agent.interrupt.response import InterruptRequest
+from openjiuwen.core.single_agent.rail.base import AgentCallbackContext
 from openjiuwen.core.single_agent.schema.agent_card import AgentCard
 from openjiuwen.harness.rails.context_engineer import ContextProcessorRail
+from openjiuwen.harness.rails.interrupt.interrupt_base import BaseInterruptRail, InterruptDecision
 from openjiuwen.harness.tools.browser_move.playwright_runtime.browser_capabilities import (
     resolve_browser_capabilities,
 )
@@ -65,6 +71,7 @@ from openjiuwen.harness.tools.browser_move.playwright_runtime.runtime_tools impo
 )
 
 from ..core import config as app_config
+from ..core import genui
 from ..core.rails import A2uiToolEventRail
 
 _INPUT_PARAMS = {
@@ -78,11 +85,31 @@ _INPUT_PARAMS = {
                 "2026-10-10 and list the available operators, departure times, and "
                 "prices.' Include every constraint the user already gave (route, dates, "
                 "passenger count, etc.) -- the browser agent only sees this string, not "
-                "the rest of the conversation."
+                "the rest of the conversation. Omit this when resuming a paused run with "
+                "`resume_token`/`credentials` instead."
+            ),
+        },
+        "resume_token": {
+            "type": "string",
+            "description": (
+                "Only set this when responding to a login form this tool asked for "
+                "earlier (its own result told you the exact value to remember) -- pass it "
+                "back verbatim, alongside `credentials`. Omit `task` in that case; this is "
+                "not a new task, it resumes the same paused browser run from where it "
+                "stopped."
+            ),
+        },
+        "credentials": {
+            "type": "object",
+            "additionalProperties": {"type": "string"},
+            "description": (
+                "Only set alongside `resume_token`: the field values the user just "
+                "submitted in that login form, keyed by exactly the same field names the "
+                "form asked for."
             ),
         },
     },
-    "required": ["task"],
+    "required": [],
 }
 
 _MAX_INNER_ITERATIONS = 30
@@ -104,6 +131,13 @@ would be one of those, STOP and report back what you already found (including th
 page's URL) instead of proceeding -- the user always completes the actual purchase \
 themselves, on the real site, after this call hands the options back to them.
 
+If a page requires you to log in (username/password, or similar) before you can proceed, \
+and you do not already have credentials for it, call request_login_credentials with the \
+specific fields the page's own form actually asks for and a short reason -- never guess, \
+invent, or attempt to bypass a login. That call pauses you here; once the real user \
+provides their credentials, they come back as request_login_credentials's own result -- \
+use them to actually log in on the page, then continue the task from there.
+
 Use browser_probe_interactives to see a page's controls and browser_probe_cards for \
 repeated results/listings before deciding what to click or fill; use browser_navigate \
 directly to a known or constructed results URL when that is faster than clicking \
@@ -113,6 +147,163 @@ for the task -- do not keep browsing "to be thorough" once you already have enou
 answer it. End with a concise, factual summary of exactly what you found (real operator/ \
 flight/hotel names, times, prices, and the page URL) -- never invent or guess a detail \
 you did not actually see on a page."""
+
+
+class BrowserCredentialRequest(InterruptRequest):
+    """Interrupt payload for request_login_credentials -- see
+    BrowserCredentialInterruptRail below."""
+
+    fields: List[str] = []
+    reason: str = ""
+
+
+def _parse_tool_call_args(tool_call: Optional[ToolCall]) -> Dict[str, Any]:
+    if tool_call is None:
+        return {}
+    args = tool_call.arguments
+    if isinstance(args, str):
+        try:
+            parsed = json.loads(args)
+        except (TypeError, ValueError):
+            return {}
+        return parsed if isinstance(parsed, dict) else {}
+    if isinstance(args, dict):
+        return args
+    return {}
+
+
+class BrowserCredentialInterruptRail(BaseInterruptRail):
+    """Pauses the inner browser agent at a login wall and waits for the real
+    user's credentials.
+
+    Registered on the *inner* browser agent only (see _get_browser_agent) --
+    entirely invisible to the outer a2ui agent/session, which never sees an
+    "interrupt" as a wire-level concept. BrowserAgentTool.invoke() detects
+    the pause directly in its own tool_call/tool_result streaming loop (the
+    interrupt request arrives as an ordinary chunk in that same stream, see
+    INTERACTION handling there), builds a real A2UI login form from it, and
+    later resumes this same paused tool call by re-invoking
+    Runner.run_agent_streaming with an InteractiveInput -- mirroring
+    AskUserRail's design (ask a question, wait, inject the answer as this
+    tool's own result) but for a form instead of free-text Q&A.
+    """
+
+    def __init__(self) -> None:
+        super().__init__(tool_names=["request_login_credentials"])
+
+    async def resolve_interrupt(
+        self,
+        ctx: AgentCallbackContext,
+        tool_call: Optional[ToolCall],
+        user_input: Optional[Any],
+        auto_confirm_config: Optional[dict] = None,
+    ) -> InterruptDecision:
+        del ctx, auto_confirm_config
+        if isinstance(user_input, dict) and user_input:
+            summary = ", ".join(f"{key}={value!r}" for key, value in user_input.items())
+            return self.reject(tool_result=f"The user provided: {summary}. You may now use these to log in.")
+        args = _parse_tool_call_args(tool_call)
+        raw_fields = args.get("fields")
+        fields = [str(f) for f in raw_fields] if isinstance(raw_fields, list) else []
+        return self.interrupt(
+            BrowserCredentialRequest(
+                message="Login required",
+                fields=fields or ["Username", "Password"],
+                reason=str(args.get("reason") or ""),
+            )
+        )
+
+
+@tool(
+    description=(
+        "Call this when the current page requires login credentials you don't have, and "
+        "there is no way to proceed with the task without logging in. Do NOT guess, "
+        "invent, or attempt to bypass login -- pause here and let the real user provide "
+        "their own credentials. `fields` should name exactly what the page's own form "
+        "asks for (e.g. ['Username', 'Password'], or ['Email', 'Password']) and `reason` "
+        "should say which site/page this is for, in one short sentence."
+    )
+)
+def request_login_credentials(fields: list[str], reason: str) -> dict[str, Any]:
+    del fields, reason
+    # Never actually reached: BrowserCredentialInterruptRail.before_tool_call
+    # intercepts this tool's name and always interrupts or rejects instead
+    # of approving real execution -- this body is an unreachable fallback.
+    return {"error": "request_login_credentials should never execute directly."}
+
+
+_PENDING_CREDENTIAL_REQUESTS: Dict[str, Dict[str, str]] = {}
+
+
+def _slugify_field_name(name: str, index: int) -> str:
+    slug = re.sub(r"[^a-z0-9]+", "_", name.strip().lower()).strip("_")
+    return slug or f"field_{index}"
+
+
+def _build_credential_request_output(inner_session_id: str, inner_id: str, request: Any) -> ToolOutput:
+    """Build the A2UI login form for a paused request_login_credentials call.
+
+    Stashes {inner_session_id, inner_id} under a fresh resume_token (mirrors
+    weather_tools._FORECAST_STATE's pattern) -- the outer model is told to
+    remember and echo that token back on its next browser_agent_run call,
+    which BrowserAgentTool.invoke() uses to resume this exact paused tool
+    call via InteractiveInput.
+    """
+    raw_fields = getattr(request, "fields", None) or []
+    fields = [str(f) for f in raw_fields] or ["Username", "Password"]
+    reason = str(getattr(request, "reason", "") or "")
+
+    resume_token = uuid.uuid4().hex[:12]
+    _PENDING_CREDENTIAL_REQUESTS[resume_token] = {
+        "inner_session_id": inner_session_id,
+        "inner_id": inner_id,
+    }
+
+    surface_id = genui.new_surface_id("browser-login")
+    field_groups: list[tuple[str, list[dict[str, Any]]]] = []
+    field_paths: dict[str, str] = {}
+    field_defaults: dict[str, Any] = {}
+    for index, name in enumerate(fields):
+        field_id = _slugify_field_name(name, index)
+        # No masked/password TextField variant is confirmed to exist in the
+        # AGenUI basic catalog, so this renders as plain text like every
+        # other text_field in this app -- transport is still TLS-encrypted
+        # end to end same as the rest of this session; only on-screen
+        # masking is missing.
+        field_groups.append((name, [genui.text_field(field_id, label=name, value="")]))
+        field_paths[field_id] = f"/{field_id}/value"
+        field_defaults[field_id] = ""
+
+    messages = genui.form(
+        surface_id,
+        title="Log in to continue",
+        fields=[field for _, group in field_groups for field in group],
+        field_groups=field_groups,
+        submit_label="Continue",
+        action_name="submit_browser_credentials",
+        field_paths=field_paths,
+        field_defaults=field_defaults,
+    )
+
+    reason_suffix = f" ({reason})" if reason else ""
+    fields_text = ", ".join(fields)
+    model_text = (
+        f"The browser hit a login wall{reason_suffix} and needs real credentials from the "
+        f"user before it can continue. A login form asking for {fields_text} has already "
+        f"been shown to the user -- do not render your own. Remember this resume_token "
+        f"exactly: {resume_token!r}. Once the user submits that form, call browser_agent_run "
+        "again with resume_token set to that exact value and credentials set to their "
+        "submitted field values (never task)."
+    )
+    return ToolOutput(
+        success=True,
+        data={
+            "content": model_text,
+            "text": f"I need you to log in to continue -- fill in {fields_text} and submit when ready.",
+            "genui": messages,
+        },
+    )
+
 
 _browser_agent: Optional[ReActAgent] = None
 _browser_runtime: Optional[BrowserAgentRuntime] = None
@@ -184,6 +375,7 @@ async def _get_browser_agent() -> ReActAgent:
         agent = ReActAgent(card=card).configure(agent_config)
         await agent.register_rail(A2uiToolEventRail())
         await agent.register_rail(BrowserRuntimeRail(runtime))
+        await agent.register_rail(BrowserCredentialInterruptRail())
         await agent.register_rail(
             ContextProcessorRail(
                 processors=[
@@ -217,6 +409,9 @@ async def _get_browser_agent() -> ReActAgent:
         for runtime_tool in build_browser_runtime_tools(runtime, language="en"):
             Runner.resource_mgr.add_tool(runtime_tool)
             agent.ability_manager.add(runtime_tool.card)
+
+        Runner.resource_mgr.add_tool(request_login_credentials)
+        agent.ability_manager.add(request_login_credentials.card)
 
         _browser_agent = agent
         _browser_runtime = runtime
@@ -348,7 +543,12 @@ class BrowserAgentTool(Tool):
                     "longer than your other tools -- do not avoid it just because it's "
                     "slower. Give `task` every constraint the user already gave (route, "
                     "dates, passenger count, etc.), written as a single, specific, "
-                    "self-contained instruction."
+                    "self-contained instruction. If the site hits a real login wall, this "
+                    "tool pauses itself, shows its own login form to the user, and its "
+                    "result tells you the exact `resume_token` to remember -- when the user "
+                    "submits that form, call this again with `resume_token` and `credentials` "
+                    "set (and `task` omitted) to continue the same paused run; never start a "
+                    "fresh `task` call for that."
                 ),
                 input_params=_INPUT_PARAMS,
             )
@@ -357,29 +557,56 @@ class BrowserAgentTool(Tool):
     async def invoke(self, inputs: Any, **kwargs: Any) -> ToolOutput:
         outer_session = kwargs.get("session")
         task = ""
+        resume_token = ""
+        credentials: Dict[str, str] = {}
         if isinstance(inputs, dict):
             task = str(inputs.get("task") or "").strip()
-        if not task:
-            return ToolOutput(success=False, error="'task' is required.")
+            resume_token = str(inputs.get("resume_token") or "").strip()
+            raw_credentials = inputs.get("credentials")
+            if isinstance(raw_credentials, dict):
+                credentials = {str(key): str(value) for key, value in raw_credentials.items()}
 
         try:
             agent = await _get_browser_agent()
         except Exception as exc:  # noqa: BLE001 -- report startup failure, don't crash the outer turn
             return ToolOutput(success=False, error=f"Browser agent unavailable: {exc}")
 
+        if resume_token:
+            pending = _PENDING_CREDENTIAL_REQUESTS.pop(resume_token, None)
+            if pending is None:
+                return ToolOutput(
+                    success=False,
+                    error="This login request is no longer active -- ask the user to try again.",
+                )
+            inner_session_id = pending["inner_session_id"]
+            interactive_input = InteractiveInput()
+            interactive_input.update(pending["inner_id"], dict(credentials))
+            # Runner._prepare_agent calls inputs.get(...) whenever session is a
+            # plain string (our case) -- an InteractiveInput passed directly as
+            # `inputs` has no .get() and blows up before the agent ever runs.
+            # Wrapping it under "query" is the same convention the framework's
+            # own resume tests use (see test_interrupt_stream.py).
+            run_input: Any = {"query": interactive_input}
+        elif task:
+            inner_session_id = f"browser-agent-{uuid.uuid4().hex}"
+            run_input = {"query": task}
+        else:
+            return ToolOutput(success=False, error="'task' is required.")
+
         async def _emit(payload: dict[str, Any]) -> None:
             if outer_session is None:
                 return
-            await outer_session.write_stream(
-                OutputSchema(type="browser_agent_step", index=0, payload=payload)
-            )
+            await outer_session.write_stream(OutputSchema(type="browser_agent_step", index=0, payload=payload))
 
         final_text = ""
-        inner_session_id = f"browser-agent-{uuid.uuid4().hex}"
+        pending_interrupt: Optional[tuple[str, Any]] = None
         try:
-            async for chunk in Runner.run_agent_streaming(agent, {"query": task}, session=inner_session_id):
+            async for chunk in Runner.run_agent_streaming(agent, run_input, session=inner_session_id):
                 chunk_type = getattr(chunk, "type", None)
                 payload = getattr(chunk, "payload", None) or {}
+                if chunk_type == INTERACTION:
+                    pending_interrupt = (getattr(payload, "id", ""), getattr(payload, "value", None))
+                    continue
                 if chunk_type == "tool_call":
                     tool_name = _normalized_tool_name(payload.get("tool_name", ""))
                     await _emit(
@@ -416,6 +643,10 @@ class BrowserAgentTool(Tool):
         except Exception as exc:  # noqa: BLE001 -- report the failure as a tool result, don't crash the outer turn
             await _emit({"status": "error", "tool": "", "text": f"Browser agent run failed: {exc}"})
             return ToolOutput(success=False, error=f"Browser agent run failed: {exc}")
+
+        if pending_interrupt is not None:
+            inner_id, request = pending_interrupt
+            return _build_credential_request_output(inner_session_id, inner_id, request)
 
         if not final_text:
             final_text = "The browser agent finished without a final summary."

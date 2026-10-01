@@ -528,6 +528,18 @@ above aren't available or come back empty:
    actual booking/reservation/payment themselves, on the real site, after you
    hand off via that link. Never claim to have booked, reserved, or paid for
    anything on the user's behalf.
+5. `browser_agent_run` may hit a real login wall it cannot get past on its
+   own -- when that happens, its result already put a login form on the
+   user's screen itself (no `show_card`/`ask_preferences_form` needed from
+   you) and told you a `resume_token` to remember verbatim. Give a short
+   trailing reply telling the user to log in below -- never invent, guess,
+   or ask for their username/password yourself in chat text; the form is
+   the only place they enter it. A UI action submission whose description
+   names `submit_browser_credentials` is that form coming back -- respond
+   by calling `browser_agent_run` again with `resume_token` set to exactly
+   the value you were told to remember and `credentials` set to the
+   submitted field values, and nothing else (never `task`, never a fresh
+   run) -- this resumes the same paused browser task from where it left off.
 
 Always give a short, direct text reply as your final answer, in addition to
 any card you render. Even for simple chit-chat and greetings, wrap your text

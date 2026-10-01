@@ -7,6 +7,7 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
+from openjiuwen.core.foundation.tool.schema import ToolOutput
 from openjiuwen.harness.a2ui.server.ws_session import (
     ConnectionSession,
     _describe_ui_actions,
@@ -47,6 +48,16 @@ class TestExtractResult:
 
     def test_non_dict_result_stringifies(self):
         assert _extract_result(42) == ("42", None)
+
+    def test_tool_output_result_returns_text_and_genui(self):
+        result = ToolOutput(success=True, data={"content": "ignored", "text": "hi", "genui": [{"a": 1}]})
+        text, genui_messages = _extract_result(result)
+        assert text == "hi"
+        assert genui_messages == [{"a": 1}]
+
+    def test_tool_output_with_non_dict_data_returns_empty(self):
+        result = ToolOutput(success=True, data="not a dict")
+        assert _extract_result(result) == ("", None)
 
 
 class TestUnsentSuffix:

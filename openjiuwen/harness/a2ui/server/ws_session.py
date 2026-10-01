@@ -15,6 +15,7 @@ from typing import Any, Optional
 from fastapi import WebSocket, WebSocketDisconnect
 
 from openjiuwen.core.common.logging import logger
+from openjiuwen.core.foundation.tool.schema import ToolOutput
 from openjiuwen.core.runner import Runner
 from openjiuwen.core.single_agent import ReActAgent
 
@@ -337,6 +338,14 @@ def _unsent_suffix(final_text: str, streamed_text: str) -> str:
 def _extract_result(tool_result: Any) -> tuple[str, Optional[list[dict[str, Any]]]]:
     if isinstance(tool_result, dict):
         return str(tool_result.get("text", "") or ""), tool_result.get("genui")
+    if isinstance(tool_result, ToolOutput):
+        # Hand-written Tool subclasses (e.g. BrowserAgentTool) return this
+        # instead of the plain {"text": ..., "genui": [...]} dict @tool
+        # functions do -- AbilityManager hands the raw ToolOutput straight
+        # through to ctx.inputs.tool_result, so without this branch its
+        # genui (if any) silently never reaches the client at all.
+        data = tool_result.data if isinstance(tool_result.data, dict) else {}
+        return str(data.get("text", "") or ""), data.get("genui")
     if tool_result is None:
         return "", None
     return str(tool_result), None
