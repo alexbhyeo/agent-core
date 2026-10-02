@@ -48,12 +48,16 @@ from openjiuwen.core.session.interaction.interactive_input import InteractiveInp
 from openjiuwen.core.session.stream.base import OutputSchema
 from openjiuwen.core.single_agent import ReActAgent, ReActAgentConfig
 from openjiuwen.core.single_agent.interrupt.response import InterruptRequest
-from openjiuwen.core.single_agent.rail.base import AgentCallbackContext
+from openjiuwen.core.single_agent.prompts.builder import PromptSection
+from openjiuwen.core.single_agent.rail.base import AgentCallbackContext, AgentRail
 from openjiuwen.core.single_agent.schema.agent_card import AgentCard
 from openjiuwen.harness.rails.context_engineer import ContextProcessorRail
 from openjiuwen.harness.rails.interrupt.interrupt_base import BaseInterruptRail, InterruptDecision
 from openjiuwen.harness.tools.browser_move.playwright_runtime.browser_capabilities import (
     resolve_browser_capabilities,
+)
+from openjiuwen.harness.tools.browser_move.playwright_runtime.browser_logging import (
+    browser_agent_log_info,
 )
 from openjiuwen.harness.tools.browser_move.playwright_runtime.browser_state_context_processor import (
     BrowserStateContextProcessorConfig,
@@ -95,7 +99,12 @@ _INPUT_PARAMS = {
     "required": ["task"],
 }
 
-_MAX_INNER_ITERATIONS = 30
+# Real booking sites often need a long exploratory chain (probe, navigate,
+# retry past a date-picker/anti-bot check, probe again...) before reaching a
+# genuinely confirmed set of results -- 30 wasn't always enough headroom left
+# over to also pause for request_option_selection/request_login_credentials
+# once it got there, observed live against real sites.
+_MAX_INNER_ITERATIONS = 45
 
 # TODO(frontend-secure-credentials): replace this hidden generic-A2UI context
 # value with a dedicated browser.credentials.submit message emitted by a
@@ -104,22 +113,50 @@ _MAX_INNER_ITERATIONS = 30
 BROWSER_LOGIN_FLOW_CONTEXT_KEY = "__browser_login_flow_id"
 _LOGIN_FLOW_TTL_SECONDS = 5 * 60
 
+# Same hidden-context-binding trick as BROWSER_LOGIN_FLOW_CONTEXT_KEY above,
+# for the (non-sensitive) option-selection resume -- see ws_session.py.
+BROWSER_OPTION_SELECTION_FLOW_CONTEXT_KEY = "__browser_option_selection_flow_id"
+
 _INNER_SYSTEM_PROMPT = """You are a browser automation agent that carries out one real, \
 multi-step web task per call: navigating, scrolling, clicking, filling in forms, and \
 extracting information from real pages using the available browser tools.
 
 You MAY click "Search"/"Submit"/"Apply"/"Filter"-style controls freely whenever doing so \
 retrieves information -- e.g. submitting a route/date search form on a bus, flight, or \
-hotel site to see the list of available operators, times, and prices. That is expected, \
-normal, core behavior for this task, not a boundary violation.
+hotel site to see the list of available operators, times, and prices -- and, once the real \
+user has picked a specific option (see request_option_selection below), you may also \
+select that option and proceed through ordinary checkout steps on its behalf (choosing a \
+seat, confirming the route, entering passenger/contact details you were actually given, \
+logging in via request_login_credentials if needed). All of that is expected, normal, core \
+behavior for this task, not a boundary violation.
 
-You must NEVER click, tap, or submit anything that would complete or finalize a real \
-transaction on the user's behalf -- this includes, in any language, "Buy", "Pay", \
-"Purchase", "Confirm order", "Place order", "Checkout", "Book now", "Confirm booking", or \
-entering real payment/card/passenger-identity details. The instant a page's next action \
-would be one of those, STOP and report back what you already found (including that \
-page's URL) instead of proceeding -- the user always completes the actual purchase \
-themselves, on the real site, after this call hands the options back to them.
+You must NEVER click, tap, or submit anything that would complete or finalize the real \
+transaction itself -- this includes, in any language, final actions like "Pay", "Place \
+order", "Confirm payment", "Confirm booking", or "Pay now", and entering real payment/card \
+details. The instant the next action would actually charge money or finalize the booking, \
+STOP and report back exactly where you are (including that page's URL) instead of \
+proceeding -- the user always completes that final step themselves, on the real site, \
+after this call hands them off right before it.
+
+MANDATORY STEP, not optional: the moment you have two or more genuinely distinct, \
+comparable results for a booking-intent task (different bus/flight/hotel departures, \
+operators, times, rooms, prices, etc.), your very next tool call MUST be \
+request_option_selection -- before any summary, before ending the turn, regardless of how \
+many steps you have already used or how tempting it is to just report what you found \
+instead. Reporting a list of real options as your final text answer, without first calling \
+request_option_selection, is a mistake -- never do that for a booking-intent task once you \
+have 2+ comparable results. Pass the REAL options you found as `options` (each `label` \
+describing it fully and accurately: operator, time, price, etc., exactly as shown on the \
+page) and a short `prompt` describing the choice. That call pauses you here; the real \
+user's pick comes back as request_option_selection's own result, telling you exactly which \
+option they chose. Then actually select that option on the page (e.g. click its \
+"Select"/"Choose"/"Book" control) and continue the task from there -- filling in any \
+passenger/contact details already given to you earlier in this same task (never invent a \
+name, email, phone number, or other identity detail you were not actually given), toward \
+an actual checkout/payment page for that specific option. The only exceptions: there is \
+genuinely only one result, or the task is explicitly asking for information/comparison \
+only rather than to proceed with booking one -- skip straight to acting on it or reporting \
+it in those two cases only.
 
 If a page requires you to log in (username/password, or similar) before you can proceed, \
 and you do not already have credentials for it, call request_login_credentials with the \
@@ -132,11 +169,15 @@ Use browser_probe_interactives to see a page's controls and browser_probe_cards 
 repeated results/listings before deciding what to click or fill; use browser_navigate \
 directly to a known or constructed results URL when that is faster than clicking \
 through. Prefer browser_batch_interact once two or more actions in a row are already \
-decided. Stop as soon as you have real, concrete results (or a real, specific blocker) \
-for the task -- do not keep browsing "to be thorough" once you already have enough to \
-answer it. End with a concise, factual summary of exactly what you found (real operator/ \
-flight/hotel names, times, prices, and the page URL) -- never invent or guess a detail \
-you did not actually see on a page."""
+decided. Once you have real, concrete results, have reached a real payment wall, or hit a \
+real, specific blocker, stop browsing -- but remember the mandatory step above: if what you \
+have is 2+ comparable results for a booking-intent task, stopping means calling \
+request_option_selection, not ending your turn with a text summary. Only write a final \
+text summary once that does not apply (a single result, an info-only task, a real \
+blocker, or you already reached a payment wall/checkout page). End with a concise, \
+factual summary of exactly what you found or where you stopped (real operator/ \
+flight/hotel names, times, prices, and the current page's URL) -- never invent or guess a \
+detail you did not actually see on a page."""
 
 
 class BrowserCredentialRequest(InterruptRequest):
@@ -145,6 +186,14 @@ class BrowserCredentialRequest(InterruptRequest):
 
     fields: List[str] = []
     reason: str = ""
+
+
+class BrowserOptionSelectionRequest(InterruptRequest):
+    """Interrupt payload for request_option_selection -- see
+    BrowserOptionSelectionInterruptRail below."""
+
+    options: List[Dict[str, str]] = []
+    prompt: str = ""
 
 
 def _parse_tool_call_args(tool_call: Optional[ToolCall]) -> Dict[str, Any]:
@@ -204,6 +253,49 @@ class BrowserCredentialInterruptRail(BaseInterruptRail):
         )
 
 
+class BrowserOptionSelectionInterruptRail(BaseInterruptRail):
+    """Pauses the inner browser agent when it has found several real,
+    comparable options and needs the real user to pick exactly one before it
+    continues (e.g. several bus departures) -- same pause/resume mechanism as
+    BrowserCredentialInterruptRail above, just for a choice instead of a
+    login form. See that class's own docstring for the general design.
+    """
+
+    def __init__(self) -> None:
+        super().__init__(tool_names=["request_option_selection"])
+
+    async def resolve_interrupt(
+        self,
+        ctx: AgentCallbackContext,
+        tool_call: Optional[ToolCall],
+        user_input: Optional[Any],
+        auto_confirm_config: Optional[dict] = None,
+    ) -> InterruptDecision:
+        del ctx, auto_confirm_config
+        if isinstance(user_input, dict) and user_input:
+            raw_selected = user_input.get("selected_label")
+            # ChoicePicker's data-model value is structurally a list (even
+            # for a single-select "mutuallyExclusive" field) -- accept either
+            # shape rather than depend on exactly how it unwraps on submit.
+            if isinstance(raw_selected, list):
+                selected_label = str(raw_selected[0]) if raw_selected else ""
+            else:
+                selected_label = str(raw_selected or "")
+            return self.reject(
+                tool_result=f"The user selected: {selected_label!r}. Select that exact option on the page and continue."
+            )
+        args = _parse_tool_call_args(tool_call)
+        raw_options = args.get("options")
+        options = [dict(o) for o in raw_options if isinstance(o, dict)] if isinstance(raw_options, list) else []
+        return self.interrupt(
+            BrowserOptionSelectionRequest(
+                message="Selection required",
+                options=options,
+                prompt=str(args.get("prompt") or ""),
+            )
+        )
+
+
 @tool(
     description=(
         "Call this when the current page requires login credentials you don't have, and "
@@ -223,6 +315,28 @@ def request_login_credentials(fields: list[str], reason: str) -> dict[str, Any]:
 
 
 _PENDING_CREDENTIAL_REQUESTS: Dict[str, Dict[str, Any]] = {}
+
+
+@tool(
+    description=(
+        "Call this when you've found two or more real, comparable options on the page "
+        "(different departures, operators, times, prices, rooms, etc.) and need the real "
+        "user to pick exactly one before you proceed. Never guess which one they want. "
+        "Each item in `options` needs a `label` that fully and accurately describes it "
+        "(operator, time, price, etc.) exactly as shown on the page -- these are shown to "
+        "the user verbatim. `prompt` is a short description of the choice being made (e.g. "
+        "'Choose a bus departure for Singapore -> Melaka on 2026-10-10')."
+    )
+)
+def request_option_selection(options: list[dict[str, str]], prompt: str) -> dict[str, Any]:
+    del options, prompt
+    # Never actually reached: BrowserOptionSelectionInterruptRail.before_tool_call
+    # intercepts this tool's name and always interrupts or rejects instead
+    # of approving real execution -- this body is an unreachable fallback.
+    return {"error": "request_option_selection should never execute directly."}
+
+
+_PENDING_OPTION_SELECTION_REQUESTS: Dict[str, Dict[str, Any]] = {}
 
 
 def _slugify_field_name(name: str, index: int) -> str:
@@ -321,6 +435,71 @@ def _build_credential_request_output(
     )
 
 
+def _build_option_selection_output(inner_session_id: str, inner_id: str, request: Any) -> ToolOutput:
+    """Build the A2UI choice card for a paused request_option_selection call.
+
+    Stashes {inner_session_id, inner_id} under a fresh resume_token, same
+    general idea as _build_credential_request_output above, just for a
+    single-choice ChoicePicker field instead of a login form. Unlike that
+    login path, a selection isn't sensitive, so this skips its
+    conversation-binding/TTL/single-resume hardening -- but the resume itself
+    still never goes through the outer model (see resume_browser_option_selection
+    and ws_session.py's submit_browser_option_selection interception): once the
+    user submits a pick, the server resumes this exact paused call directly.
+    Each option's full label text is used directly as its submitted value (not
+    a separate id), so the resumed model gets back exactly the descriptive
+    string it needs to find and click the matching element again.
+    """
+    raw_options = getattr(request, "options", None) or []
+    options = [dict(option) for option in raw_options if isinstance(option, dict)]
+    prompt = str(getattr(request, "prompt", "") or "") or "Choose an option to continue"
+
+    resume_token = uuid.uuid4().hex[:12]
+    _PENDING_OPTION_SELECTION_REQUESTS[resume_token] = {
+        "inner_session_id": inner_session_id,
+        "inner_id": inner_id,
+    }
+
+    surface_id = genui.new_surface_id("browser-select")
+    field_id = "selected_label"
+    choice_options: list[tuple[str, str]] = []
+    for index, option in enumerate(options):
+        label = str(option.get("label") or "").strip() or f"Option {index + 1}"
+        choice_options.append((label, label))
+
+    # Hidden binding so the WebSocket handler can find this resume_token in
+    # the submission's context, same mechanism as the login form's own
+    # BROWSER_LOGIN_FLOW_CONTEXT_KEY -- see ws_session.py.
+    field_paths = {
+        field_id: f"/{field_id}/value",
+        BROWSER_OPTION_SELECTION_FLOW_CONTEXT_KEY: f"/{BROWSER_OPTION_SELECTION_FLOW_CONTEXT_KEY}/value",
+    }
+    messages = genui.form(
+        surface_id,
+        title=prompt,
+        fields=[genui.choice_picker(field_id, choice_options, label=prompt)],
+        submit_label="Select",
+        action_name="submit_browser_option_selection",
+        field_paths=field_paths,
+        field_defaults={BROWSER_OPTION_SELECTION_FLOW_CONTEXT_KEY: resume_token},
+    )
+
+    model_text = (
+        f"A choice of {len(options)} real option(s) has already been shown to the user as "
+        f"a selection card titled {prompt!r} -- do not render your own. The server will "
+        "resume the paused browser run directly once the user picks and submits; do not "
+        "call browser_agent_run again for this selection."
+    )
+    return ToolOutput(
+        success=True,
+        data={
+            "content": model_text,
+            "text": f"I found a few options -- {prompt.lower()} and I'll continue with that one.",
+            "genui": messages,
+        },
+    )
+
+
 _browser_agent: Optional[ReActAgent] = None
 _browser_runtime: Optional[BrowserAgentRuntime] = None
 _init_lock = asyncio.Lock()
@@ -392,6 +571,10 @@ async def _get_browser_agent() -> ReActAgent:
         await agent.register_rail(A2uiToolEventRail())
         await agent.register_rail(BrowserRuntimeRail(runtime))
         await agent.register_rail(BrowserCredentialInterruptRail())
+        await agent.register_rail(BrowserOptionSelectionInterruptRail())
+        # Must come after BrowserRuntimeRail (lower priority) so it can undo
+        # that rail's blanket tool-strip on the terminal pass.
+        await agent.register_rail(BrowserInteractionAvailabilityRail())
         await agent.register_rail(
             ContextProcessorRail(
                 processors=[
@@ -428,6 +611,8 @@ async def _get_browser_agent() -> ReActAgent:
 
         Runner.resource_mgr.add_tool(request_login_credentials)
         agent.ability_manager.add(request_login_credentials.card)
+        Runner.resource_mgr.add_tool(request_option_selection)
+        agent.ability_manager.add(request_option_selection.card)
 
         _browser_agent = agent
         _browser_runtime = runtime
@@ -503,11 +688,176 @@ async def _capture_screenshot(runtime: BrowserAgentRuntime) -> Optional[Dict[str
         return None
 
 
+# The inner agent can reach for a raw JS escape hatch (`browser_evaluate` /
+# `browser_run_code`). Its step text can't come from the tool name alone --
+# "Evaluate…" says nothing about whether it is reading a price, filling a
+# field, or clicking a button -- so these helpers describe the script itself.
+_SCRIPT_ARG_KEYS = ("function", "expression", "script", "code")
+_SCRIPT_WRITE_RE = re.compile(
+    r"\.click\s*\(|dispatchEvent|\.value\s*=|setAttribute\s*\(|\.submit\s*\(|"
+    r"appendChild|removeChild|innerHTML\s*=|\.focus\s*\(|scrollIntoView",
+    re.IGNORECASE,
+)
+_SCRIPT_READ_RE = re.compile(
+    r"textContent|innerText|innerHTML|getAttribute|dataset|document\.title|querySelector",
+    re.IGNORECASE,
+)
+_SELECTOR_RE = re.compile(r"""querySelector(?:All)?\(\s*["'`]([^"'`]+)["'`]""")
+_SCRIPT_SELECTORS_LIMIT = 2
+_SCRIPT_FIELDS_LIMIT = 4
+
+
+def _script_text(args: Dict[str, Any]) -> str:
+    """The raw script out of whichever parameter name carried it."""
+    for key in _SCRIPT_ARG_KEYS:
+        value = args.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    return ""
+
+
+def _coerce_tool_args(tool_args: Any) -> Dict[str, Any]:
+    """Normalize one step's tool arguments into a dict.
+
+    ``A2uiToolEventRail`` relays ``ctx.inputs.tool_args`` verbatim, and that
+    is ``ToolCall.arguments`` -- the model's raw JSON *string* (see the
+    ``ToolCallInputs`` construction in ability_manager), not the parsed dict
+    the executor builds internally for its own use. Reading it as if it were
+    already a dict silently dropped every argument-derived step text, so
+    "Navigating to <url>" degraded to "Navigating…" and a script step could
+    never say what it was reading.
+    """
+    if isinstance(tool_args, dict):
+        return tool_args
+    if isinstance(tool_args, str) and tool_args.strip():
+        try:
+            parsed = json.loads(tool_args)
+        except (TypeError, ValueError):
+            return {}
+        if isinstance(parsed, dict):
+            return parsed
+    return {}
+
+
+def _shorthand_label(script: str, name: str) -> str:
+    """Readable label for a shorthand return key such as ``{title}``.
+
+    A bare identifier like ``t`` says nothing, so fall back to what it was
+    assigned from: ``const t = document.title`` reads as "title", and
+    ``const p = document.querySelector('.price').innerText`` as "price".
+    """
+    assigned = re.search(rf"(?:const|let|var)\s+{re.escape(name)}\s*=\s*([^;\n]+)", script)
+    if not assigned:
+        return ""
+    expression = assigned.group(1)
+    if "document.title" in expression:
+        return "title"
+    attribute = re.search(r"""getAttribute\(\s*["'`]data-([\w-]+)["'`]""", expression)
+    if attribute:
+        return attribute.group(1).replace("-", " ")
+    selectors = _script_selectors(expression, limit=1)
+    if selectors:
+        token = re.split(r"[\s>+~]+", selectors[0])[-1].lstrip(".#")
+        return token.replace("-", " ").replace("_", " ").strip()
+    return ""
+
+
+def _returned_field_names(script: str, limit: int = _SCRIPT_FIELDS_LIMIT) -> List[str]:
+    """Keys of the object literal a script returns, in source order.
+
+    ``return {title, price: el.textContent}`` yields ``title``/``price``, so
+    the log can name what is being read. Comma splitting is brace/bracket
+    aware so a nested value (``{meta: {a: 1}}``) doesn't leak its own keys,
+    and shorthand keys (``{title}``) are resolved through their assignment
+    rather than reported as the raw variable name.
+    """
+    match = re.search(r"return\s*\(?\s*\{", script) or re.search(r"=>\s*\(\s*\{", script)
+    if not match:
+        return []
+    start = script.index("{", match.start())
+    depth = 0
+    end = -1
+    for index in range(start, len(script)):
+        char = script[index]
+        if char == "{":
+            depth += 1
+        elif char == "}":
+            depth -= 1
+            if depth == 0:
+                end = index
+                break
+    if end == -1:
+        return []
+
+    names: List[str] = []
+    depth = 0
+    token = ""
+    for char in script[start + 1 : end] + ",":
+        if char in "{([":
+            depth += 1
+        elif char in "})]":
+            depth -= 1
+        if char == "," and depth == 0:
+            key = re.match(r"""\s*["'`]?([A-Za-z_$][\w$\-]*)["'`]?\s*(:?)""", token)
+            if key:
+                name = key.group(1)
+                if not key.group(2):
+                    name = _shorthand_label(script, name) or name
+                names.append(name)
+            token = ""
+            if len(names) >= limit:
+                break
+        else:
+            token += char
+    return names
+
+
+def _script_selectors(script: str, limit: int = _SCRIPT_SELECTORS_LIMIT) -> List[str]:
+    """Distinct selectors the script queries, shortest-first, de-duplicated."""
+    selectors: List[str] = []
+    for match in _SELECTOR_RE.finditer(script):
+        selector = re.sub(r"\s+", " ", match.group(1).strip())
+        if selector and selector not in selectors:
+            selectors.append(selector[:48])
+    selectors.sort(key=len)
+    return selectors[:limit]
+
+
+def _script_step_text(tool_name: str, args: Dict[str, Any]) -> str:
+    """Describe a script-injection step by what the script does to the page."""
+    script = _script_text(args)
+    target = str(args.get("element") or args.get("target") or args.get("ref") or "").strip()
+    if not script:
+        return "Running a script on the page…"
+
+    if _SCRIPT_WRITE_RE.search(script):
+        suffix = f" ({target})" if target and target.lower() != "page" else ""
+        return f"Changing the page with a script{suffix}…"
+
+    if _SCRIPT_READ_RE.search(script):
+        fields = _returned_field_names(script)
+        if fields:
+            return f"Reading page data ({', '.join(fields)})…"
+        selectors = _script_selectors(script)
+        if selectors:
+            return f"Reading data from the page ({', '.join(selectors)})…"
+        return "Reading data from the page…"
+
+    fields = _returned_field_names(script)
+    if fields:
+        return f"Running a script that returns {', '.join(fields)}…"
+    if tool_name != "browser_evaluate":
+        return "Running a script on the page…"
+    return "Checking the page with a script…"
+
+
 def _step_text(tool_name: str, tool_args: Any) -> str:
     """Human-readable line for one inner browser action, shown live in the
     client's action-log panel (see browser.step in ws_session.py)."""
-    args = tool_args if isinstance(tool_args, dict) else {}
+    args = _coerce_tool_args(tool_args)
     tool_name = _normalized_tool_name(tool_name)
+    if tool_name in ("browser_evaluate", "browser_run_code", "browser_run_code_unsafe"):
+        return _script_step_text(tool_name, args)
     if tool_name == "browser_navigate":
         url = args.get("url")
         return f"Navigating to {url}" if url else "Navigating…"
@@ -532,6 +882,167 @@ def _step_text(tool_name: str, tool_args: Any) -> str:
     return "Working…"
 
 
+# BrowserRuntimeRail._prepare_terminal_synthesis clears every tool as soon as
+# the browser state goes terminal. Higher priority runs first, so this rail
+# sits below BrowserRuntimeRail (default 50) to run *after* that clear.
+_BROWSER_INTERACTION_RAIL_PRIORITY = 40
+
+# Outranks that same rail's "browser_terminal_synthesis" section (priority
+# 100), which is what tells the model not to call tools.
+_BROWSER_INTERACTION_SECTION_PRIORITY = 120
+
+# The only tools worth having once browsing is over: hand a real choice, or a
+# login wall, back to the user. Resuming afterwards never goes through the
+# outer agent either way -- see resume_browser_option_selection/
+# resume_browser_login and ws_session.py's submit_* interception.
+_BROWSER_INTERACTION_TOOL_NAMES = ("request_option_selection", "request_login_credentials")
+
+
+def _tool_call_name(tool_call: Any) -> str:
+    """The bare tool name off a response's tool call.
+
+    Providers wrap it differently -- sometimes ``name`` on the call itself,
+    sometimes nested under a ``function`` object -- so accept either.
+    """
+    function = getattr(tool_call, "function", tool_call)
+    return str(getattr(function, "name", getattr(tool_call, "name", "")) or "").strip()
+
+
+class BrowserInteractionAvailabilityRail(AgentRail):
+    """Keep the user-interaction tools callable on the browser terminal pass.
+
+    ``BrowserRuntimeRail._prepare_terminal_synthesis`` wipes the tool list
+    (``inputs.tools = []``) and injects a "do not call tools, summarise the
+    runtime result" section the moment the browser state reaches a terminal
+    status -- ``completed``, ``partial`` or ``blocked``.
+
+    That is right for a plain read-only task, but it silently disabled the
+    entire booking hand-off: ``request_option_selection`` and
+    ``request_login_credentials`` are the *only* way a choice or a login wall
+    ever reaches the user, and they were being removed at precisely the moment
+    the run finally had real options to offer. Observed live against a real
+    bus site: a run that had scraped five genuine departures wrote them out as
+    plain chat text because at that iteration ``tool_count`` was 0, so the
+    model had nothing left to call -- no matter that its own system prompt made
+    that call mandatory.
+
+    So when the tools have been stripped, this puts back *only* those two.
+    The model still cannot browse further; it can hand the choice or the login
+    back to the user, or write its summary. That is exactly the decision the
+    terminal pass exists for -- the resulting card is resumed straight through
+    the server afterwards (see resume_browser_option_selection/
+    resume_browser_login), without the outer agent ever seeing it again.
+    """
+
+    priority = _BROWSER_INTERACTION_RAIL_PRIORITY
+
+    def __init__(self) -> None:
+        super().__init__()
+        # Set only when this rail put the tools back for the call now in
+        # flight, so after_model_call never overrides a finish for a turn it
+        # did not enable.
+        self._restored_this_turn = False
+
+    async def before_model_call(self, ctx: AgentCallbackContext) -> None:
+        self._restored_this_turn = False
+        inputs = getattr(ctx, "inputs", None)
+        if inputs is None or getattr(inputs, "tools", None):
+            # Tools are still on offer -- an ordinary exploratory iteration.
+            return
+
+        restored = await self._interaction_tool_infos(ctx)
+        if not restored:
+            return
+
+        inputs.tools = restored
+        self._restored_this_turn = True
+        self._add_override_section(ctx)
+        browser_agent_log_info(
+            "[BROWSER_SUBAGENT] terminal pass: restored %s so the run can still hand a "
+            "choice or a login back to the user",
+            ", ".join(str(getattr(tool, "name", "?")) for tool in restored),
+        )
+
+    async def after_model_call(self, ctx: AgentCallbackContext) -> None:
+        """Let a restored interaction call actually run.
+
+        ``BrowserRuntimeRail.after_model_call`` force-finishes whenever the
+        browser state is terminal and the response contains *any* tool call --
+        it never looks at which tool was called. For a restored
+        ``request_option_selection`` that is precisely wrong: the loop consumes
+        the finish before executing the call, so the interrupt never fires, no
+        card is ever built, and the run ends reporting
+        ``browser_task_incomplete`` instead of pausing for the user.
+
+        Dropping the finish here lets the call run; the interrupt then pauses
+        the run immediately, so the runtime's terminal state still governs
+        every later step.
+        """
+        if not self._restored_this_turn:
+            return
+        response = getattr(getattr(ctx, "inputs", None), "response", None)
+        interaction_calls = [
+            _tool_call_name(tool_call)
+            for tool_call in (getattr(response, "tool_calls", None) or [])
+            if _tool_call_name(tool_call) in _BROWSER_INTERACTION_TOOL_NAMES
+        ]
+        if not interaction_calls:
+            return
+        if ctx.consume_force_finish() is None:
+            return
+        browser_agent_log_info(
+            "[BROWSER_SUBAGENT] held the terminal force-finish so %s can run and pause "
+            "for the user",
+            ", ".join(interaction_calls),
+        )
+
+    @staticmethod
+    async def _interaction_tool_infos(ctx: AgentCallbackContext) -> List[Any]:
+        """The interaction tools' tool definitions, re-read from the agent."""
+        ability_manager = getattr(ctx.agent, "ability_manager", None)
+        list_tool_info = getattr(ability_manager, "list_tool_info", None)
+        if not callable(list_tool_info):
+            return []
+        try:
+            tools = await list_tool_info(list(_BROWSER_INTERACTION_TOOL_NAMES))
+        except Exception:  # noqa: BLE001 -- a missing tool must not break the turn
+            return []
+        return list(tools or [])
+
+    @staticmethod
+    def _add_override_section(ctx: AgentCallbackContext) -> None:
+        """Tell the model what it may still do, over the "no tools" section."""
+        builder = getattr(ctx.agent, "system_prompt_builder", None)
+        if builder is None:
+            return
+        builder.add_section(
+            PromptSection(
+                name="browser_interaction_override",
+                content={
+                    "en": (
+                        "Browsing has ended, but one hand-off may still be owed -- this "
+                        "overrides any instruction above telling you not to call tools. If "
+                        "you have two or more genuinely comparable real options the user "
+                        "must choose between (different departures, operators, times, "
+                        "prices, rooms...), call request_option_selection now with those "
+                        "real options, before writing anything else. If the site blocked "
+                        "you behind a login you have no credentials for, call "
+                        "request_login_credentials instead. Only if neither applies, write "
+                        "your final summary."
+                    ),
+                    "cn": (
+                        "浏览已结束，但仍可能欠用户一次交接——此说明覆盖上文任何“不要调用工具”的"
+                        "指示。如果你已获得两个及以上真实且可比较的选项（不同的班次、运营商、时间、"
+                        "价格、房型等），请先调用 request_option_selection 并传入这些真实选项，再"
+                        "输出其他内容。若页面要求登录而你没有凭据，请改调 "
+                        "request_login_credentials。若两者都不适用，再输出最终总结。"
+                    ),
+                },
+                priority=_BROWSER_INTERACTION_SECTION_PRIORITY,
+            )
+        )
+
+
 class BrowserAgentTool(Tool):
     """Runs a real, multi-step browser task and streams its actions live."""
 
@@ -547,22 +1058,25 @@ class BrowserAgentTool(Tool):
                     "actually using a real site's own search/filter UI -- e.g. 'find real bus "
                     "tickets from Singapore to Melaka on 2026-10-10 and list the operators, "
                     "times, and prices' when there is no dedicated search tool for that "
-                    "transport type. It can navigate, scroll, click, fill in forms, and "
-                    "submit search/filter forms to retrieve real results -- but it will never "
-                    "complete an actual purchase, booking, or payment; it always stops and "
-                    "reports back once it has real results (or a real blocker) for you to "
-                    "present to the user, the same way `browser_inspect_page` does -- you "
-                    "still hand the user off to the real site via `show_card`'s `link_url` "
-                    "to actually finish there themselves. While it runs, the user can watch "
-                    "its individual actions (navigate/click/fill/extract) live in an "
-                    "expandable panel, so it's fine for this to take several steps and a bit "
-                    "longer than your other tools -- do not avoid it just because it's "
-                    "slower. Give `task` every constraint the user already gave (route, "
-                    "dates, passenger count, etc.), written as a single, specific, "
-                    "self-contained instruction. If the site hits a real login wall, this "
-                    "tool pauses itself and shows its own login form. The server resumes that "
-                    "run directly after submission; never ask for credentials in chat and "
-                    "never start a fresh task for that login."
+                    "transport type. It can navigate, scroll, click, fill in forms, submit "
+                    "search/filter forms, select a specific real result the user picked, and "
+                    "proceed through ordinary checkout steps toward a real payment page -- but "
+                    "it will never complete an actual purchase or payment itself; it always "
+                    "stops right before that and hands the user off to the real site via "
+                    "`show_card`'s `link_url` to finish there themselves. While it runs, the "
+                    "user can watch its individual actions (navigate/click/fill/extract) live "
+                    "in an expandable panel, so it's fine for this to take several steps and a "
+                    "bit longer than your other tools -- do not avoid it just because it's "
+                    "slower. Give `task` every constraint the user already gave (route, dates, "
+                    "passenger count, contact details if given, etc.), written as a single, "
+                    "specific, self-contained instruction.\n"
+                    "This tool can pause itself mid-task and show the user its own card -- "
+                    "either a selection card (when it found several real, comparable options "
+                    "and needs the user to pick one) or a login form (when the site requires "
+                    "credentials you don't have). Either way, the server resumes that same "
+                    "paused run directly once the user responds -- never ask for the choice or "
+                    "credentials in chat, never render your own card for either, and never call "
+                    "this tool again for that pause or start a fresh `task` call for it."
                 ),
                 input_params=_INPUT_PARAMS,
             )
@@ -596,23 +1110,31 @@ class BrowserAgentTool(Tool):
         pending: Optional[Dict[str, Any]] = None
         if resume_token:
             pending = _PENDING_CREDENTIAL_REQUESTS.get(resume_token)
-            if pending is None:
-                return ToolOutput(
-                    success=False,
-                    error="This login request is no longer active -- ask the user to try again.",
-                )
-            if float(pending.get("expires_at") or 0) <= time.monotonic():
-                _PENDING_CREDENTIAL_REQUESTS.pop(resume_token, None)
-                return ToolOutput(success=False, error="This login request expired -- ask the user to try again.")
-            bound_conversation_id = str(pending.get("conversation_id") or "")
-            if bound_conversation_id and expected_conversation_id != bound_conversation_id:
-                return ToolOutput(success=False, error="This login request does not belong to this conversation.")
-            if pending.get("resuming"):
-                return ToolOutput(success=False, error="This login request is already being resumed.")
-            expected_keys = set(pending.get("credential_keys") or [])
-            if not credentials or set(credentials) != expected_keys:
-                return ToolOutput(success=False, error="The submitted login fields did not match this request.")
-            pending["resuming"] = True
+            if pending is not None:
+                if float(pending.get("expires_at") or 0) <= time.monotonic():
+                    _PENDING_CREDENTIAL_REQUESTS.pop(resume_token, None)
+                    return ToolOutput(success=False, error="This login request expired -- ask the user to try again.")
+                bound_conversation_id = str(pending.get("conversation_id") or "")
+                if bound_conversation_id and expected_conversation_id != bound_conversation_id:
+                    return ToolOutput(
+                        success=False, error="This login request does not belong to this conversation."
+                    )
+                if pending.get("resuming"):
+                    return ToolOutput(success=False, error="This login request is already being resumed.")
+                expected_keys = set(pending.get("credential_keys") or [])
+                if not credentials or set(credentials) != expected_keys:
+                    return ToolOutput(success=False, error="The submitted login fields did not match this request.")
+                pending["resuming"] = True
+            else:
+                # Not a sensitive login flow -- option-selection resume skips the
+                # hardening above (see _build_option_selection_output) and is
+                # consumed eagerly here instead.
+                pending = _PENDING_OPTION_SELECTION_REQUESTS.pop(resume_token, None)
+                if pending is None:
+                    return ToolOutput(
+                        success=False,
+                        error="This paused browser request is no longer active -- ask the user to try again.",
+                    )
             inner_session_id = pending["inner_session_id"]
             interactive_input = InteractiveInput()
             interactive_input.update(pending["inner_id"], dict(credentials))
@@ -699,6 +1221,8 @@ class BrowserAgentTool(Tool):
             return ToolOutput(success=False, error=f"Browser agent run failed: {exc}")
 
         if pending is not None:
+            # Harmless no-op for a selection token: it was already popped
+            # eagerly above, and never lived in this dict to begin with.
             _PENDING_CREDENTIAL_REQUESTS.pop(resume_token, None)
 
         if pending_interrupt is not None:
@@ -708,6 +1232,8 @@ class BrowserAgentTool(Tool):
                 get_session_id = getattr(outer_session, "get_session_id", None)
                 if callable(get_session_id):
                     conversation_id = str(get_session_id() or "")
+            if isinstance(request, BrowserOptionSelectionRequest):
+                return _build_option_selection_output(inner_session_id, inner_id, request)
             return _build_credential_request_output(
                 inner_session_id,
                 inner_id,
@@ -747,4 +1273,29 @@ async def resume_browser_login(
     )
 
 
-__all__ = ["BROWSER_LOGIN_FLOW_CONTEXT_KEY", "BrowserAgentTool", "resume_browser_login"]
+async def resume_browser_option_selection(
+    flow_id: str,
+    selected_label: str,
+    *,
+    step_callback: Optional[Callable[[dict[str, Any]], Awaitable[None]]] = None,
+) -> ToolOutput:
+    """Resume a pending option-selection pick without a model round-trip.
+
+    Mirrors resume_browser_login above, minus the conversation-binding checks
+    that one needs for sensitive credentials -- a selection is just which
+    real option the user picked, with no secrecy requirement.
+    """
+    tool_instance = BrowserAgentTool()
+    return await tool_instance._invoke_direct(
+        {"resume_token": flow_id, "credentials": {"selected_label": selected_label}},
+        step_callback=step_callback,
+    )
+
+
+__all__ = [
+    "BROWSER_LOGIN_FLOW_CONTEXT_KEY",
+    "BROWSER_OPTION_SELECTION_FLOW_CONTEXT_KEY",
+    "BrowserAgentTool",
+    "resume_browser_login",
+    "resume_browser_option_selection",
+]

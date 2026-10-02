@@ -9,6 +9,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+import os
 import re
 import time
 from collections import deque
@@ -360,21 +361,48 @@ _BROWSER_IMAGE_CAPABILITY_GUIDANCE = {
         ),
     },
 }
+
+
+def _phase_budget(name: str, default: int) -> int:
+    """One phase's attempt budget, overridable per deployment.
+
+    Exhausting a budget is not a harmless stop: ``_consume_phase_budget`` sets
+    the state to ``partial``, which is a terminal status, and the terminal pass
+    then strips every tool the run still needs to hand a real choice or a login
+    wall back to the user (see BrowserInteractionAvailabilityRail in the a2ui
+    browser tool). Real booking sites need a long exploratory chain -- probe,
+    retry past a date-picker/anti-bot check, probe again, re-extract -- before
+    a genuinely confirmed set of results exists, so these defaults carry
+    roughly the headroom such a task actually needs rather than the minimum
+    that sufficed for a simple read-only page.
+
+    Override without editing this table, e.g. via the server's .env:
+    ``OPENJIUWEN_BROWSER_PHASE_BUDGET_EXTRACTION=48``.
+    """
+    raw = os.getenv(f"OPENJIUWEN_BROWSER_PHASE_BUDGET_{name.upper()}")
+    if raw is None or not str(raw).strip():
+        return default
+    try:
+        return max(1, int(str(raw).strip()))
+    except ValueError:
+        return default
+
+
 _BROWSER_PHASE_DEFINITIONS = {
     "navigation": {
-        "budget": 12,
+        "budget": _phase_budget("navigation", 20),
         "completion_condition": "Target URL or expected page identity is observed.",
     },
     "form": {
-        "budget": 24,
+        "budget": _phase_budget("form", 40),
         "completion_condition": "All required fields are populated and submission is evidenced.",
     },
     "filtering": {
-        "budget": 20,
+        "budget": _phase_budget("filtering", 32),
         "completion_condition": "Requested filter/sort state and changed results are observed.",
     },
     "extraction": {
-        "budget": 20,
+        "budget": _phase_budget("extraction", 32),
         "completion_condition": "One structured result contains every requested field.",
     },
 }

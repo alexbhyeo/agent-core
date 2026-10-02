@@ -22,7 +22,9 @@ from openjiuwen.core.single_agent import ReActAgent
 
 from ..tools.browser_agent_tool import (
     BROWSER_LOGIN_FLOW_CONTEXT_KEY,
+    BROWSER_OPTION_SELECTION_FLOW_CONTEXT_KEY,
     resume_browser_login,
+    resume_browser_option_selection,
 )
 from .models import make_envelope
 
@@ -114,6 +116,12 @@ class ConnectionSession:
             if credential_submission is not None:
                 flow_id, credentials = credential_submission
                 await self._resume_browser_login(conversation_id, flow_id, credentials)
+                return
+
+            selection_submission = _extract_browser_option_selection_submission(payload.get("uiActions"))
+            if selection_submission is not None:
+                flow_id, selected_label = selection_submission
+                await self._resume_browser_option_selection(conversation_id, flow_id, selected_label)
                 return
 
             # Inside the try, not computed above chat.accepted -- a malformed
@@ -212,6 +220,66 @@ class ConnectionSession:
             for message in messages:
                 await self.send("genui", message, conversation_id)
 
+    async def _resume_browser_option_selection(
+        self,
+        conversation_id: Optional[str],
+        flow_id: str,
+        selected_label: str,
+    ) -> None:
+        """Resume a paused option-selection pick without a model round-trip.
+
+        A selection isn't sensitive like a login's credentials (see
+        _resume_browser_login above), but it still never goes through the
+        outer model -- resume_token/credentials were removed from
+        browser_agent_run's own model-facing schema, so this is the only way
+        a pick ever reaches the paused inner browser run.
+        """
+        if not conversation_id:
+            await self.send("error.validation", {"message": "A conversation is required to continue."})
+            return
+
+        call_id = f"browser-select-{uuid.uuid4().hex[:8]}"
+        await self.send(
+            "tool.started",
+            {"tool": "browser_agent_run", "callId": call_id, "text": "Continuing with your selection…"},
+            conversation_id,
+        )
+
+        async def _send_step(payload: dict[str, Any]) -> None:
+            await self.send("browser.step", payload, conversation_id)
+
+        result = await resume_browser_option_selection(
+            flow_id,
+            selected_label,
+            step_callback=_send_step,
+        )
+        await self.send(
+            "tool.finished",
+            {"tool": "browser_agent_run", "callId": call_id},
+            conversation_id,
+        )
+
+        if not result.success:
+            await self.send(
+                "error.tool",
+                {"tool": "browser_agent_run", "callId": call_id, "message": result.error or "Selection failed."},
+                conversation_id,
+            )
+            return
+
+        data = result.data if isinstance(result.data, dict) else {}
+        messages = data.get("genui") or []
+        defer_genui = data.get("defer_genui_until_completed") is True
+        if not defer_genui:
+            for message in messages:
+                await self.send("genui", message, conversation_id)
+        display_text = str(data.get("text") or data.get("content") or "The browser task resumed.")
+        await self.send("chat.token", {"text": display_text}, conversation_id)
+        await self.send("chat.completed", {}, conversation_id)
+        if defer_genui:
+            for message in messages:
+                await self.send("genui", message, conversation_id)
+
 
 def _extract_browser_credential_submission(
     ui_actions: Optional[list[dict[str, Any]]],
@@ -245,6 +313,43 @@ def _extract_browser_credential_submission(
         if not credentials:
             raise ValueError("Browser credential submission did not contain any fields.")
         return flow_id, credentials
+    return None
+
+
+def _extract_browser_option_selection_submission(
+    ui_actions: Optional[list[dict[str, Any]]],
+) -> Optional[tuple[str, str]]:
+    """Extract the transitional generic-A2UI option-selection submission.
+
+    Same shape as _extract_browser_credential_submission above, for
+    submit_browser_option_selection instead -- see that function's docstring.
+    A selection isn't sensitive, but it still can't reach the outer model:
+    resume_token/credentials were removed from browser_agent_run's own
+    model-facing schema (see browser_agent_tool._INPUT_PARAMS), so this is
+    the only path left to resume that paused call.
+    """
+    if not ui_actions:
+        return None
+    for entry in ui_actions:
+        if not isinstance(entry, dict):
+            continue
+        action = entry.get("action", entry)
+        if not isinstance(action, dict) or action.get("name") != "submit_browser_option_selection":
+            continue
+        context = action.get("context")
+        if not isinstance(context, dict):
+            raise ValueError("Malformed browser option-selection submission.")
+        flow_id = str(context.get(BROWSER_OPTION_SELECTION_FLOW_CONTEXT_KEY) or "").strip()
+        if not flow_id:
+            raise ValueError("Browser option-selection submission is missing its flow ID.")
+        # ChoicePicker's data-model value is structurally a list even for a
+        # single-select field (see BrowserOptionSelectionInterruptRail's own
+        # resolve_interrupt), so accept either shape here too.
+        raw_selected = context.get("selected_label")
+        selected_label = str(raw_selected[0]) if isinstance(raw_selected, list) and raw_selected else str(raw_selected or "")
+        if not selected_label:
+            raise ValueError("Browser option-selection submission did not contain a selected option.")
+        return flow_id, selected_label
     return None
 
 

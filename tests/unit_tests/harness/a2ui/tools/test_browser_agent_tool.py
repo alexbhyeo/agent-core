@@ -10,7 +10,7 @@ _get_browser_agent mocked out (no real browser/LLM involved).
 import asyncio
 import os
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -26,8 +26,12 @@ from openjiuwen.harness.a2ui.tools.browser_agent_tool import (
     BrowserAgentTool,
     BrowserCredentialInterruptRail,
     BrowserCredentialRequest,
+    BrowserOptionSelectionInterruptRail,
+    BrowserOptionSelectionRequest,
     _build_credential_request_output,
+    _build_option_selection_output,
     request_login_credentials,
+    request_option_selection,
 )
 from tests.unit_tests.fixtures.mock_llm import (
     MockLLMModel,
@@ -43,8 +47,10 @@ def _chunk(chunk_type, payload=None):
 @pytest.fixture(autouse=True)
 def _clear_pending_requests():
     bat._PENDING_CREDENTIAL_REQUESTS.clear()
+    bat._PENDING_OPTION_SELECTION_REQUESTS.clear()
     yield
     bat._PENDING_CREDENTIAL_REQUESTS.clear()
+    bat._PENDING_OPTION_SELECTION_REQUESTS.clear()
 
 
 class TestBrowserAgentToolInterrupt:
@@ -229,6 +235,121 @@ class TestBrowserAgentToolInterrupt:
         assert "task" in result.error
 
 
+class TestBrowserAgentToolOptionSelection:
+    """Mirrors TestBrowserAgentToolInterrupt above, for the
+    request_option_selection pause/resume path instead of the login one."""
+
+    @pytest.mark.asyncio
+    async def test_multiple_options_returns_selection_card(self):
+        options = [
+            {"label": "707 Inc - 07:15 AM Ban San Street -> Melaka Sentral - USD 24.03"},
+            {"label": "Delima Express - 08:30 Golden Mile Tower -> Melaka Sentral - USD 30.00"},
+        ]
+
+        async def fake_stream(*args, **kwargs):
+            yield _chunk(
+                INTERACTION,
+                SimpleNamespace(
+                    id="tc-2",
+                    value=BrowserOptionSelectionRequest(
+                        message="Selection required",
+                        options=options,
+                        prompt="Choose a bus departure for Singapore -> Melaka on 2026-10-10",
+                    ),
+                ),
+            )
+
+        with (
+            patch.object(bat, "_get_browser_agent", AsyncMock(return_value=object())),
+            patch.object(bat.Runner, "run_agent_streaming", side_effect=fake_stream),
+        ):
+            tool = BrowserAgentTool()
+            result = await tool.invoke({"task": "find bus tickets from Singapore to Melaka on 2026-10-10"})
+
+        assert result.success is True
+        # The server resumes this directly (see resume_browser_option_selection);
+        # the model is never told a resume_token to echo back.
+        assert "resume_token" not in result.data["content"]
+        assert result.data["genui"]
+        assert len(bat._PENDING_OPTION_SELECTION_REQUESTS) == 1
+        # No leakage into the login-request bookkeeping.
+        assert len(bat._PENDING_CREDENTIAL_REQUESTS) == 0
+
+    @pytest.mark.asyncio
+    async def test_resume_with_selected_option_uses_interactive_input(self):
+        bat._PENDING_OPTION_SELECTION_REQUESTS["sel-tok-1"] = {
+            "inner_session_id": "browser-agent-xyz",
+            "inner_id": "tc-2",
+        }
+        captured = {}
+
+        async def fake_stream(agent, run_input, session=None):
+            del agent
+            captured["run_input"] = run_input
+            captured["session"] = session
+            yield _chunk("answer", {"output": "Selected 707 Inc and reached the checkout page."})
+
+        with (
+            patch.object(bat, "_get_browser_agent", AsyncMock(return_value=object())),
+            patch.object(bat.Runner, "run_agent_streaming", side_effect=fake_stream),
+        ):
+            tool = BrowserAgentTool()
+            result = await tool.invoke(
+                {
+                    "resume_token": "sel-tok-1",
+                    "credentials": {"selected_label": "707 Inc - 07:15 AM Ban San Street -> Melaka Sentral"},
+                }
+            )
+
+        assert result.success is True
+        assert "checkout" in result.data["content"]
+        assert captured["session"] == "browser-agent-xyz"
+        interactive_input = captured["run_input"]["query"]
+        assert isinstance(interactive_input, InteractiveInput)
+        assert interactive_input.user_inputs["tc-2"] == {
+            "selected_label": "707 Inc - 07:15 AM Ban San Street -> Melaka Sentral"
+        }
+        # The token is consumed on use.
+        assert "sel-tok-1" not in bat._PENDING_OPTION_SELECTION_REQUESTS
+
+    @pytest.mark.asyncio
+    async def test_unknown_selection_resume_token_errors_without_running(self):
+        with (
+            patch.object(bat, "_get_browser_agent", AsyncMock(return_value=object())),
+            patch.object(bat.Runner, "run_agent_streaming") as mock_stream,
+        ):
+            tool = BrowserAgentTool()
+            result = await tool.invoke(
+                {"resume_token": "does-not-exist", "credentials": {"selected_label": "anything"}}
+            )
+
+        assert result.success is False
+        assert "no longer active" in result.error
+        mock_stream.assert_not_called()
+
+    def test_build_option_selection_output_stores_pending_and_renders_choices(self):
+        request = BrowserOptionSelectionRequest(
+            message="Selection required",
+            options=[
+                {"label": "Option A"},
+                {"label": "Option B"},
+            ],
+            prompt="Choose one",
+        )
+
+        output = _build_option_selection_output("browser-agent-abc", "tc-3", request)
+
+        assert output.success is True
+        assert "resume_token" not in output.data["content"]
+        assert output.data["genui"]
+        assert len(bat._PENDING_OPTION_SELECTION_REQUESTS) == 1
+        resume_token = next(iter(bat._PENDING_OPTION_SELECTION_REQUESTS))
+        assert bat._PENDING_OPTION_SELECTION_REQUESTS[resume_token] == {
+            "inner_session_id": "browser-agent-abc",
+            "inner_id": "tc-3",
+        }
+
+
 class TestBrowserCredentialInterruptRailEndToEnd:
     """Drives the real framework interrupt machinery (Runner, ReActAgent,
     BrowserCredentialInterruptRail, InteractiveInput resume) with only the
@@ -320,3 +441,399 @@ class TestBrowserCredentialInterruptRailEndToEnd:
         finally:
             bat._PENDING_CREDENTIAL_REQUESTS.clear()
             await Runner.stop()
+
+
+class TestBrowserOptionSelectionInterruptRailEndToEnd:
+    """Mirrors TestBrowserCredentialInterruptRailEndToEnd above, for
+    BrowserOptionSelectionInterruptRail/request_option_selection -- drives
+    the real framework interrupt machinery with only the LLM mocked."""
+
+    @pytest.mark.asyncio
+    async def test_option_wall_pauses_then_resumes_with_real_rail(self):
+        os.environ.setdefault("LLM_SSL_VERIFY", "false")
+        await Runner.start()
+        try:
+            agent = ReActAgent(card=AgentCard(id="browser_option_e2e_agent"))
+            agent_config = ReActAgentConfig()
+            agent_config.configure_model_client(
+                provider="OpenAI",
+                api_key="sk-fake",
+                api_base="https://api.openai.com/v1",
+                model_name="gpt-3.5-turbo",
+                verify_ssl=False,
+            )
+            agent_config.configure_prompt_template(
+                [{"role": "system", "content": "You are a browser automation agent."}]
+            )
+            agent.configure(agent_config)
+
+            Runner.resource_mgr.add_tool(request_option_selection)
+            agent.ability_manager.add(request_option_selection.card)
+            await agent.register_rail(BrowserOptionSelectionInterruptRail())
+
+            create_agent_session(session_id="browser_option_e2e_test", card=AgentCard(id="browser_option_e2e_agent"))
+
+            mock_llm = MockLLMModel()
+            mock_llm.set_responses(
+                [
+                    create_tool_call_response(
+                        "request_option_selection",
+                        '{"options": ['
+                        '{"label": "707 Inc - 07:15 AM -> Melaka Sentral - USD 24.03"}, '
+                        '{"label": "Delima Express - 08:30 -> Melaka Sentral - USD 30.00"}'
+                        '], "prompt": "Choose a bus departure"}',
+                    ),
+                    create_text_response("Selected 707 Inc and reached the checkout page."),
+                ]
+            )
+
+            with (
+                patch("openjiuwen.core.foundation.llm.model.Model.stream", side_effect=mock_llm.stream),
+                patch("openjiuwen.core.foundation.llm.model.Model.invoke", side_effect=mock_llm.invoke),
+            ):
+                pending_interrupt = None
+                async for output in Runner.run_agent_streaming(
+                    agent=agent,
+                    inputs={"query": "find and book a bus ticket", "conversation_id": "browser_option_e2e_test"},
+                    session="browser_option_e2e_test",
+                ):
+                    if output.type == INTERACTION:
+                        pending_interrupt = (output.payload.id, output.payload.value)
+
+                assert pending_interrupt is not None, "expected multiple options to raise an interrupt"
+                inner_id, request = pending_interrupt
+                assert len(request.options) == 2
+                assert request.prompt == "Choose a bus departure"
+
+                # This is the exact call BrowserAgentTool.invoke() makes once it
+                # observes the INTERACTION chunk -- proves the real interrupt
+                # payload is shaped as _build_option_selection_output expects.
+                card_output = _build_option_selection_output("browser_option_e2e_test", inner_id, request)
+                assert card_output.success is True
+                assert card_output.data["genui"]
+                assert len(bat._PENDING_OPTION_SELECTION_REQUESTS) == 1
+                resume_token = next(iter(bat._PENDING_OPTION_SELECTION_REQUESTS))
+                pending = bat._PENDING_OPTION_SELECTION_REQUESTS.pop(resume_token)
+
+                interactive_input = InteractiveInput()
+                interactive_input.update(
+                    pending["inner_id"], {"selected_label": "707 Inc - 07:15 AM -> Melaka Sentral - USD 24.03"}
+                )
+
+                final_text = ""
+                async for output in Runner.run_agent_streaming(
+                    agent=agent,
+                    inputs={"query": interactive_input},
+                    session=pending["inner_session_id"],
+                ):
+                    if output.type == "answer":
+                        final_text = output.payload.get("output") or output.payload.get("content") or final_text
+
+                assert "checkout" in final_text
+        finally:
+            bat._PENDING_OPTION_SELECTION_REQUESTS.clear()
+            await Runner.stop()
+
+
+class TestBrowserStepText:
+    """``_step_text`` feeds the client's live action log (see ``browser.step``
+    in ws_session.py). The inner agent's raw-JS escape hatch used to render as
+    a bare "Evaluate…" that told the user nothing, so a script step must now
+    describe what the script actually does."""
+
+    def test_evaluate_reading_fields_names_them(self):
+        text = bat._step_text(
+            "browser_evaluate",
+            {
+                "function": "() => { const el = document.querySelector('.price'); "
+                "return {price: el.textContent, currency: 'MYR'}; }"
+            },
+        )
+
+        assert text == "Reading page data (price, currency)…"
+
+    def test_evaluate_shorthand_keys_resolve_through_their_assignment(self):
+        text = bat._step_text(
+            "browser_evaluate",
+            {
+                "function": "() => { const t = document.title; "
+                "const p = document.querySelector('.price').innerText; return {t, p}; }"
+            },
+        )
+
+        assert text == "Reading page data (title, price)…"
+
+    def test_evaluate_table_scrape_uses_keys_of_the_arrow_returned_object(self):
+        script = (
+            "() => { const rows = Array.from(document.querySelectorAll('li.bus-item')); "
+            "return rows.map(r => ({operator: r.querySelector('.name').innerText, "
+            "price: r.querySelector('.price').innerText})); }"
+        )
+
+        assert bat._step_text("browser_evaluate", {"function": script}) == "Reading page data (operator, price)…"
+
+    def test_evaluate_without_returned_fields_names_the_selectors_it_reads(self):
+        text = bat._step_text(
+            "browser_evaluate", {"function": "() => document.querySelectorAll('tr.result-row').length"}
+        )
+
+        assert text == "Reading data from the page (tr.result-row)…"
+
+    def test_evaluate_mutating_script_is_reported_as_a_change(self):
+        text = bat._step_text("browser_evaluate", {"function": "(el) => { el.value = 'Melaka'; }"})
+
+        assert text == "Changing the page with a script…"
+
+    def test_evaluate_mutation_names_the_target_element_when_given(self):
+        text = bat._step_text(
+            "browser_evaluate", {"function": "(el) => { el.focus(); }", "element": "Departure date field"}
+        )
+
+        assert text == "Changing the page with a script (Departure date field)…"
+
+    def test_evaluate_nested_object_literal_does_not_leak_inner_keys(self):
+        text = bat._step_text("browser_evaluate", {"function": "() => { return {a: 1, meta: {b: 2, c: 3}, d: 4}; }"})
+
+        assert text == "Running a script that returns a, meta, d…"
+
+    def test_run_code_scripts_are_described_the_same_way(self):
+        text = bat._step_text("browser_run_code", {"code": "async (page) => { await page.click('text=Search'); }"})
+
+        assert text == "Changing the page with a script…"
+
+    @pytest.mark.parametrize(
+        "args, expected",
+        [
+            ({}, "Running a script on the page…"),
+            ({"function": "() => { const x = 1 + 1; }"}, "Checking the page with a script…"),
+        ],
+    )
+    def test_evaluate_without_a_describable_script_still_says_something(self, args, expected):
+        assert bat._step_text("browser_evaluate", args) == expected
+
+    def test_server_qualified_tool_name_is_normalized_before_matching(self):
+        text = bat._step_text(
+            "mcp_playwright-official_browser_evaluate",
+            {"function": "() => ({price: document.querySelector('.p').innerText})"},
+        )
+
+        assert text == "Reading page data (price)…"
+
+    @pytest.mark.parametrize(
+        "tool, args, expected",
+        [
+            ("browser_navigate", {"url": "https://example.com"}, "Navigating to https://example.com"),
+            ("browser_click", {"element": "Search button"}, "Clicking Search button"),
+            ("browser_type", {"element": "From"}, "Filling in a field…"),
+            ("browser_snapshot", {}, "Taking a look at the current page…"),
+        ],
+    )
+    def test_other_browser_tool_text_is_unchanged(self, tool, args, expected):
+        assert bat._step_text(tool, args) == expected
+
+
+class TestBrowserStepTextToolArgsCoercion:
+    """A2uiToolEventRail relays ``ctx.inputs.tool_args`` verbatim, which is
+    ``ToolCall.arguments`` -- a raw JSON string, not a dict. Step text that
+    read it as a dict silently lost every argument it needed."""
+
+    @pytest.mark.parametrize(
+        "tool, raw_args, expected",
+        [
+            (
+                "browser_navigate",
+                '{"url": "https://www.easybook.com/en-my/bus/booking"}',
+                "Navigating to https://www.easybook.com/en-my/bus/booking",
+            ),
+            ("browser_click", '{"element": "Search buses"}', "Clicking Search buses"),
+            (
+                "browser_evaluate",
+                '{"function": "() => ({price: document.querySelector(\'.p\').innerText})"}',
+                "Reading page data (price)…",
+            ),
+        ],
+    )
+    def test_json_string_args_are_parsed(self, tool, raw_args, expected):
+        assert bat._step_text(tool, raw_args) == expected
+
+    @pytest.mark.parametrize("raw_args", ["", "   ", "not json", '["a", "b"]', None, 42])
+    def test_malformed_or_non_object_args_degrade_gracefully(self, raw_args):
+        assert bat._step_text("browser_navigate", raw_args) == "Navigating…"
+
+    def test_dict_args_still_work(self):
+        assert bat._step_text("browser_navigate", {"url": "https://example.com"}) == "Navigating to https://example.com"
+
+
+def _interaction_ctx(*, tools, available):
+    """A minimal AgentCallbackContext stand-in for the rail under test."""
+    ability_manager = SimpleNamespace(list_tool_info=AsyncMock(return_value=list(available)))
+    builder = SimpleNamespace(add_section=MagicMock())
+    agent = SimpleNamespace(ability_manager=ability_manager, system_prompt_builder=builder)
+    ctx = SimpleNamespace(agent=agent, inputs=SimpleNamespace(tools=tools))
+    return ctx, ability_manager, builder
+
+
+class TestBrowserInteractionAvailabilityRail:
+    """BrowserRuntimeRail wipes ``inputs.tools`` and tells the model not to call
+    tools once the browser state goes terminal. That silently disabled the
+    booking hand-off, so this rail puts back only the two tools that can still
+    hand a choice or a login wall back to the user."""
+
+    INTERACTION_TOOLS = ["request_option_selection", "request_login_credentials"]
+
+    @pytest.mark.asyncio
+    async def test_restores_the_interaction_tools_when_stripped(self):
+        ctx, ability_manager, builder = _interaction_ctx(tools=[], available=self.INTERACTION_TOOLS)
+
+        await bat.BrowserInteractionAvailabilityRail().before_model_call(ctx)
+
+        assert ctx.inputs.tools == self.INTERACTION_TOOLS
+        ability_manager.list_tool_info.assert_awaited_once_with(list(bat._BROWSER_INTERACTION_TOOL_NAMES))
+        assert len(builder.add_section.call_args_list) == 1
+
+    @pytest.mark.asyncio
+    async def test_left_alone_on_an_ordinary_iteration(self):
+        existing = ["browser_navigate", "browser_click"]
+        ctx, ability_manager, builder = _interaction_ctx(tools=list(existing), available=self.INTERACTION_TOOLS)
+
+        await bat.BrowserInteractionAvailabilityRail().before_model_call(ctx)
+
+        assert ctx.inputs.tools == existing
+        ability_manager.list_tool_info.assert_not_awaited()
+        builder.add_section.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_stays_empty_when_the_tools_are_not_registered(self):
+        ctx, _ability_manager, builder = _interaction_ctx(tools=[], available=[])
+
+        await bat.BrowserInteractionAvailabilityRail().before_model_call(ctx)
+
+        assert ctx.inputs.tools == []
+        builder.add_section.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_survives_a_missing_ability_manager(self):
+        ctx = SimpleNamespace(agent=SimpleNamespace(), inputs=SimpleNamespace(tools=[]))
+
+        await bat.BrowserInteractionAvailabilityRail().before_model_call(ctx)
+
+        assert ctx.inputs.tools == []
+
+    def test_outranks_the_runtime_terminal_synthesis_it_undoes(self):
+        rail_priority = bat.BrowserInteractionAvailabilityRail.priority
+        runtime_rail_priority = 50  # AgentRail default, as BrowserRuntimeRail uses
+        terminal_synthesis_priority = 100  # "do not call tools" section
+
+        # Higher runs first, so the rail must sort after the runtime rail...
+        assert rail_priority < runtime_rail_priority
+        # ...and its prompt section must outrank the "do not call tools" one.
+        assert bat._BROWSER_INTERACTION_SECTION_PRIORITY > terminal_synthesis_priority
+
+    def test_override_section_tells_the_model_it_may_still_pause(self):
+        _ctx, _ability_manager, builder = _interaction_ctx(tools=[], available=self.INTERACTION_TOOLS)
+
+        bat.BrowserInteractionAvailabilityRail._add_override_section(_ctx)
+
+        section = builder.add_section.call_args.args[0]
+        assert section.name == "browser_interaction_override"
+        assert section.priority == bat._BROWSER_INTERACTION_SECTION_PRIORITY
+        assert "request_option_selection" in section.content["en"]
+        assert "request_login_credentials" in section.content["en"]
+
+
+class _FakeRailContext:
+    """AgentCallbackContext stand-in that also models force-finish requests."""
+
+    def __init__(self, *, tools, available, tool_calls=()):
+        self.inputs = SimpleNamespace(
+            tools=tools,
+            response=SimpleNamespace(tool_calls=list(tool_calls)),
+        )
+        self.agent = SimpleNamespace(
+            ability_manager=SimpleNamespace(list_tool_info=AsyncMock(return_value=list(available))),
+            system_prompt_builder=SimpleNamespace(add_section=MagicMock()),
+        )
+        self._force_finish = None
+
+    def request_force_finish(self, result):
+        self._force_finish = result
+
+    def consume_force_finish(self):
+        request, self._force_finish = self._force_finish, None
+        return request
+
+
+class TestBrowserInteractionRailHoldsTheForceFinish:
+    """BrowserRuntimeRail.after_model_call force-finishes on *any* tool call
+    made while the state is terminal. For a restored interaction call that
+    discarded it before it could run, so no card was ever built."""
+
+    INTERACTION_CALL = SimpleNamespace(name="request_option_selection")
+
+    @staticmethod
+    def _terminal_finish(ctx):
+        ctx.request_force_finish({"error": "browser_task_incomplete"})
+
+    @pytest.mark.asyncio
+    async def test_holds_the_finish_so_a_restored_interaction_call_can_run(self):
+        ctx = _FakeRailContext(
+            tools=[], available=["request_option_selection"], tool_calls=[self.INTERACTION_CALL]
+        )
+        rail = bat.BrowserInteractionAvailabilityRail()
+        await rail.before_model_call(ctx)
+        self._terminal_finish(ctx)
+
+        await rail.after_model_call(ctx)
+
+        # Cleared, so the loop proceeds to execute the call and the interrupt
+        # rail can pause the run to show the card.
+        assert ctx.consume_force_finish() is None
+
+    @pytest.mark.asyncio
+    async def test_leaves_the_finish_alone_for_a_browser_tool_call(self):
+        ctx = _FakeRailContext(
+            tools=[], available=["request_option_selection"], tool_calls=[SimpleNamespace(name="browser_click")]
+        )
+        rail = bat.BrowserInteractionAvailabilityRail()
+        await rail.before_model_call(ctx)
+        self._terminal_finish(ctx)
+
+        await rail.after_model_call(ctx)
+
+        assert ctx.consume_force_finish() is not None
+
+    @pytest.mark.asyncio
+    async def test_ignores_a_finish_on_a_turn_it_did_not_enable(self):
+        ctx = _FakeRailContext(
+            tools=["browser_click"], available=["request_option_selection"], tool_calls=[self.INTERACTION_CALL]
+        )
+        rail = bat.BrowserInteractionAvailabilityRail()
+        await rail.before_model_call(ctx)  # tools were present -> nothing restored
+        self._terminal_finish(ctx)
+
+        await rail.after_model_call(ctx)
+
+        assert ctx.consume_force_finish() is not None
+
+    @pytest.mark.asyncio
+    async def test_an_ordinary_turn_never_touches_the_finish(self):
+        ctx = _FakeRailContext(
+            tools=[], available=["request_option_selection"], tool_calls=[self.INTERACTION_CALL]
+        )
+        rail = bat.BrowserInteractionAvailabilityRail()
+        await rail.before_model_call(ctx)
+
+        await rail.after_model_call(ctx)  # no finish was ever requested
+
+        assert ctx.consume_force_finish() is None
+
+    @pytest.mark.parametrize(
+        "tool_call, expected",
+        [
+            (SimpleNamespace(name="request_option_selection"), "request_option_selection"),
+            (SimpleNamespace(function=SimpleNamespace(name="request_login_credentials")), "request_login_credentials"),
+            (SimpleNamespace(), ""),
+        ],
+    )
+    def test_tool_call_name_reads_both_wrapper_shapes(self, tool_call, expected):
+        assert bat._tool_call_name(tool_call) == expected
