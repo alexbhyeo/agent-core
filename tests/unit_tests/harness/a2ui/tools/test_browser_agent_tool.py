@@ -7,6 +7,7 @@ chain end to end at the tool level, with Runner.run_agent_streaming and
 _get_browser_agent mocked out (no real browser/LLM involved).
 """
 
+import asyncio
 import os
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
@@ -21,6 +22,7 @@ from openjiuwen.core.single_agent.agents.react_agent import ReActAgent, ReActAge
 from openjiuwen.core.single_agent.schema.agent_card import AgentCard
 from openjiuwen.harness.a2ui.tools import browser_agent_tool as bat
 from openjiuwen.harness.a2ui.tools.browser_agent_tool import (
+    BROWSER_LOGIN_FLOW_CONTEXT_KEY,
     BrowserAgentTool,
     BrowserCredentialInterruptRail,
     BrowserCredentialRequest,
@@ -69,15 +71,35 @@ class TestBrowserAgentToolInterrupt:
             result = await tool.invoke({"task": "log in to example.com and check my orders"})
 
         assert result.success is True
-        assert "resume_token" in result.data["content"] or "'" in result.data["content"]
+        assert "resume_token" not in result.data["content"]
         assert result.data["genui"]
         assert len(bat._PENDING_CREDENTIAL_REQUESTS) == 1
+        token = next(iter(bat._PENDING_CREDENTIAL_REQUESTS))
+        assert len(token) >= 32
+        components = result.data["genui"][-1]["updateComponents"]["components"]
+        submit = next(component for component in components if component["id"] == "submit")
+        assert submit["action"]["event"]["context"][BROWSER_LOGIN_FLOW_CONTEXT_KEY] == {
+            "path": f"/{BROWSER_LOGIN_FLOW_CONTEXT_KEY}/value"
+        }
+        seeded_values = [
+            message["updateDataModel"]
+            for message in result.data["genui"]
+            if "updateDataModel" in message
+        ]
+        assert any(value["value"] == token for value in seeded_values)
+
+        tool_schema = BrowserAgentTool().card.input_params
+        assert set(tool_schema["properties"]) == {"task"}
 
     @pytest.mark.asyncio
     async def test_resume_with_credentials_uses_interactive_input(self):
         bat._PENDING_CREDENTIAL_REQUESTS["tok-123"] = {
             "inner_session_id": "browser-agent-abc",
             "inner_id": "tc-1",
+            "conversation_id": "",
+            "credential_keys": ["username", "password"],
+            "expires_at": bat.time.monotonic() + 60,
+            "resuming": False,
         }
         captured = {}
 
@@ -104,6 +126,85 @@ class TestBrowserAgentToolInterrupt:
         assert interactive_input.user_inputs["tc-1"] == {"username": "alice", "password": "s3cr3t"}
         # The token is consumed on use.
         assert "tok-123" not in bat._PENDING_CREDENTIAL_REQUESTS
+
+    @pytest.mark.asyncio
+    async def test_resume_is_bound_to_conversation_and_keeps_token(self):
+        bat._PENDING_CREDENTIAL_REQUESTS["tok-123"] = {
+            "inner_session_id": "browser-agent-abc",
+            "inner_id": "tc-1",
+            "conversation_id": "expected-conversation",
+            "credential_keys": ["username", "password"],
+            "expires_at": bat.time.monotonic() + 60,
+            "resuming": False,
+        }
+
+        tool = BrowserAgentTool()
+        result = await tool._invoke_direct(
+            {"resume_token": "tok-123", "credentials": {"username": "alice", "password": "secret"}},
+            expected_conversation_id="other-conversation",
+        )
+
+        assert result.success is False
+        assert "does not belong" in result.error
+        assert "tok-123" in bat._PENDING_CREDENTIAL_REQUESTS
+
+    @pytest.mark.asyncio
+    async def test_resume_failure_keeps_token_retryable(self):
+        bat._PENDING_CREDENTIAL_REQUESTS["tok-123"] = {
+            "inner_session_id": "browser-agent-abc",
+            "inner_id": "tc-1",
+            "conversation_id": "c1",
+            "credential_keys": ["username", "password"],
+            "expires_at": bat.time.monotonic() + 60,
+            "resuming": False,
+        }
+
+        async def failing_stream(*args, **kwargs):
+            raise RuntimeError("temporary failure")
+            yield  # pragma: no cover
+
+        with (
+            patch.object(bat, "_get_browser_agent", AsyncMock(return_value=object())),
+            patch.object(bat.Runner, "run_agent_streaming", side_effect=failing_stream),
+        ):
+            result = await BrowserAgentTool()._invoke_direct(
+                {"resume_token": "tok-123", "credentials": {"username": "alice", "password": "secret"}},
+                expected_conversation_id="c1",
+            )
+
+        assert result.success is False
+        assert bat._PENDING_CREDENTIAL_REQUESTS["tok-123"]["resuming"] is False
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("cancel_during_startup", [False, True])
+    async def test_cancelled_resume_keeps_token_retryable(self, cancel_during_startup):
+        bat._PENDING_CREDENTIAL_REQUESTS["tok-123"] = {
+            "inner_session_id": "browser-agent-abc",
+            "inner_id": "tc-1",
+            "conversation_id": "c1",
+            "credential_keys": ["username", "password"],
+            "expires_at": bat.time.monotonic() + 60,
+            "resuming": False,
+        }
+
+        async def cancelled_stream(*args, **kwargs):
+            raise asyncio.CancelledError
+            yield  # pragma: no cover
+
+        get_agent = (
+            AsyncMock(side_effect=asyncio.CancelledError) if cancel_during_startup else AsyncMock(return_value=object())
+        )
+        with (
+            patch.object(bat, "_get_browser_agent", get_agent),
+            patch.object(bat.Runner, "run_agent_streaming", side_effect=cancelled_stream),
+            pytest.raises(asyncio.CancelledError),
+        ):
+            await BrowserAgentTool()._invoke_direct(
+                {"resume_token": "tok-123", "credentials": {"username": "alice", "password": "secret"}},
+                expected_conversation_id="c1",
+            )
+
+        assert bat._PENDING_CREDENTIAL_REQUESTS["tok-123"]["resuming"] is False
 
     @pytest.mark.asyncio
     async def test_unknown_resume_token_errors_without_running(self):

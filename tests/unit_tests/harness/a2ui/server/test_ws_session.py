@@ -11,10 +11,12 @@ from openjiuwen.core.foundation.tool.schema import ToolOutput
 from openjiuwen.harness.a2ui.server.ws_session import (
     ConnectionSession,
     _describe_ui_actions,
+    _extract_browser_credential_submission,
     _extract_result,
     _translate,
     _unsent_suffix,
 )
+from openjiuwen.harness.a2ui.tools.browser_agent_tool import BROWSER_LOGIN_FLOW_CONTEXT_KEY
 
 
 def _chunk(chunk_type, payload=None):
@@ -35,6 +37,29 @@ class TestDescribeUiActions:
         result = _describe_ui_actions(actions)
         assert "submit_prefs" in result
         assert "Beginner" in result
+
+
+class TestBrowserCredentialSubmission:
+    def test_extracts_flow_separately_from_credentials(self):
+        submission = _extract_browser_credential_submission(
+            [{
+                "action": {
+                    "name": "submit_browser_credentials",
+                    "context": {
+                        BROWSER_LOGIN_FLOW_CONTEXT_KEY: "flow-123",
+                        "username": "alice",
+                        "password": "secret",
+                    },
+                }
+            }]
+        )
+
+        assert submission == ("flow-123", {"username": "alice", "password": "secret"})
+
+    def test_ignores_unrelated_action(self):
+        assert _extract_browser_credential_submission(
+            [{"action": {"name": "submit_prefs", "context": {"level": "Beginner"}}}]
+        ) is None
 
 
 class TestExtractResult:
@@ -229,6 +254,28 @@ class TestTranslate:
             ("genui", {"createSurface": {}}),
         ]
 
+    def test_login_form_genui_is_deferred_until_chat_completion(self):
+        state = _new_state()
+        login_message = {"createSurface": {"surfaceId": "browser-login-1"}}
+        payload = {
+            "tool_name": "browser_agent_run",
+            "tool_call_id": "c-login",
+            "tool_result": ToolOutput(
+                success=True,
+                data={
+                    "content": "Wait for login.",
+                    "text": "Please log in.",
+                    "genui": [login_message],
+                    "defer_genui_until_completed": True,
+                },
+            ),
+        }
+
+        events = _translate(_chunk("tool_result", payload), state)
+
+        assert not any(event_type == "genui" for event_type, _ in events)
+        assert state["deferred_genui"] == [login_message]
+
     def test_tool_result_with_genui_records_presentation_text(self):
         state = _new_state()
         payload = {
@@ -338,6 +385,106 @@ class TestConnectionSessionDispatch:
 
         sent_types = [call.args[0]["type"] for call in websocket.send_json.await_args_list]
         assert sent_types == ["chat.accepted", "chat.token", "chat.completed"]
+
+    @pytest.mark.asyncio
+    async def test_browser_credentials_bypass_outer_agent_and_are_not_echoed(self):
+        websocket = SimpleNamespace(send_json=AsyncMock())
+        session = ConnectionSession(websocket, agent=object(), user_id="u1")
+        captured = {}
+
+        async def fake_resume(flow_id, credentials, **kwargs):
+            captured["flow_id"] = flow_id
+            captured["credentials"] = dict(credentials)
+            captured["conversation_id"] = kwargs["conversation_id"]
+            return ToolOutput(success=True, data={"content": "Logged in and found 3 orders."})
+
+        action = {
+            "action": {
+                "name": "submit_browser_credentials",
+                "context": {
+                    BROWSER_LOGIN_FLOW_CONTEXT_KEY: "flow-123",
+                    "username": "alice",
+                    "password": "super-secret",
+                },
+            }
+        }
+        with (
+            patch("openjiuwen.harness.a2ui.server.ws_session.resume_browser_login", side_effect=fake_resume),
+            patch("openjiuwen.harness.a2ui.server.ws_session.Runner.run_agent_streaming") as outer_stream,
+        ):
+            await session._dispatch(
+                {"type": "chat.start", "conversationId": "c1", "payload": {"text": "", "uiActions": [action]}}
+            )
+            await session._active_task
+
+        outer_stream.assert_not_called()
+        assert captured == {
+            "flow_id": "flow-123",
+            "credentials": {"username": "alice", "password": "super-secret"},
+            "conversation_id": "c1",
+        }
+        envelopes = [call.args[0] for call in websocket.send_json.await_args_list]
+        assert [envelope["type"] for envelope in envelopes] == [
+            "chat.accepted",
+            "tool.started",
+            "tool.finished",
+            "chat.token",
+            "chat.completed",
+        ]
+        assert "super-secret" not in str(envelopes)
+
+    @pytest.mark.asyncio
+    async def test_login_form_is_sent_after_chat_completed(self):
+        websocket = SimpleNamespace(send_json=AsyncMock())
+        session = ConnectionSession(websocket, agent=object(), user_id="u1")
+        login_message = {"createSurface": {"surfaceId": "browser-login-1"}}
+
+        async def fake_stream(*args, **kwargs):
+            yield _chunk(
+                "tool_result",
+                {
+                    "tool_name": "browser_agent_run",
+                    "tool_call_id": "c-login",
+                    "tool_result": ToolOutput(
+                        success=True,
+                        data={
+                            "content": "Wait for login.",
+                            "text": "Please log in.",
+                            "genui": [login_message],
+                            "defer_genui_until_completed": True,
+                        },
+                    ),
+                },
+            )
+
+        with patch(
+            "openjiuwen.harness.a2ui.server.ws_session.Runner.run_agent_streaming",
+            side_effect=fake_stream,
+        ):
+            await session._dispatch({"type": "chat.start", "conversationId": "c1", "payload": {"text": "login"}})
+            await session._active_task
+
+        sent_types = [call.args[0]["type"] for call in websocket.send_json.await_args_list]
+        assert sent_types[-2:] == ["chat.completed", "genui"]
+
+    @pytest.mark.asyncio
+    async def test_resumed_login_form_is_sent_after_chat_completed(self):
+        websocket = SimpleNamespace(send_json=AsyncMock())
+        session = ConnectionSession(websocket, agent=object(), user_id="u1")
+        login_message = {"createSurface": {"surfaceId": "browser-login-2"}}
+        result = ToolOutput(
+            success=True,
+            data={
+                "text": "Please try logging in again.",
+                "genui": [login_message],
+                "defer_genui_until_completed": True,
+            },
+        )
+        with patch("openjiuwen.harness.a2ui.server.ws_session.resume_browser_login", AsyncMock(return_value=result)):
+            await session._resume_browser_login("c1", "flow-123", {"password": "secret"})
+
+        sent_types = [call.args[0]["type"] for call in websocket.send_json.await_args_list]
+        assert sent_types[-2:] == ["chat.completed", "genui"]
 
     @pytest.mark.asyncio
     async def test_malformed_ui_action_sends_error_instead_of_hanging(self):

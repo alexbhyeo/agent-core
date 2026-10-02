@@ -133,9 +133,33 @@ def test_status_logger_summarizes_batch_args_without_values() -> None:
     assert summary["step_count"] == 3
     assert summary["op_counts"] == {"click": 1, "fill": 2}
     assert summary["steps_preview"][0]["target_keys"] == ["selector"]
+    assert summary["steps_preview"][0]["targets"] == {"selector": "#firstName"}
     assert summary["steps_preview"][0]["value_keys_redacted"] == ["value"]
+    assert summary["steps_preview"][0]["values_redacted"]["value"]["length"] == 5
     assert "Alice" not in str(summary)
     assert "alice@example.com" not in str(summary)
+
+
+def test_status_logger_summarizes_fill_form_targets_without_values() -> None:
+    logger = BrowserSubagentStatusLogger()
+
+    summary = logger.summarize_args(
+        "mcp_playwright-official_browser_fill_form",
+        {
+            "fields": [
+                {"name": "Email", "type": "textbox", "ref": "e12", "value": "alice@example.com"},
+                {"name": "Password", "type": "textbox", "ref": "e13", "value": "s3cr3t"},
+            ]
+        },
+    )
+
+    assert summary["kind"] == "browser_fill_form"
+    assert summary["field_count"] == 2
+    assert summary["fields_preview"][0]["targets"] == {"name": "Email", "ref": "e12"}
+    assert summary["fields_preview"][1]["targets"] == {"name": "Password", "ref": "e13"}
+    assert summary["fields_preview"][0]["values_redacted"]["value"]["length"] == 17
+    assert "alice@example.com" not in str(summary)
+    assert "s3cr3t" not in str(summary)
 
 
 def test_status_logger_summarizes_failed_batch_result() -> None:
