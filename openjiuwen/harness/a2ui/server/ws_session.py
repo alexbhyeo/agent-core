@@ -10,6 +10,7 @@ form/button submission (``{"text": "", "uiActions": [...]}``, one entry per
 import asyncio
 import json
 import time
+import uuid
 from typing import Any, Optional
 
 from fastapi import WebSocket, WebSocketDisconnect
@@ -19,6 +20,10 @@ from openjiuwen.core.foundation.tool.schema import ToolOutput
 from openjiuwen.core.runner import Runner
 from openjiuwen.core.single_agent import ReActAgent
 
+from ..tools.browser_agent_tool import (
+    BROWSER_LOGIN_FLOW_CONTEXT_KEY,
+    resume_browser_login,
+)
 from .models import make_envelope
 
 
@@ -102,8 +107,15 @@ class ConnectionSession:
             "last_presentation_text": "",
             "bubble_open": False,
             "geocode_pending": 0,
+            "deferred_genui": [],
         }
         try:
+            credential_submission = _extract_browser_credential_submission(payload.get("uiActions"))
+            if credential_submission is not None:
+                flow_id, credentials = credential_submission
+                await self._resume_browser_login(conversation_id, flow_id, credentials)
+                return
+
             # Inside the try, not computed above chat.accepted -- a malformed
             # uiActions entry (e.g. a client sending "action" as a bare string
             # instead of the documented {"name": ..., ...} object) used to
@@ -129,6 +141,111 @@ class ConnectionSession:
             await self.send("chat.token", {"text": state["last_presentation_text"]}, conversation_id)
 
         await self.send("chat.completed", {}, conversation_id)
+        # TODO(frontend-secure-credentials): the compiled client ignores form
+        # taps while processing. Show only the temporary login form after the
+        # completion event has cleared that guard; a native secure form removes
+        # this ordering shim.
+        for message in state["deferred_genui"]:
+            await self.send("genui", message, conversation_id)
+
+    async def _resume_browser_login(
+        self,
+        conversation_id: Optional[str],
+        flow_id: str,
+        credentials: dict[str, str],
+    ) -> None:
+        """Compatibility route that keeps submitted credentials out of chat.
+
+        TODO(frontend-secure-credentials): replace the generic ``chat.start``
+        uiAction with a dedicated credential envelope and a native masked form.
+        This backend entry point and conversation binding can remain.
+        """
+        if not conversation_id:
+            await self.send("error.validation", {"message": "A conversation is required for login."})
+            return
+
+        call_id = f"browser-login-{uuid.uuid4().hex[:8]}"
+        await self.send(
+            "tool.started",
+            {"tool": "browser_agent_run", "callId": call_id, "text": "Signing in and continuing…"},
+            conversation_id,
+        )
+
+        async def _send_step(payload: dict[str, Any]) -> None:
+            await self.send("browser.step", payload, conversation_id)
+
+        try:
+            result = await resume_browser_login(
+                flow_id,
+                credentials,
+                conversation_id=conversation_id,
+                step_callback=_send_step,
+            )
+        finally:
+            # Drop the only WebSocket-layer reference before any subsequent
+            # model or presentation work. Do not log/cache it for retry.
+            credentials.clear()
+        await self.send(
+            "tool.finished",
+            {"tool": "browser_agent_run", "callId": call_id},
+            conversation_id,
+        )
+
+        if not result.success:
+            await self.send(
+                "error.tool",
+                {"tool": "browser_agent_run", "callId": call_id, "message": result.error or "Login failed."},
+                conversation_id,
+            )
+            return
+
+        data = result.data if isinstance(result.data, dict) else {}
+        messages = data.get("genui") or []
+        defer_genui = data.get("defer_genui_until_completed") is True
+        if not defer_genui:
+            for message in messages:
+                await self.send("genui", message, conversation_id)
+        display_text = str(data.get("text") or data.get("content") or "The browser task resumed.")
+        await self.send("chat.token", {"text": display_text}, conversation_id)
+        await self.send("chat.completed", {}, conversation_id)
+        if defer_genui:
+            for message in messages:
+                await self.send("genui", message, conversation_id)
+
+
+def _extract_browser_credential_submission(
+    ui_actions: Optional[list[dict[str, Any]]],
+) -> Optional[tuple[str, dict[str, str]]]:
+    """Extract the transitional generic-A2UI login submission.
+
+    Matching submissions are handled before ``_describe_ui_actions`` so their
+    values can never become an outer-agent user message.  Malformed matching
+    submissions raise a value error that is surfaced by ``_run_chat`` without
+    echoing any submitted value.
+    """
+    if not ui_actions:
+        return None
+    for entry in ui_actions:
+        if not isinstance(entry, dict):
+            continue
+        action = entry.get("action", entry)
+        if not isinstance(action, dict) or action.get("name") != "submit_browser_credentials":
+            continue
+        context = action.get("context")
+        if not isinstance(context, dict):
+            raise ValueError("Malformed browser credential submission.")
+        flow_id = str(context.get(BROWSER_LOGIN_FLOW_CONTEXT_KEY) or "").strip()
+        if not flow_id:
+            raise ValueError("Browser credential submission is missing its flow ID.")
+        credentials = {
+            str(key): str(value)
+            for key, value in context.items()
+            if key != BROWSER_LOGIN_FLOW_CONTEXT_KEY
+        }
+        if not credentials:
+            raise ValueError("Browser credential submission did not contain any fields.")
+        return flow_id, credentials
+    return None
 
 
 def _describe_ui_actions(ui_actions: Optional[list[dict[str, Any]]]) -> str:
@@ -276,8 +393,16 @@ def _translate(chunk: Any, state: dict[str, Any]) -> list[tuple[str, dict[str, A
             events.append(("error.tool", {"tool": tool_name, "callId": call_id, "message": result_text}))
         elif result_text:
             events.append(("tool.output", {"tool": tool_name, "callId": call_id, "text": result_text}))
-        for message in genui_messages or []:
-            events.append(("genui", message))
+        defer_genui = (
+            isinstance(tool_result, ToolOutput)
+            and isinstance(tool_result.data, dict)
+            and tool_result.data.get("defer_genui_until_completed") is True
+        )
+        if defer_genui:
+            state.setdefault("deferred_genui", []).extend(genui_messages or [])
+        else:
+            for message in genui_messages or []:
+                events.append(("genui", message))
         if genui_messages:
             # A rendered card breaks the client's current text bubble (a
             # `createSurface` message ends the "append to last text row"

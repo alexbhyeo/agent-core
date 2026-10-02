@@ -12,6 +12,7 @@ import time
 from collections import Counter
 from typing import Any, Callable, Mapping, Optional
 from urllib.parse import urlsplit, urlunsplit
+
 from openjiuwen.harness.tools.browser_move.playwright_runtime.browser_logging import (
     browser_agent_log_info,
 )
@@ -45,6 +46,8 @@ _BATCH_VALUE_KEYS = {
     "values",
 }
 _BATCH_TARGET_KEYS = {
+    "target_id",
+    "ref",
     "selector",
     "label",
     "placeholder",
@@ -58,6 +61,8 @@ _BATCH_TARGET_KEYS = {
     "year_selector",
     "month_selector",
     "day_selector",
+    "option_target_id",
+    "choose_target_id",
 }
 _TOOL_HISTORY_LIMIT = 20
 _URL_RE = re.compile(r"https?://[^\s)>'\"]+", re.IGNORECASE)
@@ -379,6 +384,8 @@ class BrowserSubagentStatusLogger:
         lowered_name = (tool_name or "").lower()
         if lowered_name == "browser_batch_interact":
             return self._summarize_batch_args(parsed)
+        if "fill_form" in lowered_name:
+            return self._summarize_fill_form_args(parsed)
         if "run_code" in lowered_name or "evaluate" in lowered_name:
             code = parsed.get("code") or parsed.get("script") or parsed.get("expression") or parsed.get("function")
             return {
@@ -434,7 +441,52 @@ class BrowserSubagentStatusLogger:
         }
 
     @staticmethod
-    def _summarize_batch_args(args: Mapping[str, Any]) -> dict[str, Any]:
+    def _safe_target_values(value: Mapping[str, Any]) -> dict[str, Any]:
+        return {
+            key: _safe_str(item, 160)
+            for key, item in value.items()
+            if str(key) in _BATCH_TARGET_KEYS and item not in (None, "")
+        }
+
+    @staticmethod
+    def _redacted_value_metadata(value: Mapping[str, Any]) -> dict[str, Any]:
+        return {
+            key: _redacted_text(item)
+            for key, item in value.items()
+            if str(key) in _BATCH_VALUE_KEYS
+        }
+
+    @classmethod
+    def _summarize_fill_form_args(cls, args: Mapping[str, Any]) -> dict[str, Any]:
+        fields = args.get("fields")
+        if not isinstance(fields, list):
+            return {
+                "kind": "browser_fill_form",
+                "field_count": 0,
+                "keys": sorted(str(key) for key in args.keys()),
+            }
+        field_summaries = []
+        for index, field in enumerate(fields[:20]):
+            if not isinstance(field, Mapping):
+                field_summaries.append({"index": index, "kind": type(field).__name__})
+                continue
+            field_summaries.append(
+                {
+                    "index": index,
+                    "field_type": _safe_str(field.get("type") or "", 40),
+                    "targets": cls._safe_target_values(field),
+                    "values_redacted": cls._redacted_value_metadata(field),
+                }
+            )
+        return {
+            "kind": "browser_fill_form",
+            "field_count": len(fields),
+            "fields_preview": field_summaries,
+            "truncated": len(fields) > len(field_summaries),
+        }
+
+    @classmethod
+    def _summarize_batch_args(cls, args: Mapping[str, Any]) -> dict[str, Any]:
         steps = args.get("steps")
         if not isinstance(steps, list):
             return {"kind": "browser_batch_interact", "step_count": 0, "keys": sorted(str(key) for key in args.keys())}
@@ -450,7 +502,9 @@ class BrowserSubagentStatusLogger:
                     "index": idx,
                     "op": _safe_str(step.get("op") or "", 80),
                     "target_keys": sorted(keys & _BATCH_TARGET_KEYS),
+                    "targets": cls._safe_target_values(step),
                     "value_keys_redacted": sorted(keys & _BATCH_VALUE_KEYS),
+                    "values_redacted": cls._redacted_value_metadata(step),
                 }
             )
         return {
@@ -462,6 +516,7 @@ class BrowserSubagentStatusLogger:
             "continue_on_error": bool(args.get("continue_on_error", False)),
             "timeout_ms": args.get("timeout_ms"),
             "global_timeout_ms": args.get("global_timeout_ms"),
+            "generation_id": _safe_str(args.get("generation_id") or "", 40),
         }
 
     @staticmethod

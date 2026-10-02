@@ -33,7 +33,10 @@ import base64
 import json
 import os
 import re
+import secrets
+import time
 import uuid
+from collections.abc import Awaitable, Callable
 from typing import Any, Dict, List, Optional
 
 from openjiuwen.core.common.constants.constant import INTERACTION
@@ -85,34 +88,21 @@ _INPUT_PARAMS = {
                 "2026-10-10 and list the available operators, departure times, and "
                 "prices.' Include every constraint the user already gave (route, dates, "
                 "passenger count, etc.) -- the browser agent only sees this string, not "
-                "the rest of the conversation. Omit this when resuming a paused run with "
-                "`resume_token`/`credentials` instead."
-            ),
-        },
-        "resume_token": {
-            "type": "string",
-            "description": (
-                "Only set this when responding to a login form this tool asked for "
-                "earlier (its own result told you the exact value to remember) -- pass it "
-                "back verbatim, alongside `credentials`. Omit `task` in that case; this is "
-                "not a new task, it resumes the same paused browser run from where it "
-                "stopped."
-            ),
-        },
-        "credentials": {
-            "type": "object",
-            "additionalProperties": {"type": "string"},
-            "description": (
-                "Only set alongside `resume_token`: the field values the user just "
-                "submitted in that login form, keyed by exactly the same field names the "
-                "form asked for."
+                "the rest of the conversation."
             ),
         },
     },
-    "required": [],
+    "required": ["task"],
 }
 
 _MAX_INNER_ITERATIONS = 30
+
+# TODO(frontend-secure-credentials): replace this hidden generic-A2UI context
+# value with a dedicated browser.credentials.submit message emitted by a
+# native, masked credential form.  It is deliberately non-secret: it only
+# identifies server-side pending state and is bound to one conversation.
+BROWSER_LOGIN_FLOW_CONTEXT_KEY = "__browser_login_flow_id"
+_LOGIN_FLOW_TTL_SECONDS = 5 * 60
 
 _INNER_SYSTEM_PROMPT = """You are a browser automation agent that carries out one real, \
 multi-step web task per call: navigating, scrolling, clicking, filling in forms, and \
@@ -232,7 +222,7 @@ def request_login_credentials(fields: list[str], reason: str) -> dict[str, Any]:
     return {"error": "request_login_credentials should never execute directly."}
 
 
-_PENDING_CREDENTIAL_REQUESTS: Dict[str, Dict[str, str]] = {}
+_PENDING_CREDENTIAL_REQUESTS: Dict[str, Dict[str, Any]] = {}
 
 
 def _slugify_field_name(name: str, index: int) -> str:
@@ -240,23 +230,37 @@ def _slugify_field_name(name: str, index: int) -> str:
     return slug or f"field_{index}"
 
 
-def _build_credential_request_output(inner_session_id: str, inner_id: str, request: Any) -> ToolOutput:
+def _build_credential_request_output(
+    inner_session_id: str,
+    inner_id: str,
+    request: Any,
+    *,
+    conversation_id: str = "",
+) -> ToolOutput:
     """Build the A2UI login form for a paused request_login_credentials call.
 
-    Stashes {inner_session_id, inner_id} under a fresh resume_token (mirrors
-    weather_tools._FORECAST_STATE's pattern) -- the outer model is told to
-    remember and echo that token back on its next browser_agent_run call,
-    which BrowserAgentTool.invoke() uses to resume this exact paused tool
-    call via InteractiveInput.
+    Stashes the inner session/call under a fresh one-time flow ID and binds it
+    into the compatibility form's hidden context. The WebSocket handler uses
+    that ID to resume this exact paused call without routing credentials or
+    the flow ID through the outer model.
     """
     raw_fields = getattr(request, "fields", None) or []
     fields = [str(f) for f in raw_fields] or ["Username", "Password"]
     reason = str(getattr(request, "reason", "") or "")
 
-    resume_token = uuid.uuid4().hex[:12]
+    now = time.monotonic()
+    for stale_token, pending in list(_PENDING_CREDENTIAL_REQUESTS.items()):
+        if float(pending.get("expires_at") or 0) <= now:
+            _PENDING_CREDENTIAL_REQUESTS.pop(stale_token, None)
+
+    resume_token = secrets.token_urlsafe(32)
     _PENDING_CREDENTIAL_REQUESTS[resume_token] = {
         "inner_session_id": inner_session_id,
         "inner_id": inner_id,
+        "conversation_id": conversation_id,
+        "credential_keys": [],
+        "expires_at": now + _LOGIN_FLOW_TTL_SECONDS,
+        "resuming": False,
     }
 
     surface_id = genui.new_surface_id("browser-login")
@@ -273,6 +277,14 @@ def _build_credential_request_output(inner_session_id: str, inner_id: str, reque
         field_groups.append((name, [genui.text_field(field_id, label=name, value="")]))
         field_paths[field_id] = f"/{field_id}/value"
         field_defaults[field_id] = ""
+        _PENDING_CREDENTIAL_REQUESTS[resume_token]["credential_keys"].append(field_id)
+
+    # TODO(frontend-secure-credentials): this hidden data-model binding is the
+    # compatibility bridge for clients that can only submit generic uiActions.
+    # A native secure form should send the flow ID in its dedicated envelope
+    # instead, never through a chat-form context.
+    field_paths[BROWSER_LOGIN_FLOW_CONTEXT_KEY] = f"/{BROWSER_LOGIN_FLOW_CONTEXT_KEY}/value"
+    field_defaults[BROWSER_LOGIN_FLOW_CONTEXT_KEY] = resume_token
 
     messages = genui.form(
         surface_id,
@@ -290,10 +302,9 @@ def _build_credential_request_output(inner_session_id: str, inner_id: str, reque
     model_text = (
         f"The browser hit a login wall{reason_suffix} and needs real credentials from the "
         f"user before it can continue. A login form asking for {fields_text} has already "
-        f"been shown to the user -- do not render your own. Remember this resume_token "
-        f"exactly: {resume_token!r}. Once the user submits that form, call browser_agent_run "
-        "again with resume_token set to that exact value and credentials set to their "
-        "submitted field values (never task)."
+        "been shown to the user -- do not render your own and do not ask for credentials "
+        "in chat. The server will resume the paused browser run directly when the form is "
+        "submitted; do not call browser_agent_run again for this login."
     )
     return ToolOutput(
         success=True,
@@ -301,6 +312,11 @@ def _build_credential_request_output(inner_session_id: str, inner_id: str, reque
             "content": model_text,
             "text": f"I need you to log in to continue -- fill in {fields_text} and submit when ready.",
             "genui": messages,
+            # TODO(frontend-secure-credentials): the current client drops UI
+            # actions while chat processing is true.  Defer this temporary
+            # generic form until just after chat.completed; a native secure
+            # prompt can manage its own enabled/submitting lifecycle.
+            "defer_genui_until_completed": True,
         },
     )
 
@@ -544,18 +560,29 @@ class BrowserAgentTool(Tool):
                     "slower. Give `task` every constraint the user already gave (route, "
                     "dates, passenger count, etc.), written as a single, specific, "
                     "self-contained instruction. If the site hits a real login wall, this "
-                    "tool pauses itself, shows its own login form to the user, and its "
-                    "result tells you the exact `resume_token` to remember -- when the user "
-                    "submits that form, call this again with `resume_token` and `credentials` "
-                    "set (and `task` omitted) to continue the same paused run; never start a "
-                    "fresh `task` call for that."
+                    "tool pauses itself and shows its own login form. The server resumes that "
+                    "run directly after submission; never ask for credentials in chat and "
+                    "never start a fresh task for that login."
                 ),
                 input_params=_INPUT_PARAMS,
             )
         )
 
     async def invoke(self, inputs: Any, **kwargs: Any) -> ToolOutput:
+        return await self._invoke_direct(inputs, **kwargs)
+
+    async def _invoke_direct(self, inputs: Any, **kwargs: Any) -> ToolOutput:
+        """Run without requiring callers to enter the model-facing tool path.
+
+        The WebSocket credential compatibility bridge calls this private path
+        so submitted secrets do not become an outer-agent tool call, trace, or
+        ToolMessage.  The inner agent still receives the values in this
+        backend-only transition; a native frontend plus a runtime secret-fill
+        primitive should replace that remaining hop.
+        """
         outer_session = kwargs.get("session")
+        step_callback: Optional[Callable[[dict[str, Any]], Awaitable[None]]] = kwargs.get("step_callback")
+        expected_conversation_id = str(kwargs.get("expected_conversation_id") or "")
         task = ""
         resume_token = ""
         credentials: Dict[str, str] = {}
@@ -566,18 +593,26 @@ class BrowserAgentTool(Tool):
             if isinstance(raw_credentials, dict):
                 credentials = {str(key): str(value) for key, value in raw_credentials.items()}
 
-        try:
-            agent = await _get_browser_agent()
-        except Exception as exc:  # noqa: BLE001 -- report startup failure, don't crash the outer turn
-            return ToolOutput(success=False, error=f"Browser agent unavailable: {exc}")
-
+        pending: Optional[Dict[str, Any]] = None
         if resume_token:
-            pending = _PENDING_CREDENTIAL_REQUESTS.pop(resume_token, None)
+            pending = _PENDING_CREDENTIAL_REQUESTS.get(resume_token)
             if pending is None:
                 return ToolOutput(
                     success=False,
                     error="This login request is no longer active -- ask the user to try again.",
                 )
+            if float(pending.get("expires_at") or 0) <= time.monotonic():
+                _PENDING_CREDENTIAL_REQUESTS.pop(resume_token, None)
+                return ToolOutput(success=False, error="This login request expired -- ask the user to try again.")
+            bound_conversation_id = str(pending.get("conversation_id") or "")
+            if bound_conversation_id and expected_conversation_id != bound_conversation_id:
+                return ToolOutput(success=False, error="This login request does not belong to this conversation.")
+            if pending.get("resuming"):
+                return ToolOutput(success=False, error="This login request is already being resumed.")
+            expected_keys = set(pending.get("credential_keys") or [])
+            if not credentials or set(credentials) != expected_keys:
+                return ToolOutput(success=False, error="The submitted login fields did not match this request.")
+            pending["resuming"] = True
             inner_session_id = pending["inner_session_id"]
             interactive_input = InteractiveInput()
             interactive_input.update(pending["inner_id"], dict(credentials))
@@ -593,7 +628,20 @@ class BrowserAgentTool(Tool):
         else:
             return ToolOutput(success=False, error="'task' is required.")
 
+        try:
+            agent = await _get_browser_agent()
+        except asyncio.CancelledError:
+            if pending is not None:
+                pending["resuming"] = False
+            raise
+        except Exception as exc:  # noqa: BLE001 -- report startup failure, don't crash the outer turn
+            if pending is not None:
+                pending["resuming"] = False
+            return ToolOutput(success=False, error=f"Browser agent unavailable: {exc}")
+
         async def _emit(payload: dict[str, Any]) -> None:
+            if step_callback is not None:
+                await step_callback(payload)
             if outer_session is None:
                 return
             await outer_session.write_stream(OutputSchema(type="browser_agent_step", index=0, payload=payload))
@@ -640,13 +688,32 @@ class BrowserAgentTool(Tool):
                     content = payload.get("output") or payload.get("content") or ""
                     if content:
                         final_text = str(content)
+        except asyncio.CancelledError:
+            if pending is not None:
+                pending["resuming"] = False
+            raise
         except Exception as exc:  # noqa: BLE001 -- report the failure as a tool result, don't crash the outer turn
+            if pending is not None:
+                pending["resuming"] = False
             await _emit({"status": "error", "tool": "", "text": f"Browser agent run failed: {exc}"})
             return ToolOutput(success=False, error=f"Browser agent run failed: {exc}")
 
+        if pending is not None:
+            _PENDING_CREDENTIAL_REQUESTS.pop(resume_token, None)
+
         if pending_interrupt is not None:
             inner_id, request = pending_interrupt
-            return _build_credential_request_output(inner_session_id, inner_id, request)
+            conversation_id = expected_conversation_id
+            if not conversation_id and outer_session is not None:
+                get_session_id = getattr(outer_session, "get_session_id", None)
+                if callable(get_session_id):
+                    conversation_id = str(get_session_id() or "")
+            return _build_credential_request_output(
+                inner_session_id,
+                inner_id,
+                request,
+                conversation_id=conversation_id,
+            )
 
         if not final_text:
             final_text = "The browser agent finished without a final summary."
@@ -658,4 +725,26 @@ class BrowserAgentTool(Tool):
             yield None
 
 
-__all__ = ["BrowserAgentTool"]
+async def resume_browser_login(
+    flow_id: str,
+    credentials: Dict[str, str],
+    *,
+    conversation_id: str,
+    step_callback: Optional[Callable[[dict[str, Any]], Awaitable[None]]] = None,
+) -> ToolOutput:
+    """Resume a pending login without exposing credentials to the outer LLM.
+
+    TODO(frontend-secure-credentials): retain this server-side entry point when
+    replacing the generic A2UI form, but call it from a dedicated credential
+    WebSocket message and pass secrets to a runtime-only fill primitive rather
+    than through the inner agent's model context.
+    """
+    tool_instance = BrowserAgentTool()
+    return await tool_instance._invoke_direct(
+        {"resume_token": flow_id, "credentials": credentials},
+        expected_conversation_id=conversation_id,
+        step_callback=step_callback,
+    )
+
+
+__all__ = ["BROWSER_LOGIN_FLOW_CONTEXT_KEY", "BrowserAgentTool", "resume_browser_login"]
