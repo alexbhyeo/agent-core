@@ -6,8 +6,8 @@
 |---|---|
 | 类型 | spec |
 | 关联模块 | `openjiuwen/harness/tools/`（130 文件）、`openjiuwen/harness/schema/task.py`、`openjiuwen/core/foundation/tool/base.py`（`Tool.render_for_llm`） |
-| 最近一次修订日期 | 2026-09-23 |
-| 关联 feature | `F_04_tool-result-llm-rendering.md` |
+| 最近一次修订日期 | 2026-10-02 |
+| 关联 feature | `F_04_tool-result-llm-rendering.md`、`F_07_a2ui-browser-login-resume.md` |
 
 ## 范围 / 边界
 
@@ -35,6 +35,27 @@ i18n、工具生命周期。`tools/` 是 harness 最大的子模块（130 文件
 - prompt section 的具体文案—— `S_06`。
 
 ## 不变量
+
+### A2UI browser login compatibility route
+
+`openjiuwen/harness/a2ui/tools/browser_agent_tool.py` exposes only the required
+`task` parameter to the outer model. A credential interrupt creates a random
+flow ID with a five-minute lifetime, bound to the outer conversation and exact
+requested credential keys. `ConnectionSession` intercepts
+`submit_browser_credentials` before constructing an outer-agent query and calls
+`resume_browser_login` directly. Concurrent resumes are rejected; successful
+resumes consume the flow, while startup/run failures and cancellation release
+the busy flag for retry within its lifetime.
+
+Credential forms marked `defer_genui_until_completed` are delivered after
+`chat.completed`, including forms produced by a resumed run. Ordinary GenUI
+keeps its existing ordering. Browser status summaries retain field targets and
+redacted value metadata for batch and fill-form calls. These summaries do not
+contain submitted values. The compatibility route still passes credentials to
+the inner agent through `InteractiveInput`; it does not provide runtime-only
+secret filling or a native masked credential form.
+
+### Shared tool invariants
 
 1. **`ToolOutput` 是工具的统一返回形态**（定义于 `core/foundation/tool/schema.py`，
    `tools/base_tool.py` 再导出）：`success: bool`、`data`、`error`、`extracted_content`、
