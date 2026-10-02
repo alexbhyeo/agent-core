@@ -158,11 +158,20 @@ genuinely only one result, or the task is explicitly asking for information/comp
 only rather than to proceed with booking one -- skip straight to acting on it or reporting \
 it in those two cases only.
 
+For a bus-ticket task specifically, prefer https://www.easybook.com as the first site to \
+try over any other operator or aggregator site, unless the task names a different concrete \
+site to use instead -- a standing account is on file for it, which lets you actually log \
+in and proceed through seat selection (not just report a login wall as a blocker).
+
 If a page requires you to log in (username/password, or similar) before you can proceed, \
 and you do not already have credentials for it, call request_login_credentials with the \
 specific fields the page's own form actually asks for and a short reason -- never guess, \
-invent, or attempt to bypass a login. That call pauses you here; once the real user \
-provides their credentials, they come back as request_login_credentials's own result -- \
+invent, or attempt to bypass a login. On easybook.com this frequently resolves immediately \
+with that standing account's values instead of pausing -- treat that exactly like a real \
+user's own answer (use the returned values to actually log in on the page) and continue \
+the task, now picking a seat if the flow offers one. Otherwise, that call pauses you here; \
+once the real user provides their credentials, they come back as request_login_credentials's \
+own result -- \
 use them to actually log in on the page, then continue the task from there.
 
 Use browser_probe_interactives to see a page's controls and browser_probe_cards for \
@@ -211,6 +220,45 @@ def _parse_tool_call_args(tool_call: Optional[ToolCall]) -> Dict[str, Any]:
     return {}
 
 
+_EASYBOOK_URL_MARKER = "easybook.com"
+_EASYBOOK_USERNAME_FIELD_TOKENS = ("email", "user", "mobile", "phone", "login", "account")
+
+
+def _easybook_auto_credentials(fields: List[str]) -> Optional[Dict[str, str]]:
+    """The standing easybook.com login, if configured and actually on that
+    site right now -- scoped strictly by the live page URL so these
+    credentials are never typed into some other site's login form the
+    browser agent happens to hit. See config.py's EASYBOOK_USERNAME/
+    EASYBOOK_PASSWORD for where these come from and the exposure note.
+
+    Maps each requested field name heuristically (anything mentioning
+    "pass" is the password; anything mentioning email/user/mobile/phone/
+    login/account is the username) -- if any field can't be confidently
+    mapped this way, returns None rather than guessing, falling back to the
+    normal pause-and-ask-the-user flow.
+    """
+    username = str(app_config.get("EASYBOOK_USERNAME") or "").strip()
+    password = str(app_config.get("EASYBOOK_PASSWORD") or "").strip()
+    if not username or not password:
+        return None
+    runtime = _browser_runtime
+    if runtime is None:
+        return None
+    current_url = str(runtime.export_page_state().get("url") or "").lower()
+    if _EASYBOOK_URL_MARKER not in current_url:
+        return None
+    mapped: Dict[str, str] = {}
+    for field in fields:
+        lowered = field.lower()
+        if "pass" in lowered:
+            mapped[field] = password
+        elif any(token in lowered for token in _EASYBOOK_USERNAME_FIELD_TOKENS):
+            mapped[field] = username
+    if not mapped or len(mapped) != len(fields):
+        return None
+    return mapped
+
+
 class BrowserCredentialInterruptRail(BaseInterruptRail):
     """Pauses the inner browser agent at a login wall and waits for the real
     user's credentials.
@@ -244,10 +292,18 @@ class BrowserCredentialInterruptRail(BaseInterruptRail):
         args = _parse_tool_call_args(tool_call)
         raw_fields = args.get("fields")
         fields = [str(f) for f in raw_fields] if isinstance(raw_fields, list) else []
+        fields = fields or ["Username", "Password"]
+        auto_credentials = _easybook_auto_credentials(fields)
+        if auto_credentials is not None:
+            browser_agent_log_info(
+                "[BROWSER_SUBAGENT] auto-logging into easybook.com with the standing account on file"
+            )
+            summary = ", ".join(f"{key}={value!r}" for key, value in auto_credentials.items())
+            return self.reject(tool_result=f"A standing account for this site is on file: {summary}. Use these to log in now.")
         return self.interrupt(
             BrowserCredentialRequest(
                 message="Login required",
-                fields=fields or ["Username", "Password"],
+                fields=fields,
                 reason=str(args.get("reason") or ""),
             )
         )

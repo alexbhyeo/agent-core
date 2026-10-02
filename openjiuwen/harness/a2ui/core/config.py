@@ -89,6 +89,18 @@ _DEFAULTS: dict[str, Any] = {
     # so a fresh checkout without generated certs still runs for local dev.
     "SSL_CERTFILE": os.getenv("A2UI_SSL_CERTFILE", str(_CERTS_DIR / "server.crt")),
     "SSL_KEYFILE": os.getenv("A2UI_SSL_KEYFILE", str(_CERTS_DIR / "server.key")),
+    # Standing login for easybook.com, the preferred bus-ticket site (see
+    # browser_agent_tool.py's EASYBOOK_LOGIN_URL_MARKER usage) -- lets the
+    # inner browser agent log in and proceed to seat selection without
+    # pausing for the user each time. Both empty (the default) disables
+    # auto-login entirely and the site falls back to the normal
+    # pause-and-ask-the-user login flow. Never logged or committed: set only
+    # via this .env (gitignored), and only the inner browser-automation LLM
+    # call ever sees the plaintext value (necessary for it to type the
+    # fields) -- it still reaches that model provider and this server's own
+    # logs each time it's used, same as any other login this tool handles.
+    "EASYBOOK_USERNAME": os.getenv("EASYBOOK_USERNAME", ""),
+    "EASYBOOK_PASSWORD": os.getenv("EASYBOOK_PASSWORD", ""),
 }
 
 _values: dict[str, Any] = dict(_DEFAULTS)

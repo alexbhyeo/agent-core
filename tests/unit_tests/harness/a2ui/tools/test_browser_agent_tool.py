@@ -235,6 +235,59 @@ class TestBrowserAgentToolInterrupt:
         assert "task" in result.error
 
 
+class TestEasybookAutoCredentials:
+    """_easybook_auto_credentials: the standing easybook.com login, scoped
+    strictly to the live page URL so it's never typed into an unrelated
+    site's login form (see BrowserCredentialInterruptRail.resolve_interrupt,
+    which calls this before pausing for the real user)."""
+
+    def setup_method(self):
+        bat.app_config.set_value("EASYBOOK_USERNAME", "agent@example.com")
+        bat.app_config.set_value("EASYBOOK_PASSWORD", "s3cr3t-pw")
+        self._previous_runtime = bat._browser_runtime
+
+    def teardown_method(self):
+        bat.app_config.set_value("EASYBOOK_USERNAME", "")
+        bat.app_config.set_value("EASYBOOK_PASSWORD", "")
+        bat._browser_runtime = self._previous_runtime
+
+    def test_maps_fields_when_on_easybook(self):
+        bat._browser_runtime = SimpleNamespace(
+            export_page_state=lambda: {"url": "https://www.easybook.com/en-sg/bus/login"}
+        )
+
+        mapped = bat._easybook_auto_credentials(["Email", "Password"])
+
+        assert mapped == {"Email": "agent@example.com", "Password": "s3cr3t-pw"}
+
+    def test_none_when_not_on_easybook(self):
+        bat._browser_runtime = SimpleNamespace(
+            export_page_state=lambda: {"url": "https://www.some-other-bus-site.com/login"}
+        )
+
+        assert bat._easybook_auto_credentials(["Email", "Password"]) is None
+
+    def test_none_when_credentials_not_configured(self):
+        bat.app_config.set_value("EASYBOOK_USERNAME", "")
+        bat._browser_runtime = SimpleNamespace(
+            export_page_state=lambda: {"url": "https://www.easybook.com/en-sg/bus/login"}
+        )
+
+        assert bat._easybook_auto_credentials(["Email", "Password"]) is None
+
+    def test_none_when_a_field_cannot_be_mapped(self):
+        bat._browser_runtime = SimpleNamespace(
+            export_page_state=lambda: {"url": "https://www.easybook.com/en-sg/bus/login"}
+        )
+
+        assert bat._easybook_auto_credentials(["Email", "Password", "Captcha"]) is None
+
+    def test_none_when_no_runtime_yet(self):
+        bat._browser_runtime = None
+
+        assert bat._easybook_auto_credentials(["Email", "Password"]) is None
+
+
 class TestBrowserAgentToolOptionSelection:
     """Mirrors TestBrowserAgentToolInterrupt above, for the
     request_option_selection pause/resume path instead of the login one."""
