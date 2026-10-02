@@ -1,8 +1,18 @@
 # -*- coding: UTF-8 -*-
 # Copyright (c) Huawei Technologies Co., Ltd. 2025. All rights reserved.
-from typing import Optional
+import json
+from typing import Any, Optional
 
 from pydantic import BaseModel
+
+
+def serialize_tool_call_arguments(arguments: Any) -> str:
+    """Return tool arguments in the JSON-string form required on the wire."""
+    if isinstance(arguments, str):
+        return arguments
+    if isinstance(arguments, BaseModel):
+        arguments = arguments.model_dump(mode="json")
+    return json.dumps(arguments, ensure_ascii=False)
 
 
 class ToolCall(BaseModel):

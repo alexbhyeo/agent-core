@@ -1,11 +1,11 @@
 # coding: utf-8
 # Copyright (c) Huawei Technologies Co., Ltd. 2025-2026. All rights reserved.
 
-from typing import Union, List, Optional, Any, Dict
+from typing import Any, Dict, List, Optional, Union
+
 from pydantic import BaseModel, Field, model_validator
 
-from openjiuwen.core.foundation.llm.schema.tool_call import ToolCall
-
+from openjiuwen.core.foundation.llm.schema.tool_call import ToolCall, serialize_tool_call_arguments
 
 OPENJIUWEN_MESSAGE_PROVENANCE_METADATA = "_openjiuwen_message_provenance"
 OPENJIUWEN_MESSAGE_ORIGIN_METADATA = "_openjiuwen_message_origin"
@@ -113,7 +113,10 @@ class AssistantMessage(BaseMessage):
                     "type": call.type,
                     "function": {
                         "name": call.name,
-                        "arguments": call.arguments
+                        # Rails may rewrite arguments as a mapping after the
+                        # ToolCall has been validated.  OpenAI-compatible APIs
+                        # require this field to remain a JSON string.
+                        "arguments": serialize_tool_call_arguments(call.arguments),
                     }
                 })
                 if call.response_item_id is not None:

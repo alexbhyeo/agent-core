@@ -9,7 +9,7 @@ import json
 import os
 import traceback
 from dataclasses import dataclass
-from typing import List, Any, Union, Optional, Tuple, Dict, Iterable, Callable
+from typing import Any, Callable, Dict, Iterable, List, Optional, Tuple, Union
 
 import anyio
 from pydantic import BaseModel
@@ -17,13 +17,14 @@ from pydantic import BaseModel
 from openjiuwen.core.common.exception.codes import StatusCode
 from openjiuwen.core.common.exception.errors import AgentError
 from openjiuwen.core.common.logging import logger
-from openjiuwen.core.foundation.llm import ToolMessage, ToolCall
-from openjiuwen.core.foundation.tool import ToolInfo
-from openjiuwen.core.foundation.tool import Tool
-from openjiuwen.core.foundation.tool import ToolCard, ToolExposure
-from openjiuwen.core.foundation.tool import McpServerConfig
+from openjiuwen.core.foundation.llm import ToolCall, ToolMessage
+from openjiuwen.core.foundation.llm.schema.tool_call import serialize_tool_call_arguments
+from openjiuwen.core.foundation.tool import McpServerConfig, Tool, ToolCard, ToolExposure, ToolInfo
 from openjiuwen.core.foundation.tool.mcp.base import mcp_model_tool_name, mcp_model_tool_prefix
-from openjiuwen.core.session.agent import Session
+from openjiuwen.core.session.agent import Session, create_agent_session
+from openjiuwen.core.single_agent.interrupt.exception import ToolInterruptException
+from openjiuwen.core.single_agent.interrupt.state import INTERRUPT_AUTO_CONFIRM_KEY
+from openjiuwen.core.single_agent.kv_cache import kv_cache_child_session
 from openjiuwen.core.single_agent.rail.base import (
     AgentCallbackContext,
     AgentCallbackEvent,
@@ -31,15 +32,11 @@ from openjiuwen.core.single_agent.rail.base import (
     bind_usage_delegation,
     build_usage_delegation_attribution,
     current_usage_invocation_id,
-    reset_usage_delegation,
     rail,
+    reset_usage_delegation,
 )
 from openjiuwen.core.single_agent.schema.agent_card import AgentCard
 from openjiuwen.core.workflow import WorkflowCard
-from openjiuwen.core.single_agent.interrupt.exception import ToolInterruptException
-from openjiuwen.core.session.agent import create_agent_session
-from openjiuwen.core.single_agent.interrupt.state import INTERRUPT_AUTO_CONFIRM_KEY
-from openjiuwen.core.single_agent.kv_cache import kv_cache_child_session
 
 # Ability type definition
 Ability = Union[ToolCard, WorkflowCard, AgentCard, McpServerConfig]
@@ -1339,7 +1336,10 @@ class AbilityManager:
             if ctx.inputs.tool_name:
                 tool_call.name = ctx.inputs.tool_name
             if ctx.inputs.tool_args is not None:
-                tool_call.arguments = ctx.inputs.tool_args
+                # BEFORE_TOOL_CALL rails are allowed to work with parsed
+                # mappings, but ToolCall is also retained in model history.
+                # Preserve its OpenAI wire-format invariant after a rewrite.
+                tool_call.arguments = serialize_tool_call_arguments(ctx.inputs.tool_args)
 
         result, tool_msg = await self._execute_single_tool_call(
             tool_call=tool_call,
@@ -1372,7 +1372,7 @@ class AbilityManager:
         Raises AbilityExecutionError on failure (caller wraps in try/except).
         """
         from openjiuwen.core.runner import Runner
-        from openjiuwen.core.workflow import WorkflowOutput, WorkflowExecutionState
+        from openjiuwen.core.workflow import WorkflowExecutionState, WorkflowOutput
 
         workflow_session = session.create_workflow_session() if session is not None else None
         workflow_context = (
