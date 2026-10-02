@@ -1135,6 +1135,13 @@ class BrowserAgentTool(Tool):
                     "this tool again for that pause or start a fresh `task` call for it."
                 ),
                 input_params=_INPUT_PARAMS,
+                # The outer ability_manager's own default tool-call timeout (300s,
+                # DEFAULT_TOOL_CALL_TIMEOUT) was killing real multi-step runs --
+                # search, log in, reach seat selection -- well before
+                # _MAX_INNER_ITERATIONS or the browser phase budgets would ever
+                # stop them on their own. Declared here, per-tool, so no other
+                # tool's timeout changes.
+                properties={"resilience": {"timeout_s": 900}},
             )
         )
 
