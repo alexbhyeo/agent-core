@@ -235,6 +235,56 @@ class TestBrowserAgentToolInterrupt:
         assert "task" in result.error
 
 
+class TestPerformBrowserInput:
+    """perform_browser_input relays user taps/typing straight to the page."""
+
+    @pytest.mark.asyncio
+    async def test_type_sends_text_to_page_and_returns_frame(self):
+        evaluate = MagicMock()
+        evaluate.invoke = AsyncMock(return_value={"result": "typed"})
+        runtime = MagicMock()
+        runtime._get_playwright_mcp_tool = AsyncMock(return_value=evaluate)
+        frame = {"mime": "image/jpeg", "base64": "QUJD"}
+        previous = bat._browser_runtime
+        bat._browser_runtime = runtime
+        try:
+            with patch.object(bat, "_capture_screenshot", AsyncMock(return_value=frame)):
+                result = await bat.perform_browser_input({"kind": "type", "text": "4111 1111"})
+        finally:
+            bat._browser_runtime = previous
+
+        assert result == frame
+        script = evaluate.invoke.call_args.args[0]["function"]
+        assert '"4111 1111"' in script
+
+    @pytest.mark.asyncio
+    async def test_tap_coordinates_are_clamped_to_the_viewport(self):
+        evaluate = MagicMock()
+        evaluate.invoke = AsyncMock(return_value={"result": "clicked"})
+        runtime = MagicMock()
+        runtime._get_playwright_mcp_tool = AsyncMock(return_value=evaluate)
+        previous = bat._browser_runtime
+        bat._browser_runtime = runtime
+        try:
+            with patch.object(bat, "_capture_screenshot", AsyncMock(return_value=None)):
+                await bat.perform_browser_input({"kind": "tap", "x": 5, "y": -2})
+        finally:
+            bat._browser_runtime = previous
+
+        script = evaluate.invoke.call_args.args[0]["function"]
+        assert "1.0 * window.innerWidth" in script
+        assert "0.0 * window.innerHeight" in script
+
+    @pytest.mark.asyncio
+    async def test_no_runtime_is_a_noop(self):
+        previous = bat._browser_runtime
+        bat._browser_runtime = None
+        try:
+            assert await bat.perform_browser_input({"kind": "tap", "x": 0.5, "y": 0.5}) is None
+        finally:
+            bat._browser_runtime = previous
+
+
 class TestEasybookAutoCredentials:
     """_easybook_auto_credentials: the standing easybook.com login, scoped
     strictly to the live page URL so it's never typed into an unrelated

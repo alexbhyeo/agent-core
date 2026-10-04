@@ -23,6 +23,7 @@ from openjiuwen.core.single_agent import ReActAgent
 from ..tools.browser_agent_tool import (
     BROWSER_LOGIN_FLOW_CONTEXT_KEY,
     BROWSER_OPTION_SELECTION_FLOW_CONTEXT_KEY,
+    perform_browser_input,
     resume_browser_login,
     resume_browser_option_selection,
 )
@@ -67,6 +68,10 @@ class ConnectionSession:
 
         if msg_type == "heartbeat":
             self.last_heartbeat = time.time()
+            return
+
+        if msg_type == "browser.input":
+            asyncio.create_task(self._run_browser_input(conversation_id, payload))
             return
 
         if msg_type == "chat.cancel":
@@ -155,6 +160,19 @@ class ConnectionSession:
         # this ordering shim.
         for message in state["deferred_genui"]:
             await self.send("genui", message, conversation_id)
+
+    async def _run_browser_input(self, conversation_id: Optional[str], payload: dict[str, Any]) -> None:
+        try:
+            frame = await perform_browser_input(payload)
+        except Exception:  # noqa: BLE001 -- never echo the submitted values back in an error
+            await self.send("error.tool", {"tool": "browser_agent_run", "message": "The browser view could not be updated."}, conversation_id)
+            return
+        if frame is not None:
+            await self.send(
+                "browser.frame",
+                {"screenshot_base64": frame["base64"], "screenshot_mime": frame["mime"]},
+                conversation_id,
+            )
 
     async def _resume_browser_login(
         self,

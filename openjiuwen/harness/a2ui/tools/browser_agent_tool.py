@@ -744,6 +744,61 @@ async def _capture_screenshot(runtime: BrowserAgentRuntime) -> Optional[Dict[str
         return None
 
 
+_BROWSER_INPUT_LOCK = asyncio.Lock()
+_TYPED_TEXT_MAX_CHARS = 200
+
+
+def _clamp(value: Any, low: float, high: float) -> float:
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return low
+    return max(low, min(high, number))
+
+
+async def perform_browser_input(event: Dict[str, Any]) -> Optional[Dict[str, str]]:
+    """Relay one user interaction with the live browser view straight to the
+    page -- deliberately not through the LLM, so typed values (including
+    payment fields) never enter a model prompt. Returns a fresh screenshot to
+    show back. Typed text is never logged here.
+    """
+    runtime = _browser_runtime
+    if runtime is None:
+        return None
+    kind = str(event.get("kind") or "")
+    if kind == "tap":
+        x = _clamp(event.get("x"), 0.0, 1.0)
+        y = _clamp(event.get("y"), 0.0, 1.0)
+        script = (
+            "() => { const el = document.elementFromPoint("
+            f"{x} * window.innerWidth, {y} * window.innerHeight); if (!el) return 'none';"
+            " const field = el.closest('input,textarea,select');"
+            " if (field) { field.focus(); return 'focused'; }"
+            " (el.closest('a,button,[role=button],label,[onclick]') || el).click(); return 'clicked'; }"
+        )
+    elif kind == "type":
+        text = str(event.get("text") or "")[:_TYPED_TEXT_MAX_CHARS]
+        if not text:
+            return None
+        script = (
+            "() => { const f = document.activeElement;"
+            " if (!f || (f.tagName !== 'INPUT' && f.tagName !== 'TEXTAREA')) return 'nofocus';"
+            " const proto = f.tagName === 'INPUT' ? HTMLInputElement.prototype : HTMLTextAreaElement.prototype;"
+            f" Object.getOwnPropertyDescriptor(proto, 'value').set.call(f, f.value + {json.dumps(text)});"
+            " f.dispatchEvent(new Event('input', {bubbles: true}));"
+            " f.dispatchEvent(new Event('change', {bubbles: true})); return 'typed'; }"
+        )
+    elif kind == "scroll":
+        dy = int(_clamp(event.get("dy"), -1000, 1000))
+        script = f"() => {{ window.scrollBy(0, {dy}); return 'scrolled'; }}"
+    else:
+        return None
+    async with _BROWSER_INPUT_LOCK:
+        evaluate = await runtime._get_playwright_mcp_tool("browser_evaluate")
+        await evaluate.invoke({"function": script})
+        return await _capture_screenshot(runtime)
+
+
 # The inner agent can reach for a raw JS escape hatch (`browser_evaluate` /
 # `browser_run_code`). Its step text can't come from the tool name alone --
 # "Evaluate…" says nothing about whether it is reading a price, filling a
