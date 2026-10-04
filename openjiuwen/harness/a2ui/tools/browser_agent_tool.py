@@ -567,7 +567,7 @@ def _force_headless_mcp_env() -> None:
     already set PLAYWRIGHT_MCP_ARGS explicitly."""
     os.environ.setdefault(
         "PLAYWRIGHT_MCP_ARGS",
-        "-y @playwright/mcp@0.0.78 --headless --no-sandbox",
+        "-y @playwright/mcp@0.0.78 --headless --no-sandbox --viewport-size 360x640",
     )
 
 
