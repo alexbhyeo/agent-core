@@ -847,10 +847,17 @@ async def perform_browser_input(event: Dict[str, Any]) -> Optional[Dict[str, Any
     else:
         return None
     async with _BROWSER_INPUT_LOCK:
+        started = time.monotonic()
         evaluate = await runtime._get_playwright_mcp_tool("browser_evaluate")
         result = await evaluate.invoke({"function": script})
+        evaluated = time.monotonic()
         result_text = str(result.get("result", "")) if isinstance(result, dict) else ""
         frame = await _capture_screenshot(runtime)
+        finished = time.monotonic()
+    logger.info(
+        f"[browser-input] kind={kind} evaluate_ms={(evaluated - started) * 1000:.0f} "
+        f"screenshot_ms={(finished - evaluated) * 1000:.0f}"
+    )
     return {"frame": frame, "select_options": _select_options_from_result(result_text)}
 
 
