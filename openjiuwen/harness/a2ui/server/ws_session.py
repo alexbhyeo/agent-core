@@ -38,6 +38,9 @@ class ConnectionSession:
         self.agent = agent
         self.user_id = user_id
         self._active_task: Optional[asyncio.Task] = None
+        self._scroll_task: Optional[asyncio.Task] = None
+        self._pending_scroll_dy: float = 0.0
+        self._pending_scroll_conversation_id: Optional[str] = None
         self.last_heartbeat = time.time()
 
     async def send(
@@ -71,7 +74,10 @@ class ConnectionSession:
             return
 
         if msg_type == "browser.input":
-            asyncio.create_task(self._run_browser_input(conversation_id, payload))
+            if payload.get("kind") == "scroll":
+                self._queue_browser_scroll(conversation_id, payload)
+            else:
+                asyncio.create_task(self._run_browser_input(conversation_id, payload))
             return
 
         if msg_type == "chat.cancel":
@@ -160,6 +166,22 @@ class ConnectionSession:
         # this ordering shim.
         for message in state["deferred_genui"]:
             await self.send("genui", message, conversation_id)
+
+    def _queue_browser_scroll(self, conversation_id: Optional[str], payload: dict[str, Any]) -> None:
+        # A drag sends many small scrolls. Each one costs a page round-trip plus
+        # a screenshot, so they are summed here and drained in one pass -- the
+        # frame always shows the page as far as the drag has gone so far.
+        self._pending_scroll_dy += _scroll_dy(payload)
+        self._pending_scroll_conversation_id = conversation_id
+        if self._scroll_task is None or self._scroll_task.done():
+            self._scroll_task = asyncio.create_task(self._drain_browser_scroll())
+
+    async def _drain_browser_scroll(self) -> None:
+        while abs(self._pending_scroll_dy) >= 1:
+            dy = self._pending_scroll_dy
+            self._pending_scroll_dy = 0.0
+            conversation_id = self._pending_scroll_conversation_id
+            await self._run_browser_input(conversation_id, {"kind": "scroll", "dy": dy})
 
     async def _run_browser_input(self, conversation_id: Optional[str], payload: dict[str, Any]) -> None:
         try:
@@ -302,6 +324,13 @@ class ConnectionSession:
         if defer_genui:
             for message in messages:
                 await self.send("genui", message, conversation_id)
+
+
+def _scroll_dy(payload: dict[str, Any]) -> float:
+    try:
+        return float(payload.get("dy") or 0)
+    except (TypeError, ValueError):
+        return 0.0
 
 
 def _extract_browser_credential_submission(

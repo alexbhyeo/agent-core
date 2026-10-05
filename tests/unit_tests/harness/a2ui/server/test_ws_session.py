@@ -580,3 +580,19 @@ class TestConnectionSessionDispatch:
         sent = websocket.send_json.await_args.args[0]
         assert sent["type"] == "error.validation"
         assert "already running" in sent["payload"]["message"]
+
+
+@pytest.mark.asyncio
+async def test_drag_scrolls_are_coalesced_into_one_drain():
+    session = ConnectionSession(websocket=SimpleNamespace(), agent=SimpleNamespace(), user_id="u")
+    calls = []
+
+    async def fake_run(conversation_id, payload):
+        calls.append(payload["dy"])
+
+    with patch.object(session, "_run_browser_input", side_effect=fake_run):
+        session._queue_browser_scroll("c1", {"kind": "scroll", "dy": 30})
+        session._queue_browser_scroll("c1", {"kind": "scroll", "dy": 50})
+        await session._scroll_task
+
+    assert calls == [80.0]
