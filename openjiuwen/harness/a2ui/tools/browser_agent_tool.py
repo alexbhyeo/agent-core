@@ -125,10 +125,11 @@ You MAY click "Search"/"Submit"/"Apply"/"Filter"-style controls freely whenever 
 retrieves information -- e.g. submitting a route/date search form on a bus, flight, or \
 hotel site to see the list of available operators, times, and prices -- and, once the real \
 user has picked a specific option (see request_option_selection below), you may also \
-select that option and proceed through ordinary checkout steps on its behalf (choosing a \
-seat, confirming the route, entering passenger/contact details you were actually given, \
-logging in via request_login_credentials if needed). All of that is expected, normal, core \
-behavior for this task, not a boundary violation.
+select that option and proceed on its behalf (choosing a seat, confirming the route, \
+logging in via request_login_credentials if needed, up to the passenger details page). \
+All of that is expected, normal, core behavior for this task, not a boundary violation. \
+The passenger details page and everything after it (passenger details, payment method, \
+the pay button) belong to the user -- never fill, select, or click anything there.
 
 You must NEVER click, tap, or submit anything that would complete or finalize the real \
 transaction itself -- this includes, in any language, final actions like "Pay", "Place \
@@ -150,10 +151,9 @@ describing it fully and accurately: operator, time, price, etc., exactly as show
 page) and a short `prompt` describing the choice. That call pauses you here; the real \
 user's pick comes back as request_option_selection's own result, telling you exactly which \
 option they chose. Then actually select that option on the page (e.g. click its \
-"Select"/"Choose"/"Book" control) and continue the task from there -- filling in any \
-passenger/contact details already given to you earlier in this same task (never invent a \
-name, email, phone number, or other identity detail you were not actually given), toward \
-an actual checkout/payment page for that specific option. The only exceptions: there is \
+"Select"/"Choose"/"Book" control) and continue the task from there, up to the passenger \
+details page for that specific option -- then stop there and hand off to the user. The only \
+exceptions: there is \
 genuinely only one result, or the task is explicitly asking for information/comparison \
 only rather than to proceed with booking one -- skip straight to acting on it or reporting \
 it in those two cases only.
@@ -628,6 +628,7 @@ async def _get_browser_agent() -> ReActAgent:
         await agent.register_rail(BrowserRuntimeRail(runtime))
         await agent.register_rail(BrowserCredentialInterruptRail())
         await agent.register_rail(BrowserOptionSelectionInterruptRail())
+        await agent.register_rail(BrowserCheckoutStopRail())
         # Must come after BrowserRuntimeRail (lower priority) so it can undo
         # that rail's blanket tool-strip on the terminal pass.
         await agent.register_rail(BrowserInteractionAvailabilityRail())
@@ -756,11 +757,25 @@ def _clamp(value: Any, low: float, high: float) -> float:
     return max(low, min(high, number))
 
 
-async def perform_browser_input(event: Dict[str, Any]) -> Optional[Dict[str, str]]:
+_SELECT_OPTIONS_MARKER = "__BRIDGE_SELECT__"
+
+
+def _select_options_from_result(result_text: str) -> Optional[List[str]]:
+    index = result_text.find(_SELECT_OPTIONS_MARKER)
+    if index == -1:
+        return None
+    raw = result_text[index + len(_SELECT_OPTIONS_MARKER) :].split("\n", 1)[0].rstrip('"` ')
+    return [label for label in raw.split("␞") if label]
+
+
+async def perform_browser_input(event: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     """Relay one user interaction with the live browser view straight to the
     page -- deliberately not through the LLM, so typed values (including
     payment fields) never enter a model prompt. Returns a fresh screenshot to
-    show back. Typed text is never logged here.
+    show back, plus the option labels when a native dropdown was tapped (the
+    page's own popup never renders into a screenshot, so the app shows the
+    choices itself and sends one back as a `choose` action). Typed text is
+    never logged here.
     """
     runtime = _browser_runtime
     if runtime is None:
@@ -772,7 +787,11 @@ async def perform_browser_input(event: Dict[str, Any]) -> Optional[Dict[str, str
         script = (
             "() => { const el = document.elementFromPoint("
             f"{x} * window.innerWidth, {y} * window.innerHeight); if (!el) return 'none';"
-            " const field = el.closest('input,textarea,select');"
+            " const select = el.closest('select');"
+            " if (select) { window.__bridgeSelect = select;"
+            f" return '{_SELECT_OPTIONS_MARKER}' + Array.from(select.options)"
+            " .map(o => o.text.trim()).join('\\u241e'); }"
+            " const field = el.closest('input,textarea');"
             " if (field) { field.focus(); return 'focused'; }"
             " (el.closest('a,button,[role=button],label,[onclick]') || el).click(); return 'clicked'; }"
         )
@@ -788,6 +807,14 @@ async def perform_browser_input(event: Dict[str, Any]) -> Optional[Dict[str, str
             " f.dispatchEvent(new Event('input', {bubbles: true}));"
             " f.dispatchEvent(new Event('change', {bubbles: true})); return 'typed'; }"
         )
+    elif kind == "choose":
+        index = int(_clamp(event.get("index"), 0, 500))
+        script = (
+            "() => { const s = window.__bridgeSelect; if (!s) return 'none';"
+            f" s.selectedIndex = {index};"
+            " s.dispatchEvent(new Event('input', {bubbles: true}));"
+            " s.dispatchEvent(new Event('change', {bubbles: true})); return 'chosen'; }"
+        )
     elif kind == "scroll":
         dy = int(_clamp(event.get("dy"), -1000, 1000))
         script = f"() => {{ window.scrollBy(0, {dy}); return 'scrolled'; }}"
@@ -795,8 +822,10 @@ async def perform_browser_input(event: Dict[str, Any]) -> Optional[Dict[str, str
         return None
     async with _BROWSER_INPUT_LOCK:
         evaluate = await runtime._get_playwright_mcp_tool("browser_evaluate")
-        await evaluate.invoke({"function": script})
-        return await _capture_screenshot(runtime)
+        result = await evaluate.invoke({"function": script})
+        result_text = str(result.get("result", "")) if isinstance(result, dict) else ""
+        frame = await _capture_screenshot(runtime)
+    return {"frame": frame, "select_options": _select_options_from_result(result_text)}
 
 
 # The inner agent can reach for a raw JS escape hatch (`browser_evaluate` /
@@ -1017,6 +1046,59 @@ def _tool_call_name(tool_call: Any) -> str:
     """
     function = getattr(tool_call, "function", tool_call)
     return str(getattr(function, "name", getattr(tool_call, "name", "")) or "").strip()
+
+
+_CHECKOUT_STOP_URL_MARKERS = ("/passengerdetails", "/payment", "/checkout")
+_PAGE_ACTION_TOOL_NAMES = (
+    "browser_click",
+    "browser_type",
+    "browser_fill_form",
+    "browser_select_option",
+    "browser_press_key",
+    "browser_batch_interact",
+    "browser_run_code",
+    "browser_run_code_unsafe",
+    "browser_evaluate",
+)
+
+
+class BrowserCheckoutStopRail(BaseInterruptRail):
+    """Stops the inner browser agent at the passenger-details / payment step.
+
+    Seat selection is the agent's job; anything past it (passenger details,
+    payment method, the pay button) is the user's to complete themselves, in
+    the live view. The prompt asks for that, but a prompt alone wasn't holding
+    -- a live run went straight through to the payment-method section -- so
+    this enforces it: once the page URL is at a checkout-stop marker, every
+    further page action is rejected with a stop instruction instead of run.
+    """
+
+    def __init__(self) -> None:
+        super().__init__(tool_names=list(_PAGE_ACTION_TOOL_NAMES))
+
+    async def resolve_interrupt(
+        self,
+        ctx: AgentCallbackContext,
+        tool_call: Optional[ToolCall],
+        user_input: Optional[Any],
+        auto_confirm_config: Optional[dict] = None,
+    ) -> InterruptDecision:
+        del ctx, tool_call, user_input, auto_confirm_config
+        runtime = _browser_runtime
+        current_url = ""
+        if runtime is not None:
+            current_url = str(runtime.export_page_state().get("url") or "").lower()
+        if not any(marker in current_url for marker in _CHECKOUT_STOP_URL_MARKERS):
+            return self.approve()
+        browser_agent_log_info("[BROWSER_SUBAGENT] reached the checkout stop point; rejecting further page actions")
+        return self.reject(
+            tool_result=(
+                "STOP: the browser is now on the passenger details / payment step. Do not click, "
+                "type, or submit anything on it, and do not call any more browser tools. Your final "
+                "reply must say the user now enters their passenger details and payment themselves "
+                "on the real site, and must include the current page URL."
+            )
+        )
 
 
 class BrowserInteractionAvailabilityRail(AgentRail):

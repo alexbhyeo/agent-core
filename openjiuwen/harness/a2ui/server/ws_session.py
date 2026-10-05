@@ -163,16 +163,21 @@ class ConnectionSession:
 
     async def _run_browser_input(self, conversation_id: Optional[str], payload: dict[str, Any]) -> None:
         try:
-            frame = await perform_browser_input(payload)
+            outcome = await perform_browser_input(payload)
         except Exception:  # noqa: BLE001 -- never echo the submitted values back in an error
             await self.send("error.tool", {"tool": "browser_agent_run", "message": "The browser view could not be updated."}, conversation_id)
             return
+        if outcome is None:
+            return
+        frame = outcome.get("frame")
         if frame is not None:
             await self.send(
                 "browser.frame",
                 {"screenshot_base64": frame["base64"], "screenshot_mime": frame["mime"]},
                 conversation_id,
             )
+        if outcome.get("select_options"):
+            await self.send("browser.select", {"options": outcome["select_options"]}, conversation_id)
 
     async def _resume_browser_login(
         self,

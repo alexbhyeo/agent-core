@@ -253,9 +253,14 @@ class TestPerformBrowserInput:
         finally:
             bat._browser_runtime = previous
 
-        assert result == frame
+        assert result["frame"] == frame
         script = evaluate.invoke.call_args.args[0]["function"]
         assert '"4111 1111"' in script
+
+    def test_select_options_are_parsed_from_the_marker(self):
+        text = '### Result\n"__BRIDGE_SELECT__Gender␞Male␞Female"\n### Ran'
+        assert bat._select_options_from_result(text) == ["Gender", "Male", "Female"]
+        assert bat._select_options_from_result("### Result\n\"clicked\"") is None
 
     @pytest.mark.asyncio
     async def test_tap_coordinates_are_clamped_to_the_viewport(self):
@@ -283,6 +288,33 @@ class TestPerformBrowserInput:
             assert await bat.perform_browser_input({"kind": "tap", "x": 0.5, "y": 0.5}) is None
         finally:
             bat._browser_runtime = previous
+
+
+class TestBrowserCheckoutStopRail:
+    """Page actions are refused once the browser reaches the passenger-details
+    / payment step, and allowed everywhere before it."""
+
+    @pytest.mark.asyncio
+    async def test_rejects_actions_on_passenger_details_page(self):
+        bat._browser_runtime = SimpleNamespace(
+            export_page_state=lambda: {"url": "https://www.easybook.com/bus/passengerdetails"}
+        )
+        try:
+            decision = await bat.BrowserCheckoutStopRail().resolve_interrupt(None, None, None)
+        finally:
+            bat._browser_runtime = None
+        assert "STOP" in str(decision.tool_result)
+
+    @pytest.mark.asyncio
+    async def test_allows_actions_before_checkout(self):
+        bat._browser_runtime = SimpleNamespace(
+            export_page_state=lambda: {"url": "https://www.easybook.com/en-sg/bus/booking/singapore-to-malacca"}
+        )
+        try:
+            decision = await bat.BrowserCheckoutStopRail().resolve_interrupt(None, None, None)
+        finally:
+            bat._browser_runtime = None
+        assert type(decision).__name__ == "ApproveResult"
 
 
 class TestEasybookAutoCredentials:
