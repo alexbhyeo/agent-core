@@ -1446,6 +1446,7 @@ class BrowserAgentTool(Tool):
 
         if pending_interrupt is not None:
             inner_id, request = pending_interrupt
+            logger.info(f"[browser-pause] request={type(request).__name__}")
             conversation_id = expected_conversation_id
             if not conversation_id and outer_session is not None:
                 get_session_id = getattr(outer_session, "get_session_id", None)
