@@ -780,10 +780,17 @@ _SELECT_OPTIONS_MARKER = "__BRIDGE_SELECT__"
 
 
 def _select_options_from_result(result_text: str) -> Optional[List[str]]:
-    index = result_text.find(_SELECT_OPTIONS_MARKER)
+    """Option labels from the script's own return value. The MCP output also
+    echoes the script source in a later section, which contains the marker
+    too, so only the "### Result" section is read."""
+    start = result_text.find("### Result")
+    if start == -1:
+        return None
+    section = result_text[start + len("### Result") :].split("\n### ", 1)[0]
+    index = section.find(_SELECT_OPTIONS_MARKER)
     if index == -1:
         return None
-    raw = result_text[index + len(_SELECT_OPTIONS_MARKER) :].split("\n", 1)[0].rstrip('"` ')
+    raw = section[index + len(_SELECT_OPTIONS_MARKER) :].split("\n", 1)[0].rstrip('"` ')
     return [label for label in raw.split("␞") if label]
 
 

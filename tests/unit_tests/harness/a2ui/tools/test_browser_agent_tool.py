@@ -257,6 +257,13 @@ class TestPerformBrowserInput:
         script = evaluate.invoke.call_args.args[0]["function"]
         assert '"4111 1111"' in script
 
+    def test_marker_only_in_echoed_code_is_ignored(self):
+        text = (
+            '### Result\n"clicked"\n### Ran Playwright code\n```js\n'
+            "return '__BRIDGE_SELECT__' + Array.from(select.options)\n```"
+        )
+        assert bat._select_options_from_result(text) is None
+
     def test_select_options_are_parsed_from_the_marker(self):
         text = '### Result\n"__BRIDGE_SELECT__Gender␞Male␞Female"\n### Ran'
         assert bat._select_options_from_result(text) == ["Gender", "Male", "Female"]
