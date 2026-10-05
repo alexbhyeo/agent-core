@@ -40,6 +40,7 @@ from collections.abc import Awaitable, Callable
 from typing import Any, Dict, List, Optional
 
 from openjiuwen.core.common.constants.constant import INTERACTION
+from openjiuwen.core.common.logging import logger
 from openjiuwen.core.foundation.llm import ModelClientConfig, ModelRequestConfig
 from openjiuwen.core.foundation.llm.schema.tool_call import ToolCall
 from openjiuwen.core.foundation.tool import Tool, ToolCard, ToolOutput, tool
@@ -224,7 +225,26 @@ _EASYBOOK_URL_MARKER = "easybook.com"
 _EASYBOOK_USERNAME_FIELD_TOKENS = ("email", "user", "mobile", "phone", "login", "account")
 
 
-def _easybook_auto_credentials(fields: List[str]) -> Optional[Dict[str, str]]:
+async def _current_page_url() -> str:
+    """The live page URL. The cached page state is the fast path; it can be
+    empty at a login wall, so fall back to asking the page itself."""
+    runtime = _browser_runtime
+    if runtime is None:
+        return ""
+    cached = str(runtime.export_page_state().get("url") or "")
+    if cached:
+        return cached
+    try:
+        evaluate = await runtime._get_playwright_mcp_tool("browser_evaluate")
+        result = await evaluate.invoke({"function": "() => location.href"})
+    except Exception:  # noqa: BLE001 -- a missing URL just means no auto-login
+        return ""
+    text = str(result.get("result", "")) if isinstance(result, dict) else ""
+    match = re.search(r"https?://[^\s\"'`]+", text)
+    return match.group(0) if match else ""
+
+
+def _easybook_auto_credentials(fields: List[str], current_url: str) -> Optional[Dict[str, str]]:
     """The standing easybook.com login, if configured and actually on that
     site right now -- scoped strictly by the live page URL so these
     credentials are never typed into some other site's login form the
@@ -241,11 +261,7 @@ def _easybook_auto_credentials(fields: List[str]) -> Optional[Dict[str, str]]:
     password = str(app_config.get("EASYBOOK_PASSWORD") or "").strip()
     if not username or not password:
         return None
-    runtime = _browser_runtime
-    if runtime is None:
-        return None
-    current_url = str(runtime.export_page_state().get("url") or "").lower()
-    if _EASYBOOK_URL_MARKER not in current_url:
+    if _EASYBOOK_URL_MARKER not in current_url.lower():
         return None
     mapped: Dict[str, str] = {}
     for field in fields:
@@ -293,11 +309,14 @@ class BrowserCredentialInterruptRail(BaseInterruptRail):
         raw_fields = args.get("fields")
         fields = [str(f) for f in raw_fields] if isinstance(raw_fields, list) else []
         fields = fields or ["Username", "Password"]
-        auto_credentials = _easybook_auto_credentials(fields)
+        current_url = await _current_page_url()
+        auto_credentials = _easybook_auto_credentials(fields, current_url)
+        logger.info(
+            f"[browser-login] url={current_url!r} fields={fields} "
+            f"account_configured={bool(app_config.get('EASYBOOK_USERNAME'))} "
+            f"auto_login={auto_credentials is not None}"
+        )
         if auto_credentials is not None:
-            browser_agent_log_info(
-                "[BROWSER_SUBAGENT] auto-logging into easybook.com with the standing account on file"
-            )
             summary = ", ".join(f"{key}={value!r}" for key, value in auto_credentials.items())
             return self.reject(tool_result=f"A standing account for this site is on file: {summary}. Use these to log in now.")
         return self.interrupt(
