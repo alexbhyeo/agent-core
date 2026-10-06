@@ -1476,20 +1476,26 @@ class BrowserAgentTool(Tool):
 
         if pending_interrupt is not None:
             inner_id, request = pending_interrupt
-            logger.info(f"[browser-pause] request={type(request).__name__}")
-            conversation_id = expected_conversation_id
-            if not conversation_id and outer_session is not None:
-                get_session_id = getattr(outer_session, "get_session_id", None)
-                if callable(get_session_id):
-                    conversation_id = str(get_session_id() or "")
-            if isinstance(request, BrowserOptionSelectionRequest):
+            # The framework wraps each pause in ToolCallInterruptRequest, so the
+            # original request type is gone; the wrapper keeps the tool name and
+            # the request's own fields, which is what tells the two pauses apart.
+            tool_name = str(getattr(request, "tool_name", "") or "")
+            logger.info(f"[browser-pause] tool={tool_name or type(request).__name__}")
+            if isinstance(request, BrowserOptionSelectionRequest) or tool_name == "request_option_selection":
                 return _build_option_selection_output(inner_session_id, inner_id, request)
-            return _build_credential_request_output(
-                inner_session_id,
-                inner_id,
-                request,
-                conversation_id=conversation_id,
-            )
+            if isinstance(request, BrowserCredentialRequest) or tool_name == "request_login_credentials":
+                conversation_id = expected_conversation_id
+                if not conversation_id and outer_session is not None:
+                    get_session_id = getattr(outer_session, "get_session_id", None)
+                    if callable(get_session_id):
+                        conversation_id = str(get_session_id() or "")
+                return _build_credential_request_output(
+                    inner_session_id,
+                    inner_id,
+                    request,
+                    conversation_id=conversation_id,
+                )
+            return ToolOutput(success=False, error="The browser paused for a step this tool can't resume.")
 
         if not final_text:
             final_text = "The browser agent finished without a final summary."
