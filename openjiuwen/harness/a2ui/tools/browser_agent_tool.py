@@ -39,6 +39,7 @@ import uuid
 import weakref
 from collections.abc import Awaitable, Callable
 from typing import Any, Dict, List, Optional
+from urllib.parse import urlsplit
 
 from openjiuwen.core.common.constants.constant import INTERACTION
 from openjiuwen.core.common.logging import logger
@@ -865,10 +866,18 @@ _CHOOSE_OPTION_JS = """(index) => {
 _CLOUDFLARE_BOUND_COOKIES = frozenset({"cf_clearance", "__cf_bm"})
 
 
+def _cookie_belongs_to_host(cookie_domain: str, host: str) -> bool:
+    """True when a cookie's domain is the page's host or a parent of it, so
+    ``.redbus.sg`` covers ``www.redbus.sg`` but not ``evilredbus.sg``."""
+    domain = cookie_domain.lower().lstrip(".")
+    return bool(host) and bool(domain) and (host == domain or host.endswith("." + domain))
+
+
 async def _checkout_handoff(page: Any) -> Dict[str, Any]:
     """What the app needs to continue this checkout in its own web view: the
     current page, the mobile user agent it was rendered with, and the
     Easybook session cookies. Only cookies for the site are sent."""
+    host = (urlsplit(page.url).hostname or "").lower()
     cookies = [
         {
             "name": cookie["name"],
@@ -879,7 +888,7 @@ async def _checkout_handoff(page: Any) -> Dict[str, Any]:
             "expires": cookie.get("expires", -1),
         }
         for cookie in await page.context.cookies()
-        if "easybook.com" in str(cookie.get("domain") or "")
+        if _cookie_belongs_to_host(str(cookie.get("domain") or ""), host)
         # Cloudflare clearance is bound to the IP and browser that solved the
         # challenge, so it loops on another device's network. Not handed over.
         and cookie["name"] not in _CLOUDFLARE_BOUND_COOKIES
