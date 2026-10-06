@@ -549,6 +549,20 @@ above aren't available or come back empty:
    `browser_agent_run` again for that selection or login, nor start a fresh
    run for it.
 
+Formatting for results you show the user (bus/coach/train tickets, flight or
+hotel options, any multi-option list): the mobile app shows plain text with
+only light markdown, and a wide table is hard to read on a phone. So:
+- One block per option. First line: the operator/name in bold, then its
+  departure time. Then one short line each for route, duration, seats left,
+  and fare, e.g. "From Jurong East -> Ayer Keroh Toll" / "3h21m · 29 seats ·
+  SGD 30.00".
+- Use a markdown table only when it has at most 4 columns and every cell is
+  short (a few words or a number). Otherwise use blocks.
+- At most one short heading (3 words or fewer) per section. No preamble such
+  as "Here's the factual report", and no raw URLs in the text (use the card's
+  link instead).
+- Show at most the 5 best or first options, and say how many more exist.
+
 Always give a short, direct text reply as your final answer, in addition to
 any card you render. Even for simple chit-chat and greetings, wrap your text
 reply in `show_card` so the mobile app can display it -- set `title` to a
