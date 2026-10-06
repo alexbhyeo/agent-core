@@ -1425,7 +1425,7 @@ class BrowserAgentTool(Tool):
         final_text = ""
         pending_interrupt: Optional[tuple[str, Any]] = None
         if pending is not None:
-            agent.configure_max_iterations(_MAX_INNER_ITERATIONS + _RESUME_EXTRA_ITERATIONS)
+            agent.config.configure_max_iterations(_MAX_INNER_ITERATIONS + _RESUME_EXTRA_ITERATIONS)
         try:
             async for chunk in Runner.run_agent_streaming(agent, run_input, session=inner_session_id):
                 chunk_type = getattr(chunk, "type", None)
@@ -1476,7 +1476,7 @@ class BrowserAgentTool(Tool):
             await _emit({"status": "error", "tool": "", "text": f"Browser agent run failed: {exc}"})
             return ToolOutput(success=False, error=f"Browser agent run failed: {exc}")
         finally:
-            agent.configure_max_iterations(_MAX_INNER_ITERATIONS)
+            agent.config.configure_max_iterations(_MAX_INNER_ITERATIONS)
 
         if pending is not None:
             # Harmless no-op for a selection token: it was already popped

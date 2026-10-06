@@ -260,7 +260,7 @@ class TestResumeIterationBudget:
         ):
             await BrowserAgentTool().invoke({"resume_token": "budget-tok", "credentials": {"selected_label": "x"}})
 
-        calls = [call.args[0] for call in agent.configure_max_iterations.call_args_list]
+        calls = [call.args[0] for call in agent.config.configure_max_iterations.call_args_list]
         assert calls == [bat._MAX_INNER_ITERATIONS + bat._RESUME_EXTRA_ITERATIONS, bat._MAX_INNER_ITERATIONS]
 
 
