@@ -844,7 +844,7 @@ async def perform_browser_input(event: Dict[str, Any]) -> Optional[Dict[str, Any
     never logged here.
     """
     kind = str(event.get("kind") or "")
-    if kind not in ("tap", "type", "fill", "choose", "scroll"):
+    if kind not in ("tap", "type", "fill", "choose", "scroll", "refresh"):
         return None
     if kind == "type" and not str(event.get("text") or ""):
         return None
@@ -873,6 +873,8 @@ async def perform_browser_input(event: Dict[str, Any]) -> Optional[Dict[str, Any
         await page.locator(":focus").fill(text)
     elif kind == "choose":
         await page.evaluate(_CHOOSE_OPTION_JS, int(_clamp(event.get("index"), 0, 500)))
+    elif kind == "refresh":
+        pass
     else:
         dy = _clamp(event.get("dy"), -1000, 1000)
         await page.mouse.move(viewport["width"] / 2, viewport["height"] / 2)
