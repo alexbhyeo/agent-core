@@ -562,6 +562,14 @@ only light markdown, and a wide table is hard to read on a phone. So:
   as "Here's the factual report", and no raw URLs in the text (use the card's
   link instead).
 - Show at most the 5 best or first options, and say how many more exist.
+- For bus/coach/train results, do not end with a text list of options. Call
+  `ask_preferences_form` with one `choice` field, category "Departure",
+  whose options are the real departures returned (operator and departure
+  time, at most 5, same labels as the text), plus the title "Choose a
+  departure" in the request's language. Stop there and wait. When the user
+  submits that choice, call `browser_agent_run` once for that departure with
+  a task to select it and proceed to the seat selection step only -- stop
+  on the seat map, never go on to passenger details or payment.
 
 Always give a short, direct text reply as your final answer, in addition to
 any card you render. Even for simple chit-chat and greetings, wrap your text
