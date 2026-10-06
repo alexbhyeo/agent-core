@@ -235,10 +235,16 @@ class TestBrowserAgentToolInterrupt:
         assert "task" in result.error
 
 
-def _fake_page(select_options=None):
+def _fake_page(select_options=None, pay_now_at_point=False):
     page = MagicMock()
     page.viewport_size = {"width": 360, "height": 640}
-    page.evaluate = AsyncMock(return_value=select_options)
+
+    async def evaluate(script, *args):
+        if script == bat._PAY_NOW_AT_POINT_JS:
+            return pay_now_at_point
+        return select_options
+
+    page.evaluate = AsyncMock(side_effect=evaluate)
     page.keyboard = MagicMock(type=AsyncMock())
     page.mouse = MagicMock(click=AsyncMock(), move=AsyncMock(), wheel=AsyncMock())
     page.screenshot = AsyncMock(return_value=b"JPEGBYTES")
@@ -293,6 +299,23 @@ class TestPerformBrowserInput:
 
         assert result["select_options"] == ["Gender", "Male", "Female"]
         page.mouse.click.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_tap_on_pay_now_hands_the_session_off_instead_of_clicking(self):
+        page = _fake_page(pay_now_at_point=True)
+        page.url = "https://www.easybook.com/en-sg/bus/passengerdetails"
+        page.context = MagicMock()
+        page.context.cookies = AsyncMock(return_value=[
+            {"name": "sid", "value": "abc", "domain": ".easybook.com", "path": "/", "secure": True, "expires": -1},
+            {"name": "ad", "value": "x", "domain": ".example.org", "path": "/", "expires": -1},
+        ])
+        with patch.object(bat, "_direct_page", AsyncMock(return_value=page)):
+            result = await bat.perform_browser_input({"kind": "tap", "x": 0.5, "y": 0.5})
+
+        page.mouse.click.assert_not_awaited()
+        assert result["checkout"]["url"] == "https://www.easybook.com/en-sg/bus/passengerdetails"
+        assert result["checkout"]["user_agent"] == bat._MOBILE_USER_AGENT
+        assert [c["name"] for c in result["checkout"]["cookies"]] == ["sid"]
 
     @pytest.mark.asyncio
     async def test_scroll_wheels_at_the_centre_of_the_viewport(self):

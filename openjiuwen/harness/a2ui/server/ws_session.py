@@ -191,6 +191,9 @@ class ConnectionSession:
             return
         if outcome is None:
             return
+        if outcome.get("checkout") is not None:
+            await self.send("browser.checkout", outcome["checkout"], conversation_id)
+            return
         frame = outcome.get("frame")
         if frame is not None:
             await self.send(

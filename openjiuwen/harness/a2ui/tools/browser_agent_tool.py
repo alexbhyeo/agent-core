@@ -828,6 +828,14 @@ async def _direct_page() -> Any:
         return page
 
 
+_PAY_NOW_AT_POINT_JS = """([x, y]) => {
+    const el = document.elementFromPoint(x, y);
+    const control = el ? el.closest('button, a, input[type=submit], input[type=button], [role=button]') : null;
+    if (!control) return false;
+    const label = (control.innerText || control.value || control.textContent || '').trim();
+    return /pay\\s*now/i.test(label);
+}"""
+
 _SELECT_AT_POINT_JS = """([x, y]) => {
     const el = document.elementFromPoint(x, y);
     const select = el ? el.closest('select') : null;
@@ -854,6 +862,25 @@ _CHOOSE_OPTION_JS = """(index) => {
 }"""
 
 
+async def _checkout_handoff(page: Any) -> Dict[str, Any]:
+    """What the app needs to continue this checkout in its own web view: the
+    current page, the mobile user agent it was rendered with, and the
+    Easybook session cookies. Only cookies for the site are sent."""
+    cookies = [
+        {
+            "name": cookie["name"],
+            "value": cookie["value"],
+            "domain": cookie["domain"],
+            "path": cookie.get("path") or "/",
+            "secure": bool(cookie.get("secure")),
+            "expires": cookie.get("expires", -1),
+        }
+        for cookie in await page.context.cookies()
+        if "easybook.com" in str(cookie.get("domain") or "")
+    ]
+    return {"url": page.url, "user_agent": _MOBILE_USER_AGENT, "cookies": cookies}
+
+
 async def perform_browser_input(event: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     """Relay one user interaction with the live browser view straight to the
     page -- deliberately not through the LLM, so typed values (including
@@ -878,6 +905,12 @@ async def perform_browser_input(event: Dict[str, Any]) -> Optional[Dict[str, Any
     if kind == "tap":
         x = _clamp(event.get("x"), 0.0, 1.0) * viewport["width"]
         y = _clamp(event.get("y"), 0.0, 1.0) * viewport["height"]
+        if await page.evaluate(_PAY_NOW_AT_POINT_JS, [x, y]):
+            # Pay Now is not clicked here. The app takes over with the live
+            # session, so the payment step happens in its own web view.
+            checkout = await _checkout_handoff(page)
+            logger.info(f"[browser-checkout] url={checkout['url']} cookies={len(checkout['cookies'])}")
+            return {"checkout": checkout, "frame": None, "select_options": None, "field": None}
         select_options = await page.evaluate(_SELECT_AT_POINT_JS, [x, y])
         if not select_options:
             select_options = None
