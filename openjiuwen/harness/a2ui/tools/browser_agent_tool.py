@@ -593,7 +593,7 @@ def _force_headless_mcp_env() -> None:
     already set PLAYWRIGHT_MCP_ARGS explicitly."""
     os.environ.setdefault(
         "PLAYWRIGHT_MCP_ARGS",
-        f"-y @playwright/mcp@0.0.78 --cdp-endpoint {_BROWSER_CDP_ENDPOINT} --viewport-size 360x640",
+        f"-y @playwright/mcp@0.0.78 --cdp-endpoint {_BROWSER_CDP_ENDPOINT} --viewport-size 360x720",
     )
 
 
@@ -802,7 +802,7 @@ async def _apply_mobile_emulation(context: Any, page: Any) -> None:
     await cdp.send("Network.setUserAgentOverride", {"userAgent": _MOBILE_USER_AGENT, "platform": "Android"})
     await cdp.send(
         "Emulation.setDeviceMetricsOverride",
-        {"width": 360, "height": 640, "deviceScaleFactor": 2, "mobile": True},
+        {"width": 360, "height": 720, "deviceScaleFactor": 2, "mobile": True},
     )
     await cdp.send("Emulation.setTouchEmulationEnabled", {"enabled": True, "maxTouchPoints": 5})
 
@@ -823,7 +823,7 @@ async def _direct_page() -> Any:
         open_pages = [page for page in context.pages if not page.is_closed()]
         page = open_pages[-1] if open_pages else await context.new_page()
         if page not in _direct_sized_pages:
-            await page.set_viewport_size({"width": 360, "height": 640})
+            await page.set_viewport_size({"width": 360, "height": 720})
             await _apply_mobile_emulation(context, page)
             _direct_sized_pages.add(page)
         return page
@@ -913,7 +913,7 @@ async def perform_browser_input(event: Dict[str, Any]) -> Optional[Dict[str, Any
     if kind == "fill" and not isinstance(event.get("text"), str):
         return None
     page = await _direct_page()
-    viewport = page.viewport_size or {"width": 360, "height": 640}
+    viewport = page.viewport_size or {"width": 360, "height": 720}
     started = time.monotonic()
     select_options: Optional[List[str]] = None
     field: Optional[Dict[str, Any]] = None
