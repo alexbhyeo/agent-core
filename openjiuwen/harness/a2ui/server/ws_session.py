@@ -200,6 +200,8 @@ class ConnectionSession:
             )
         if outcome.get("select_options"):
             await self.send("browser.select", {"options": outcome["select_options"]}, conversation_id)
+        if "field" in outcome:
+            await self.send("browser.field", {"field": outcome["field"]}, conversation_id)
 
     async def _resume_browser_login(
         self,

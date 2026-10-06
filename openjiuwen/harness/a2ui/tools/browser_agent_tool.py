@@ -816,6 +816,14 @@ _SELECT_AT_POINT_JS = """([x, y]) => {
     return Array.from(select.options).map(o => o.text.trim()).filter(t => t.length > 0);
 }"""
 
+_FOCUSED_FIELD_JS = """() => {
+    const f = document.activeElement;
+    if (!f || !['INPUT', 'TEXTAREA'].includes(f.tagName)) return null;
+    const r = f.getBoundingClientRect();
+    const vw = window.innerWidth, vh = window.innerHeight;
+    return {x: r.left / vw, y: r.top / vh, w: r.width / vw, h: r.height / vh, value: f.value || ''};
+}"""
+
 _CHOOSE_OPTION_JS = """(index) => {
     const select = window.__bridgeSelect;
     if (!select) return false;
@@ -836,14 +844,17 @@ async def perform_browser_input(event: Dict[str, Any]) -> Optional[Dict[str, Any
     never logged here.
     """
     kind = str(event.get("kind") or "")
-    if kind not in ("tap", "type", "choose", "scroll"):
+    if kind not in ("tap", "type", "fill", "choose", "scroll"):
         return None
     if kind == "type" and not str(event.get("text") or ""):
+        return None
+    if kind == "fill" and not isinstance(event.get("text"), str):
         return None
     page = await _direct_page()
     viewport = page.viewport_size or {"width": 360, "height": 640}
     started = time.monotonic()
     select_options: Optional[List[str]] = None
+    field: Optional[Dict[str, Any]] = None
     if kind == "tap":
         x = _clamp(event.get("x"), 0.0, 1.0) * viewport["width"]
         y = _clamp(event.get("y"), 0.0, 1.0) * viewport["height"]
@@ -851,9 +862,15 @@ async def perform_browser_input(event: Dict[str, Any]) -> Optional[Dict[str, Any
         if not select_options:
             select_options = None
             await page.mouse.click(x, y)
+            field = await page.evaluate(_FOCUSED_FIELD_JS)
     elif kind == "type":
         text = str(event.get("text") or "")[:_TYPED_TEXT_MAX_CHARS]
         await page.keyboard.type(text)
+    elif kind == "fill":
+        # Replaces the focused field's whole value, so clearing the input
+        # clears the field too. Values are never logged.
+        text = str(event.get("text") or "")[:_TYPED_TEXT_MAX_CHARS]
+        await page.locator(":focus").fill(text)
     elif kind == "choose":
         await page.evaluate(_CHOOSE_OPTION_JS, int(_clamp(event.get("index"), 0, 500)))
     else:
@@ -868,7 +885,7 @@ async def perform_browser_input(event: Dict[str, Any]) -> Optional[Dict[str, Any
         f"screenshot_ms={(finished - acted) * 1000:.0f}"
     )
     frame = {"mime": "image/jpeg", "base64": base64.b64encode(shot).decode("ascii")}
-    return {"frame": frame, "select_options": select_options}
+    return {"frame": frame, "select_options": select_options, "field": field}
 
 
 async def _checkout_reached() -> bool:
