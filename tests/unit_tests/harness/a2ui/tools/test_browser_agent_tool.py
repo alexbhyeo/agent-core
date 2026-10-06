@@ -235,92 +235,76 @@ class TestBrowserAgentToolInterrupt:
         assert "task" in result.error
 
 
+def _fake_page(select_options=None):
+    page = MagicMock()
+    page.viewport_size = {"width": 360, "height": 640}
+    page.evaluate = AsyncMock(return_value=select_options)
+    page.keyboard = MagicMock(type=AsyncMock())
+    page.mouse = MagicMock(click=AsyncMock(), move=AsyncMock(), wheel=AsyncMock())
+    page.screenshot = AsyncMock(return_value=b"JPEGBYTES")
+    return page
+
+
 class TestPerformBrowserInput:
     """perform_browser_input relays user taps/typing straight to the page."""
 
     @pytest.mark.asyncio
-    async def test_type_sends_text_to_page_and_returns_frame(self):
-        evaluate = MagicMock()
-        evaluate.invoke = AsyncMock(return_value={"result": "typed"})
-        runtime = MagicMock()
-        runtime._get_playwright_mcp_tool = AsyncMock(return_value=evaluate)
-        frame = {"mime": "image/jpeg", "base64": "QUJD"}
-        previous = bat._browser_runtime
-        bat._browser_runtime = runtime
-        try:
-            with patch.object(bat, "_capture_screenshot", AsyncMock(return_value=frame)):
-                result = await bat.perform_browser_input({"kind": "type", "text": "4111 1111"})
-        finally:
-            bat._browser_runtime = previous
+    async def test_type_sends_text_to_the_focused_field_and_returns_frame(self):
+        page = _fake_page()
+        with patch.object(bat, "_direct_page", AsyncMock(return_value=page)):
+            result = await bat.perform_browser_input({"kind": "type", "text": "4111 1111"})
 
-        assert result["frame"] == frame
-        script = evaluate.invoke.call_args.args[0]["function"]
-        assert '"4111 1111"' in script
-
-    def test_marker_only_in_echoed_code_is_ignored(self):
-        text = (
-            '### Result\n"clicked"\n### Ran Playwright code\n```js\n'
-            "return '__BRIDGE_SELECT__' + Array.from(select.options)\n```"
-        )
-        assert bat._select_options_from_result(text) is None
-
-    def test_select_options_are_parsed_from_the_marker(self):
-        text = '### Result\n"__BRIDGE_SELECT__Gender␞Male␞Female"\n### Ran'
-        assert bat._select_options_from_result(text) == ["Gender", "Male", "Female"]
-        assert bat._select_options_from_result("### Result\n\"clicked\"") is None
+        page.keyboard.type.assert_awaited_once_with("4111 1111")
+        assert result["frame"]["base64"] == "SlBFR0JZVEVT"
+        assert result["select_options"] is None
 
     @pytest.mark.asyncio
-    async def test_tap_coordinates_are_clamped_to_the_viewport(self):
-        evaluate = MagicMock()
-        evaluate.invoke = AsyncMock(return_value={"result": "clicked"})
-        runtime = MagicMock()
-        runtime._get_playwright_mcp_tool = AsyncMock(return_value=evaluate)
-        previous = bat._browser_runtime
-        bat._browser_runtime = runtime
-        try:
-            with patch.object(bat, "_capture_screenshot", AsyncMock(return_value=None)):
-                await bat.perform_browser_input({"kind": "tap", "x": 5, "y": -2})
-        finally:
-            bat._browser_runtime = previous
+    async def test_tap_clicks_at_the_scaled_viewport_point(self):
+        page = _fake_page()
+        with patch.object(bat, "_direct_page", AsyncMock(return_value=page)):
+            await bat.perform_browser_input({"kind": "tap", "x": 0.5, "y": 0.25})
 
-        script = evaluate.invoke.call_args.args[0]["function"]
-        assert "1.0 * window.innerWidth" in script
-        assert "0.0 * window.innerHeight" in script
+        page.mouse.click.assert_awaited_once_with(180.0, 160.0)
 
     @pytest.mark.asyncio
-    async def test_no_runtime_is_a_noop(self):
-        previous = bat._browser_runtime
-        bat._browser_runtime = None
-        try:
-            assert await bat.perform_browser_input({"kind": "tap", "x": 0.5, "y": 0.5}) is None
-        finally:
-            bat._browser_runtime = previous
+    async def test_tap_on_a_dropdown_returns_its_options_instead_of_clicking(self):
+        page = _fake_page(select_options=["Gender", "Male", "Female"])
+        with patch.object(bat, "_direct_page", AsyncMock(return_value=page)):
+            result = await bat.perform_browser_input({"kind": "tap", "x": 0.5, "y": 0.5})
+
+        assert result["select_options"] == ["Gender", "Male", "Female"]
+        page.mouse.click.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_scroll_wheels_at_the_centre_of_the_viewport(self):
+        page = _fake_page()
+        with patch.object(bat, "_direct_page", AsyncMock(return_value=page)):
+            await bat.perform_browser_input({"kind": "scroll", "dy": 120})
+
+        page.mouse.move.assert_awaited_once_with(180.0, 320.0)
+        page.mouse.wheel.assert_awaited_once_with(0, 120.0)
+
+    @pytest.mark.asyncio
+    async def test_unreachable_browser_raises_for_the_caller_to_report(self):
+        with patch.object(bat, "_direct_page", AsyncMock(side_effect=RuntimeError("no browser"))):
+            with pytest.raises(RuntimeError):
+                await bat.perform_browser_input({"kind": "tap", "x": 0.5, "y": 0.5})
 
 
 class TestBrowserCheckoutStopRail:
-    """Page actions are refused once the browser reaches the passenger-details
-    / payment step, and allowed everywhere before it."""
+    """Page actions are refused once the page shows passenger details or
+    payment, and allowed everywhere before it."""
 
     @pytest.mark.asyncio
-    async def test_rejects_actions_on_passenger_details_page(self):
-        bat._browser_runtime = SimpleNamespace(
-            export_page_state=lambda: {"url": "https://www.easybook.com/bus/passengerdetails"}
-        )
-        try:
+    async def test_rejects_actions_once_checkout_is_reached(self):
+        with patch.object(bat, "_checkout_reached", AsyncMock(return_value=True)):
             decision = await bat.BrowserCheckoutStopRail().resolve_interrupt(None, None, None)
-        finally:
-            bat._browser_runtime = None
         assert "STOP" in str(decision.tool_result)
 
     @pytest.mark.asyncio
     async def test_allows_actions_before_checkout(self):
-        bat._browser_runtime = SimpleNamespace(
-            export_page_state=lambda: {"url": "https://www.easybook.com/en-sg/bus/booking/singapore-to-malacca"}
-        )
-        try:
+        with patch.object(bat, "_checkout_reached", AsyncMock(return_value=False)):
             decision = await bat.BrowserCheckoutStopRail().resolve_interrupt(None, None, None)
-        finally:
-            bat._browser_runtime = None
         assert type(decision).__name__ == "ApproveResult"
 
 

@@ -36,6 +36,7 @@ import re
 import secrets
 import time
 import uuid
+import weakref
 from collections.abc import Awaitable, Callable
 from typing import Any, Dict, List, Optional
 
@@ -586,7 +587,7 @@ def _force_headless_mcp_env() -> None:
     already set PLAYWRIGHT_MCP_ARGS explicitly."""
     os.environ.setdefault(
         "PLAYWRIGHT_MCP_ARGS",
-        "-y @playwright/mcp@0.0.78 --headless --no-sandbox --viewport-size 360x640",
+        f"-y @playwright/mcp@0.0.78 --cdp-endpoint {_BROWSER_CDP_ENDPOINT} --viewport-size 360x640",
     )
 
 
@@ -766,6 +767,11 @@ async def _capture_screenshot(runtime: BrowserAgentRuntime) -> Optional[Dict[str
 
 _BROWSER_INPUT_LOCK = asyncio.Lock()
 _TYPED_TEXT_MAX_CHARS = 200
+_BROWSER_CDP_ENDPOINT = os.getenv("BROWSER_CDP_ENDPOINT", "http://127.0.0.1:9222")
+_CHECKOUT_TEXT_MARKERS = ("Ticket Collector Info", "Passenger Information", "Payment Info")
+_direct_playwright: Any = None
+_direct_browser: Any = None
+_direct_sized_pages: "weakref.WeakSet[Any]" = weakref.WeakSet()
 
 
 def _clamp(value: Any, low: float, high: float) -> float:
@@ -776,22 +782,43 @@ def _clamp(value: Any, low: float, high: float) -> float:
     return max(low, min(high, number))
 
 
-_SELECT_OPTIONS_MARKER = "__BRIDGE_SELECT__"
+async def _direct_page() -> Any:
+    """The live page, driven directly over the shared Chrome's DevTools
+    endpoint -- not through the browser tool's MCP round-trip, which costs
+    about a second per call. The MCP tool attaches to the same Chrome."""
+    global _direct_playwright, _direct_browser
+    async with _BROWSER_INPUT_LOCK:
+        if _direct_browser is None or not _direct_browser.is_connected():
+            if _direct_playwright is None:
+                from playwright.async_api import async_playwright
+
+                _direct_playwright = await async_playwright().start()
+            _direct_browser = await _direct_playwright.chromium.connect_over_cdp(_BROWSER_CDP_ENDPOINT)
+        context = _direct_browser.contexts[0]
+        open_pages = [page for page in context.pages if not page.is_closed()]
+        page = open_pages[-1] if open_pages else await context.new_page()
+        if page not in _direct_sized_pages:
+            await page.set_viewport_size({"width": 360, "height": 640})
+            _direct_sized_pages.add(page)
+        return page
 
 
-def _select_options_from_result(result_text: str) -> Optional[List[str]]:
-    """Option labels from the script's own return value. The MCP output also
-    echoes the script source in a later section, which contains the marker
-    too, so only the "### Result" section is read."""
-    start = result_text.find("### Result")
-    if start == -1:
-        return None
-    section = result_text[start + len("### Result") :].split("\n### ", 1)[0]
-    index = section.find(_SELECT_OPTIONS_MARKER)
-    if index == -1:
-        return None
-    raw = section[index + len(_SELECT_OPTIONS_MARKER) :].split("\n", 1)[0].rstrip('"` ')
-    return [label for label in raw.split("␞") if label]
+_SELECT_AT_POINT_JS = """([x, y]) => {
+    const el = document.elementFromPoint(x, y);
+    const select = el ? el.closest('select') : null;
+    if (!select) return null;
+    window.__bridgeSelect = select;
+    return Array.from(select.options).map(o => o.text.trim()).filter(t => t.length > 0);
+}"""
+
+_CHOOSE_OPTION_JS = """(index) => {
+    const select = window.__bridgeSelect;
+    if (!select) return false;
+    select.selectedIndex = index;
+    select.dispatchEvent(new Event('input', {bubbles: true}));
+    select.dispatchEvent(new Event('change', {bubbles: true}));
+    return true;
+}"""
 
 
 async def perform_browser_input(event: Dict[str, Any]) -> Optional[Dict[str, Any]]:
@@ -803,62 +830,55 @@ async def perform_browser_input(event: Dict[str, Any]) -> Optional[Dict[str, Any
     choices itself and sends one back as a `choose` action). Typed text is
     never logged here.
     """
-    runtime = _browser_runtime
-    if runtime is None:
-        return None
     kind = str(event.get("kind") or "")
+    if kind not in ("tap", "type", "choose", "scroll"):
+        return None
+    if kind == "type" and not str(event.get("text") or ""):
+        return None
+    page = await _direct_page()
+    viewport = page.viewport_size or {"width": 360, "height": 640}
+    started = time.monotonic()
+    select_options: Optional[List[str]] = None
     if kind == "tap":
-        x = _clamp(event.get("x"), 0.0, 1.0)
-        y = _clamp(event.get("y"), 0.0, 1.0)
-        script = (
-            "() => { const el = document.elementFromPoint("
-            f"{x} * window.innerWidth, {y} * window.innerHeight); if (!el) return 'none';"
-            " const select = el.closest('select');"
-            " if (select) { window.__bridgeSelect = select;"
-            f" return '{_SELECT_OPTIONS_MARKER}' + Array.from(select.options)"
-            " .map(o => o.text.trim()).join('\\u241e'); }"
-            " const field = el.closest('input,textarea');"
-            " if (field) { field.focus(); return 'focused'; }"
-            " (el.closest('a,button,[role=button],label,[onclick]') || el).click(); return 'clicked'; }"
-        )
+        x = _clamp(event.get("x"), 0.0, 1.0) * viewport["width"]
+        y = _clamp(event.get("y"), 0.0, 1.0) * viewport["height"]
+        select_options = await page.evaluate(_SELECT_AT_POINT_JS, [x, y])
+        if not select_options:
+            select_options = None
+            await page.mouse.click(x, y)
     elif kind == "type":
         text = str(event.get("text") or "")[:_TYPED_TEXT_MAX_CHARS]
-        if not text:
-            return None
-        script = (
-            "() => { const f = document.activeElement;"
-            " if (!f || (f.tagName !== 'INPUT' && f.tagName !== 'TEXTAREA')) return 'nofocus';"
-            " const proto = f.tagName === 'INPUT' ? HTMLInputElement.prototype : HTMLTextAreaElement.prototype;"
-            f" Object.getOwnPropertyDescriptor(proto, 'value').set.call(f, f.value + {json.dumps(text)});"
-            " f.dispatchEvent(new Event('input', {bubbles: true}));"
-            " f.dispatchEvent(new Event('change', {bubbles: true})); return 'typed'; }"
-        )
+        await page.keyboard.type(text)
     elif kind == "choose":
-        index = int(_clamp(event.get("index"), 0, 500))
-        script = (
-            "() => { const s = window.__bridgeSelect; if (!s) return 'none';"
-            f" s.selectedIndex = {index};"
-            " s.dispatchEvent(new Event('input', {bubbles: true}));"
-            " s.dispatchEvent(new Event('change', {bubbles: true})); return 'chosen'; }"
-        )
-    elif kind == "scroll":
-        dy = int(_clamp(event.get("dy"), -1000, 1000))
-        script = f"() => {{ window.scrollBy(0, {dy}); return 'scrolled'; }}"
+        await page.evaluate(_CHOOSE_OPTION_JS, int(_clamp(event.get("index"), 0, 500)))
     else:
-        return None
-    async with _BROWSER_INPUT_LOCK:
-        started = time.monotonic()
-        evaluate = await runtime._get_playwright_mcp_tool("browser_evaluate")
-        result = await evaluate.invoke({"function": script})
-        evaluated = time.monotonic()
-        result_text = str(result.get("result", "")) if isinstance(result, dict) else ""
-        frame = await _capture_screenshot(runtime)
-        finished = time.monotonic()
+        dy = _clamp(event.get("dy"), -1000, 1000)
+        await page.mouse.move(viewport["width"] / 2, viewport["height"] / 2)
+        await page.mouse.wheel(0, dy)
+    acted = time.monotonic()
+    shot = await page.screenshot(type="jpeg", quality=70)
+    finished = time.monotonic()
     logger.info(
-        f"[browser-input] kind={kind} evaluate_ms={(evaluated - started) * 1000:.0f} "
-        f"screenshot_ms={(finished - evaluated) * 1000:.0f}"
+        f"[browser-input] kind={kind} act_ms={(acted - started) * 1000:.0f} "
+        f"screenshot_ms={(finished - acted) * 1000:.0f}"
     )
-    return {"frame": frame, "select_options": _select_options_from_result(result_text)}
+    frame = {"mime": "image/jpeg", "base64": base64.b64encode(shot).decode("ascii")}
+    return {"frame": frame, "select_options": select_options}
+
+
+async def _checkout_reached() -> bool:
+    """True once the page shows passenger details or payment. Checked on the
+    page text, because the payment section lives on the same URL as seat
+    selection, so the URL alone doesn't tell the two apart."""
+    current_url = (await _current_page_url()).lower()
+    if any(marker in current_url for marker in _CHECKOUT_STOP_URL_MARKERS):
+        return True
+    try:
+        page = await _direct_page()
+        text = await page.evaluate("() => document.body ? document.body.innerText : ''")
+    except Exception:  # noqa: BLE001 -- an unreadable page isn't a checkout page
+        return False
+    return any(marker in text for marker in _CHECKOUT_TEXT_MARKERS)
 
 
 # The inner agent can reach for a raw JS escape hatch (`browser_evaluate` /
@@ -1117,11 +1137,7 @@ class BrowserCheckoutStopRail(BaseInterruptRail):
         auto_confirm_config: Optional[dict] = None,
     ) -> InterruptDecision:
         del ctx, tool_call, user_input, auto_confirm_config
-        runtime = _browser_runtime
-        current_url = ""
-        if runtime is not None:
-            current_url = str(runtime.export_page_state().get("url") or "").lower()
-        if not any(marker in current_url for marker in _CHECKOUT_STOP_URL_MARKERS):
+        if not await _checkout_reached():
             return self.approve()
         browser_agent_log_info("[BROWSER_SUBAGENT] reached the checkout stop point; rejecting further page actions")
         return self.reject(
