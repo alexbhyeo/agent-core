@@ -107,6 +107,11 @@ _INPUT_PARAMS = {
 # over to also pause for request_option_selection/request_login_credentials
 # once it got there, observed live against real sites.
 _MAX_INNER_ITERATIONS = 45
+# A paused run resumes its own iteration numbering, so resuming shares the
+# original cap. A pause always happens within the first _MAX_INNER_ITERATIONS
+# steps, so raising the cap by this much on resume leaves a full allowance for
+# the steps after the user's pick (seat selection, etc.).
+_RESUME_EXTRA_ITERATIONS = 45
 
 # TODO(frontend-secure-credentials): replace this hidden generic-A2UI context
 # value with a dedicated browser.credentials.submit message emitted by a
@@ -1419,6 +1424,8 @@ class BrowserAgentTool(Tool):
 
         final_text = ""
         pending_interrupt: Optional[tuple[str, Any]] = None
+        if pending is not None:
+            agent.configure_max_iterations(_MAX_INNER_ITERATIONS + _RESUME_EXTRA_ITERATIONS)
         try:
             async for chunk in Runner.run_agent_streaming(agent, run_input, session=inner_session_id):
                 chunk_type = getattr(chunk, "type", None)
@@ -1468,6 +1475,8 @@ class BrowserAgentTool(Tool):
                 pending["resuming"] = False
             await _emit({"status": "error", "tool": "", "text": f"Browser agent run failed: {exc}"})
             return ToolOutput(success=False, error=f"Browser agent run failed: {exc}")
+        finally:
+            agent.configure_max_iterations(_MAX_INNER_ITERATIONS)
 
         if pending is not None:
             # Harmless no-op for a selection token: it was already popped

@@ -70,7 +70,7 @@ class TestBrowserAgentToolInterrupt:
             )
 
         with (
-            patch.object(bat, "_get_browser_agent", AsyncMock(return_value=object())),
+            patch.object(bat, "_get_browser_agent", AsyncMock(return_value=MagicMock())),
             patch.object(bat.Runner, "run_agent_streaming", side_effect=fake_stream),
         ):
             tool = BrowserAgentTool()
@@ -116,7 +116,7 @@ class TestBrowserAgentToolInterrupt:
             yield _chunk("answer", {"output": "Logged in and found 3 orders."})
 
         with (
-            patch.object(bat, "_get_browser_agent", AsyncMock(return_value=object())),
+            patch.object(bat, "_get_browser_agent", AsyncMock(return_value=MagicMock())),
             patch.object(bat.Runner, "run_agent_streaming", side_effect=fake_stream),
         ):
             tool = BrowserAgentTool()
@@ -170,7 +170,7 @@ class TestBrowserAgentToolInterrupt:
             yield  # pragma: no cover
 
         with (
-            patch.object(bat, "_get_browser_agent", AsyncMock(return_value=object())),
+            patch.object(bat, "_get_browser_agent", AsyncMock(return_value=MagicMock())),
             patch.object(bat.Runner, "run_agent_streaming", side_effect=failing_stream),
         ):
             result = await BrowserAgentTool()._invoke_direct(
@@ -198,7 +198,7 @@ class TestBrowserAgentToolInterrupt:
             yield  # pragma: no cover
 
         get_agent = (
-            AsyncMock(side_effect=asyncio.CancelledError) if cancel_during_startup else AsyncMock(return_value=object())
+            AsyncMock(side_effect=asyncio.CancelledError) if cancel_during_startup else AsyncMock(return_value=MagicMock())
         )
         with (
             patch.object(bat, "_get_browser_agent", get_agent),
@@ -215,7 +215,7 @@ class TestBrowserAgentToolInterrupt:
     @pytest.mark.asyncio
     async def test_unknown_resume_token_errors_without_running(self):
         with (
-            patch.object(bat, "_get_browser_agent", AsyncMock(return_value=object())),
+            patch.object(bat, "_get_browser_agent", AsyncMock(return_value=MagicMock())),
             patch.object(bat.Runner, "run_agent_streaming") as mock_stream,
         ):
             tool = BrowserAgentTool()
@@ -227,7 +227,7 @@ class TestBrowserAgentToolInterrupt:
 
     @pytest.mark.asyncio
     async def test_missing_task_and_resume_token_errors(self):
-        with patch.object(bat, "_get_browser_agent", AsyncMock(return_value=object())):
+        with patch.object(bat, "_get_browser_agent", AsyncMock(return_value=MagicMock())):
             tool = BrowserAgentTool()
             result = await tool.invoke({})
 
@@ -243,6 +243,25 @@ def _fake_page(select_options=None):
     page.mouse = MagicMock(click=AsyncMock(), move=AsyncMock(), wheel=AsyncMock())
     page.screenshot = AsyncMock(return_value=b"JPEGBYTES")
     return page
+
+
+class TestResumeIterationBudget:
+    @pytest.mark.asyncio
+    async def test_resume_raises_the_cap_then_restores_it(self):
+        bat._PENDING_OPTION_SELECTION_REQUESTS["budget-tok"] = {"inner_session_id": "s", "inner_id": "tc"}
+        agent = MagicMock()
+
+        async def fake_stream(*args, **kwargs):
+            yield _chunk("answer", {"output": "done"})
+
+        with (
+            patch.object(bat, "_get_browser_agent", AsyncMock(return_value=agent)),
+            patch.object(bat.Runner, "run_agent_streaming", side_effect=fake_stream),
+        ):
+            await BrowserAgentTool().invoke({"resume_token": "budget-tok", "credentials": {"selected_label": "x"}})
+
+        calls = [call.args[0] for call in agent.configure_max_iterations.call_args_list]
+        assert calls == [bat._MAX_INNER_ITERATIONS + bat._RESUME_EXTRA_ITERATIONS, bat._MAX_INNER_ITERATIONS]
 
 
 class TestPerformBrowserInput:
@@ -375,7 +394,7 @@ class TestBrowserAgentToolOptionSelection:
             )
 
         with (
-            patch.object(bat, "_get_browser_agent", AsyncMock(return_value=object())),
+            patch.object(bat, "_get_browser_agent", AsyncMock(return_value=MagicMock())),
             patch.object(bat.Runner, "run_agent_streaming", side_effect=fake_stream),
         ):
             tool = BrowserAgentTool()
@@ -405,7 +424,7 @@ class TestBrowserAgentToolOptionSelection:
             yield _chunk("answer", {"output": "Selected 707 Inc and reached the checkout page."})
 
         with (
-            patch.object(bat, "_get_browser_agent", AsyncMock(return_value=object())),
+            patch.object(bat, "_get_browser_agent", AsyncMock(return_value=MagicMock())),
             patch.object(bat.Runner, "run_agent_streaming", side_effect=fake_stream),
         ):
             tool = BrowserAgentTool()
@@ -430,7 +449,7 @@ class TestBrowserAgentToolOptionSelection:
     @pytest.mark.asyncio
     async def test_unknown_selection_resume_token_errors_without_running(self):
         with (
-            patch.object(bat, "_get_browser_agent", AsyncMock(return_value=object())),
+            patch.object(bat, "_get_browser_agent", AsyncMock(return_value=MagicMock())),
             patch.object(bat.Runner, "run_agent_streaming") as mock_stream,
         ):
             tool = BrowserAgentTool()
