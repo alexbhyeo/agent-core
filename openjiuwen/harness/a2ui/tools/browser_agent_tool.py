@@ -787,6 +787,25 @@ def _clamp(value: Any, low: float, high: float) -> float:
     return max(low, min(high, number))
 
 
+_MOBILE_USER_AGENT = (
+    "Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 (KHTML, like Gecko) "
+    "Chrome/154.0.0.0 Mobile Safari/537.36"
+)
+
+
+async def _apply_mobile_emulation(context: Any, page: Any) -> None:
+    """Present the page as a phone: a mobile user agent, touch input and
+    mobile device metrics, so sites serve their mobile layout instead of the
+    desktop one squeezed into the 360 px view."""
+    cdp = await context.new_cdp_session(page)
+    await cdp.send("Network.setUserAgentOverride", {"userAgent": _MOBILE_USER_AGENT, "platform": "Android"})
+    await cdp.send(
+        "Emulation.setDeviceMetricsOverride",
+        {"width": 360, "height": 640, "deviceScaleFactor": 2, "mobile": True},
+    )
+    await cdp.send("Emulation.setTouchEmulationEnabled", {"enabled": True, "maxTouchPoints": 5})
+
+
 async def _direct_page() -> Any:
     """The live page, driven directly over the shared Chrome's DevTools
     endpoint -- not through the browser tool's MCP round-trip, which costs
@@ -804,6 +823,7 @@ async def _direct_page() -> Any:
         page = open_pages[-1] if open_pages else await context.new_page()
         if page not in _direct_sized_pages:
             await page.set_viewport_size({"width": 360, "height": 640})
+            await _apply_mobile_emulation(context, page)
             _direct_sized_pages.add(page)
         return page
 
