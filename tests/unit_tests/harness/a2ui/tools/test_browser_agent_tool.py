@@ -308,6 +308,7 @@ class TestPerformBrowserInput:
         page.context.cookies = AsyncMock(return_value=[
             {"name": "sid", "value": "abc", "domain": ".easybook.com", "path": "/", "secure": True, "expires": -1},
             {"name": "ad", "value": "x", "domain": ".example.org", "path": "/", "expires": -1},
+            {"name": "cf_clearance", "value": "y", "domain": ".easybook.com", "path": "/", "expires": -1},
         ])
         with patch.object(bat, "_direct_page", AsyncMock(return_value=page)):
             result = await bat.perform_browser_input({"kind": "tap", "x": 0.5, "y": 0.5})

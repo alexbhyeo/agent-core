@@ -862,6 +862,9 @@ _CHOOSE_OPTION_JS = """(index) => {
 }"""
 
 
+_CLOUDFLARE_BOUND_COOKIES = frozenset({"cf_clearance", "__cf_bm"})
+
+
 async def _checkout_handoff(page: Any) -> Dict[str, Any]:
     """What the app needs to continue this checkout in its own web view: the
     current page, the mobile user agent it was rendered with, and the
@@ -877,6 +880,9 @@ async def _checkout_handoff(page: Any) -> Dict[str, Any]:
         }
         for cookie in await page.context.cookies()
         if "easybook.com" in str(cookie.get("domain") or "")
+        # Cloudflare clearance is bound to the IP and browser that solved the
+        # challenge, so it loops on another device's network. Not handed over.
+        and cookie["name"] not in _CLOUDFLARE_BOUND_COOKIES
     ]
     return {"url": page.url, "user_agent": _MOBILE_USER_AGENT, "cookies": cookies}
 
