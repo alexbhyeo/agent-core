@@ -202,8 +202,6 @@ class ConnectionSession:
             await self.send("browser.select", {"options": outcome["select_options"]}, conversation_id)
         if payload.get("kind") == "tap":
             await self.send("browser.field", {"field": outcome.get("field")}, conversation_id)
-        if outcome.get("open_url"):
-            await self.send("browser.open_url", {"url": outcome["open_url"]}, conversation_id)
 
     async def _resume_browser_login(
         self,

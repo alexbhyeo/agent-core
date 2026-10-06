@@ -824,14 +824,6 @@ _FOCUSED_FIELD_JS = """() => {
     return {x: r.left / vw, y: r.top / vh, w: r.width / vw, h: r.height / vh, value: f.value || ''};
 }"""
 
-_PAY_NOW_AT_POINT_JS = """([x, y]) => {
-    const el = document.elementFromPoint(x, y);
-    const node = el ? el.closest('a,button,input[type=submit],input[type=button],[role=button],[onclick]') : null;
-    if (!node) return false;
-    const text = (node.innerText || node.value || '').trim();
-    return /pay\\s*now/i.test(text);
-}"""
-
 _CHOOSE_OPTION_JS = """(index) => {
     const select = window.__bridgeSelect;
     if (!select) return false;
@@ -866,17 +858,6 @@ async def perform_browser_input(event: Dict[str, Any]) -> Optional[Dict[str, Any
     if kind == "tap":
         x = _clamp(event.get("x"), 0.0, 1.0) * viewport["width"]
         y = _clamp(event.get("y"), 0.0, 1.0) * viewport["height"]
-        if await page.evaluate(_PAY_NOW_AT_POINT_JS, [x, y]):
-            # Payment is the user's to complete on the real site, so a Pay Now
-            # tap hands the page's URL back for the app to open -- it is never
-            # clicked here.
-            shot = await page.screenshot(type="jpeg", quality=70)
-            return {
-                "frame": {"mime": "image/jpeg", "base64": base64.b64encode(shot).decode("ascii")},
-                "select_options": None,
-                "field": None,
-                "open_url": page.url,
-            }
         select_options = await page.evaluate(_SELECT_AT_POINT_JS, [x, y])
         if not select_options:
             select_options = None
@@ -906,7 +887,7 @@ async def perform_browser_input(event: Dict[str, Any]) -> Optional[Dict[str, Any
         f"screenshot_ms={(finished - acted) * 1000:.0f}"
     )
     frame = {"mime": "image/jpeg", "base64": base64.b64encode(shot).decode("ascii")}
-    return {"frame": frame, "select_options": select_options, "field": field, "open_url": None}
+    return {"frame": frame, "select_options": select_options, "field": field}
 
 
 async def _checkout_reached() -> bool:

@@ -287,8 +287,7 @@ class TestPerformBrowserInput:
 
     @pytest.mark.asyncio
     async def test_tap_on_a_dropdown_returns_its_options_instead_of_clicking(self):
-        page = _fake_page()
-        page.evaluate = AsyncMock(side_effect=[False, ["Gender", "Male", "Female"]])
+        page = _fake_page(select_options=["Gender", "Male", "Female"])
         with patch.object(bat, "_direct_page", AsyncMock(return_value=page)):
             result = await bat.perform_browser_input({"kind": "tap", "x": 0.5, "y": 0.5})
 
@@ -972,16 +971,3 @@ class TestBrowserInteractionRailHoldsTheForceFinish:
     )
     def test_tool_call_name_reads_both_wrapper_shapes(self, tool_call, expected):
         assert bat._tool_call_name(tool_call) == expected
-
-
-class TestPayNowRedirect:
-    @pytest.mark.asyncio
-    async def test_tap_on_pay_now_returns_the_page_url_and_does_not_click(self):
-        page = _fake_page()
-        page.url = "https://www.easybook.com/en-sg/bus/booking/payment"
-        page.evaluate = AsyncMock(return_value=True)
-        with patch.object(bat, "_direct_page", AsyncMock(return_value=page)):
-            result = await bat.perform_browser_input({"kind": "tap", "x": 0.5, "y": 0.9})
-
-        assert result["open_url"] == "https://www.easybook.com/en-sg/bus/booking/payment"
-        page.mouse.click.assert_not_awaited()
