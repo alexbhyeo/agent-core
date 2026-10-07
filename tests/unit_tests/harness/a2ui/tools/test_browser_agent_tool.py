@@ -30,6 +30,7 @@ from openjiuwen.harness.a2ui.tools.browser_agent_tool import (
     BrowserOptionSelectionRequest,
     _build_credential_request_output,
     _build_option_selection_output,
+    browser_handoff_to_checkout,
     request_login_credentials,
     request_option_selection,
 )
@@ -300,6 +301,31 @@ class TestSeatSelectionHandoff:
     async def test_does_not_hand_off_without_the_flag_even_if_it_looks_like_a_seat_map(self):
         result = await self._run({"task": "search Singapore to Melaka buses"})
         assert "checkout" not in result.data
+
+
+class TestBrowserHandoffToCheckout:
+    """browser_handoff_to_checkout: the departure-choice form's follow-up
+    call -- hands off the live session as-is, with no browsing of its own
+    (see the agent.py rule that replaced driving seat selection itself)."""
+
+    @pytest.mark.asyncio
+    async def test_hands_off_the_current_page_with_no_browsing(self):
+        page = MagicMock()
+        checkout = {"url": "https://redbus.sg/seats", "user_agent": "ua", "cookies": []}
+        with (
+            patch.object(bat, "_direct_page", AsyncMock(return_value=page)),
+            patch.object(bat, "_checkout_handoff", AsyncMock(return_value=checkout)),
+        ):
+            result = await browser_handoff_to_checkout.invoke({})
+        assert result["checkout"] == checkout
+        assert not result["text"].startswith("[ERROR]")
+
+    @pytest.mark.asyncio
+    async def test_reports_an_error_when_there_is_no_live_session(self):
+        with patch.object(bat, "_direct_page", AsyncMock(side_effect=RuntimeError("no browser"))):
+            result = await browser_handoff_to_checkout.invoke({})
+        assert "checkout" not in result
+        assert result["text"].startswith("[ERROR]")
 
 
 class TestPerformBrowserInput:

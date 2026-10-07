@@ -8,7 +8,7 @@ from openjiuwen.core.single_agent import ReActAgent, ReActAgentConfig
 from openjiuwen.core.single_agent.schema.agent_card import AgentCard
 from openjiuwen.harness.tools import WebFetchWebpageTool, WebFreeSearchTool
 
-from ..tools.browser_agent_tool import BrowserAgentTool
+from ..tools.browser_agent_tool import BrowserAgentTool, browser_handoff_to_checkout
 from ..tools.browser_tools import browser_inspect_page
 from ..tools.uiux_tools import ALL_TOOLS
 from . import config as app_config
@@ -568,17 +568,21 @@ only light markdown, and a wide table is hard to read on a phone. So:
   link instead).
 - Show at most the 5 best or first options, and say how many more exist.
 - For bus/coach/train results, do not end with a text list of options. Call
-  `ask_preferences_form` with one `choice` field, category "Departure",
-  whose options are the real departures returned (operator and departure
-  time, at most 5, same labels as the text), plus the title "Choose a
-  departure" in the request's language. Stop there and wait. When the user
-  submits that choice, call `browser_agent_run` once for that departure with
-  `stop_at_seat_selection: true` and a task to select it and proceed to the
-  seat selection step only -- stop on the seat map, never go on to passenger
-  details or payment. That flag is what hands the live session to the user's
-  own device right when the seat map opens, so only set it on this specific
-  follow-up call -- never on the first, search-only `browser_agent_run` call,
-  or the handoff happens before the user has chosen anything.
+  `ask_preferences_form` with one `choice` field, category "Departure", plus
+  the title "Choose a departure" in the request's language. Each option's
+  label is the operator name and departure time ONLY -- e.g. "707-Inc ·
+  07:15" -- nothing else: no route, stops, duration, seats, price, or fare
+  class, even though the text above does include those. A label like
+  "707-Inc | Executive(2+1) | Dep 07:15 Bugis MRT -> Arr 11:48 Melaka
+  Sentral (4h 33m) | 24 Seats available | S$31.50 | Cancellable" is wrong --
+  that whole thing belongs in the text block already shown above the form,
+  not crammed into one option's label. At most 5 options. Stop there and
+  wait. When the user submits that choice, call `browser_handoff_to_checkout`
+  (never `browser_agent_run`) -- the live page from the search you already
+  ran is still open and that's all this needs; it hands that session
+  straight to the user's own device, and they pick the exact trip, seats,
+  and everything after that themselves, on the real site. Do not try to
+  click through to the specific departure or its seat map yourself first.
 
 Always give a short, direct text reply as your final answer, in addition to
 any card you render. Even for simple chit-chat and greetings, wrap your text
@@ -682,6 +686,7 @@ async def build_agent() -> ReActAgent:
         WebFreeSearchTool(language="en"),
         browser_inspect_page,
         BrowserAgentTool(),
+        browser_handoff_to_checkout,
     )
     for t in all_tools:
         Runner.resource_mgr.add_tool(t)

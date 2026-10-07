@@ -357,6 +357,21 @@ class TestTranslate:
         events = _translate(_chunk("tool_result", payload), state)
         assert all(event_type != "browser.checkout" for event_type, _ in events)
 
+    def test_browser_handoff_to_checkout_plain_dict_result_emits_browser_checkout(self):
+        state = _new_state()
+        checkout = {"url": "https://redbus.sg/seats", "user_agent": "ua", "cookies": []}
+        tool_result = {"text": "Handed off.", "checkout": checkout}
+        payload = {"tool_name": "browser_handoff_to_checkout", "tool_call_id": "c6", "tool_result": tool_result}
+        events = _translate(_chunk("tool_result", payload), state)
+        assert ("browser.checkout", checkout) in events
+
+    def test_browser_handoff_to_checkout_error_result_emits_no_browser_checkout(self):
+        state = _new_state()
+        tool_result = {"text": "[ERROR] No live browser session to hand off: no browser"}
+        payload = {"tool_name": "browser_handoff_to_checkout", "tool_call_id": "c7", "tool_result": tool_result}
+        events = _translate(_chunk("tool_result", payload), state)
+        assert all(event_type != "browser.checkout" for event_type, _ in events)
+
 
 class TestConnectionSessionDispatch:
     @pytest.mark.asyncio

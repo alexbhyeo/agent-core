@@ -432,6 +432,33 @@ def request_option_selection(options: list[dict[str, str]], prompt: str) -> dict
 _PENDING_OPTION_SELECTION_REQUESTS: Dict[str, Dict[str, Any]] = {}
 
 
+@tool(
+    description=(
+        "Hands the current live browser session to the app's own checkout web view "
+        "immediately -- no searching, clicking, or further browsing, and no new "
+        "browser_agent_run. Call this (never browser_agent_run) right after the user "
+        "submits the departure they chose from the form you built after bus/coach/train "
+        "results -- the live page from that search is still open, and the user "
+        "continues from there themselves: picking the exact trip, seats, passenger "
+        "details, and payment, on the real site, in their own device's browser. Only "
+        "call this immediately after such a search -- if there is no live browser "
+        "session (e.g. this is the first thing in the conversation), it fails and you "
+        "should tell the user to search again first."
+    )
+)
+async def browser_handoff_to_checkout() -> dict[str, Any]:
+    try:
+        page = await _direct_page()
+        checkout = await _checkout_handoff(page)
+    except Exception as exc:  # noqa: BLE001 -- report as an ordinary tool failure, not a crash
+        return {"text": f"[ERROR] No live browser session to hand off: {exc}"}
+    logger.info(f"[browser-checkout] direct url={checkout['url']} cookies={len(checkout['cookies'])}")
+    return {
+        "text": "Handed the live session to the user's own checkout view -- they continue there themselves.",
+        "checkout": checkout,
+    }
+
+
 def _slugify_field_name(name: str, index: int) -> str:
     slug = re.sub(r"[^a-z0-9]+", "_", name.strip().lower()).strip("_")
     return slug or f"field_{index}"
@@ -1717,6 +1744,7 @@ __all__ = [
     "BROWSER_LOGIN_FLOW_CONTEXT_KEY",
     "BROWSER_OPTION_SELECTION_FLOW_CONTEXT_KEY",
     "BrowserAgentTool",
+    "browser_handoff_to_checkout",
     "resume_browser_login",
     "resume_browser_option_selection",
 ]
