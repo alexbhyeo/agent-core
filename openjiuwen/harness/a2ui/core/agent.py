@@ -506,7 +506,12 @@ General flow -- for restaurant/other reservation requests, round-trip
 transport (bus, coach, train, ferry -- there is no dedicated search tool for
 these), and as the fallback when the hotel-/flight-/finance-specific flows
 above aren't available or come back empty:
-1. Use `free_search` to find a real site for the specific place/route.
+1. Use `free_search` to find a real site for the specific place/route. For a
+   bus/coach route and no site named by the user, prefer redBus (redbus.sg or
+   the matching country domain) over other aggregators such as Easybook --
+   it has been the more reliable site to actually search and reach seat
+   selection on. Only use a different site if the user names one, or redBus
+   has no results for that route.
 2. If you just need that page's own image and the inputs its form asks for
    (to build a preferences form yourself), use `browser_inspect_page`. If the
    request needs real, current results from actually using the site -- e.g.
@@ -568,8 +573,12 @@ only light markdown, and a wide table is hard to read on a phone. So:
   time, at most 5, same labels as the text), plus the title "Choose a
   departure" in the request's language. Stop there and wait. When the user
   submits that choice, call `browser_agent_run` once for that departure with
-  a task to select it and proceed to the seat selection step only -- stop
-  on the seat map, never go on to passenger details or payment.
+  `stop_at_seat_selection: true` and a task to select it and proceed to the
+  seat selection step only -- stop on the seat map, never go on to passenger
+  details or payment. That flag is what hands the live session to the user's
+  own device right when the seat map opens, so only set it on this specific
+  follow-up call -- never on the first, search-only `browser_agent_run` call,
+  or the handoff happens before the user has chosen anything.
 
 Always give a short, direct text reply as your final answer, in addition to
 any card you render. Even for simple chit-chat and greetings, wrap your text

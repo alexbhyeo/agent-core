@@ -95,7 +95,7 @@ class TestBrowserAgentToolInterrupt:
         assert any(value["value"] == token for value in seeded_values)
 
         tool_schema = BrowserAgentTool().card.input_params
-        assert set(tool_schema["properties"]) == {"task"}
+        assert set(tool_schema["properties"]) == {"task", "stop_at_seat_selection"}
 
     @pytest.mark.asyncio
     async def test_resume_with_credentials_uses_interactive_input(self):
@@ -268,6 +268,38 @@ class TestResumeIterationBudget:
 
         calls = [call.args[0] for call in agent.config.configure_max_iterations.call_args_list]
         assert calls == [bat._MAX_INNER_ITERATIONS + bat._RESUME_EXTRA_ITERATIONS, bat._MAX_INNER_ITERATIONS]
+
+
+class TestSeatSelectionHandoff:
+    """The seat-map checkout handoff only fires for the specific follow-up
+    call the outer agent marks with stop_at_seat_selection -- never on a
+    plain search call that happens to end on a page _seat_map_reached()
+    would also call true, which previously handed off before the user had
+    chosen a departure (see agent.py's departure-choice rule)."""
+
+    async def _run(self, inputs):
+        async def fake_stream(*args, **kwargs):
+            yield _chunk("answer", {"output": "Here is the seat map."})
+
+        with (
+            patch.object(bat, "_get_browser_agent", AsyncMock(return_value=MagicMock())),
+            patch.object(bat.Runner, "run_agent_streaming", side_effect=fake_stream),
+            patch.object(bat, "_checkout_reached", AsyncMock(return_value=False)),
+            patch.object(bat, "_seat_map_reached", AsyncMock(return_value=True)),
+            patch.object(bat, "_direct_page", AsyncMock(return_value=MagicMock())),
+            patch.object(bat, "_checkout_handoff", AsyncMock(return_value={"url": "https://x", "cookies": []})),
+        ):
+            return await BrowserAgentTool().invoke(inputs)
+
+    @pytest.mark.asyncio
+    async def test_hands_off_when_the_flag_is_set_and_the_seat_map_is_reached(self):
+        result = await self._run({"task": "select the 07:15 707 Inc departure", "stop_at_seat_selection": True})
+        assert result.data["checkout"] == {"url": "https://x", "cookies": []}
+
+    @pytest.mark.asyncio
+    async def test_does_not_hand_off_without_the_flag_even_if_it_looks_like_a_seat_map(self):
+        result = await self._run({"task": "search Singapore to Melaka buses"})
+        assert "checkout" not in result.data
 
 
 class TestPerformBrowserInput:

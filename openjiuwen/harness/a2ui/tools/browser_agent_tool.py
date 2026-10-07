@@ -98,6 +98,17 @@ _INPUT_PARAMS = {
                 "the rest of the conversation."
             ),
         },
+        "stop_at_seat_selection": {
+            "type": "boolean",
+            "description": (
+                "Only true for the follow-up call that selects one specific departure "
+                "the user already chose and proceeds to its seat map -- never on the "
+                "first, search-only call. When true and the run does stop on a seat "
+                "picker, the live session hands off straight to the user's own device "
+                "automatically; setting it on a plain search call would hand off too "
+                "early, before any departure is chosen."
+            ),
+        },
     },
     "required": ["task"],
 }
@@ -1471,10 +1482,12 @@ class BrowserAgentTool(Tool):
         expected_conversation_id = str(kwargs.get("expected_conversation_id") or "")
         task = ""
         resume_token = ""
+        stop_at_seat_selection = False
         credentials: Dict[str, str] = {}
         if isinstance(inputs, dict):
             task = str(inputs.get("task") or "").strip()
             resume_token = str(inputs.get("resume_token") or "").strip()
+            stop_at_seat_selection = bool(inputs.get("stop_at_seat_selection"))
             raw_credentials = inputs.get("credentials")
             if isinstance(raw_credentials, dict):
                 credentials = {str(key): str(value) for key, value in raw_credentials.items()}
@@ -1632,7 +1645,7 @@ class BrowserAgentTool(Tool):
         # straight to the app's own checkout view instead of leaving the
         # user to continue in the cramped live-view relay.
         try:
-            if not await _checkout_reached() and await _seat_map_reached():
+            if stop_at_seat_selection and not await _checkout_reached() and await _seat_map_reached():
                 page = await _direct_page()
                 data["checkout"] = await _checkout_handoff(page)
                 logger.info(f"[browser-checkout] auto url={data['checkout']['url']} cookies={len(data['checkout']['cookies'])}")
