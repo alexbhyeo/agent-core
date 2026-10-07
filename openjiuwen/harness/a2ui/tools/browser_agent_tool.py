@@ -1536,6 +1536,19 @@ class BrowserAgentTool(Tool):
             return ToolOutput(success=False, error="'task' is required.")
 
         try:
+            # Mobile emulation (UA, touch, device metrics) is otherwise only
+            # applied the first time _direct_page() runs -- a side effect of
+            # the live-view panel's own "refresh" tap. The panel opening
+            # automatically when a run starts does not trigger that, so a
+            # run the user never manually opened the panel for was browsing
+            # with the page in its default, non-mobile state even though the
+            # viewport was narrow. Applying it here instead, right as the run
+            # starts, means every run gets it regardless of panel taps.
+            await _direct_page()
+        except Exception:  # noqa: BLE001 -- a real browse attempt below reports the actual failure
+            pass
+
+        try:
             agent = await _get_browser_agent()
         except asyncio.CancelledError:
             if pending is not None:
