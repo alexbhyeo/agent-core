@@ -1350,8 +1350,15 @@ class BrowserAgentTool(Tool):
                 # search, log in, reach seat selection -- well before
                 # _MAX_INNER_ITERATIONS or the browser phase budgets would ever
                 # stop them on their own. Declared here, per-tool, so no other
-                # tool's timeout changes.
-                properties={"resilience": {"timeout_s": 900}},
+                # tool's timeout changes. 900 was generous for that, but a real
+                # run observed later hung completely silent (no tool call, no
+                # LLM request, nothing but the unrelated connection heartbeat)
+                # for 6m40s inside a single step with no per-step timeout of its
+                # own underneath this one -- 900s let that run sit for up to 15
+                # minutes before failing. 360 still comfortably covers every
+                # legitimate run seen so far (the slowest real progress was
+                # under 4 minutes) while bounding a silent hang to 6.
+                properties={"resilience": {"timeout_s": 360}},
             )
         )
 
