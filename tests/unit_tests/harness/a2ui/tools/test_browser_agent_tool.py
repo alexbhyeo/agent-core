@@ -327,6 +327,28 @@ class TestBrowserHandoffToCheckout:
         assert "checkout" not in result
         assert result["text"].startswith("[ERROR]")
 
+    @pytest.mark.asyncio
+    async def test_selected_label_splits_into_the_operator_and_time_the_checkout_view_filters_on(self):
+        checkout = {"url": "https://redbus.sg/seats", "user_agent": "ua", "cookies": []}
+        with (
+            patch.object(bat, "_direct_page", AsyncMock(return_value=MagicMock())),
+            patch.object(bat, "_checkout_handoff", AsyncMock(return_value=checkout)),
+        ):
+            result = await browser_handoff_to_checkout.invoke({"selected_label": "707-Inc · 07:15"})
+        assert result["checkout"]["filter_operator"] == "707-Inc"
+        assert result["checkout"]["filter_time"] == "07:15"
+
+    @pytest.mark.asyncio
+    async def test_no_selected_label_leaves_the_filter_fields_empty(self):
+        checkout = {"url": "https://redbus.sg/seats", "user_agent": "ua", "cookies": []}
+        with (
+            patch.object(bat, "_direct_page", AsyncMock(return_value=MagicMock())),
+            patch.object(bat, "_checkout_handoff", AsyncMock(return_value=checkout)),
+        ):
+            result = await browser_handoff_to_checkout.invoke({})
+        assert result["checkout"]["filter_operator"] == ""
+        assert result["checkout"]["filter_time"] == ""
+
 
 class TestPerformBrowserInput:
     """perform_browser_input relays user taps/typing straight to the page."""
@@ -786,99 +808,48 @@ class TestBrowserOptionSelectionInterruptRailEndToEnd:
 
 class TestBrowserStepText:
     """``_step_text`` feeds the client's live action log (see ``browser.step``
-    in ws_session.py). The inner agent's raw-JS escape hatch used to render as
-    a bare "Evaluate…" that told the user nothing, so a script step must now
-    describe what the script actually does."""
-
-    def test_evaluate_reading_fields_names_them(self):
-        text = bat._step_text(
-            "browser_evaluate",
-            {
-                "function": "() => { const el = document.querySelector('.price'); "
-                "return {price: el.textContent, currency: 'MYR'}; }"
-            },
-        )
-
-        assert text == "Reading page data (price, currency)…"
-
-    def test_evaluate_shorthand_keys_resolve_through_their_assignment(self):
-        text = bat._step_text(
-            "browser_evaluate",
-            {
-                "function": "() => { const t = document.title; "
-                "const p = document.querySelector('.price').innerText; return {t, p}; }"
-            },
-        )
-
-        assert text == "Reading page data (title, price)…"
-
-    def test_evaluate_table_scrape_uses_keys_of_the_arrow_returned_object(self):
-        script = (
-            "() => { const rows = Array.from(document.querySelectorAll('li.bus-item')); "
-            "return rows.map(r => ({operator: r.querySelector('.name').innerText, "
-            "price: r.querySelector('.price').innerText})); }"
-        )
-
-        assert bat._step_text("browser_evaluate", {"function": script}) == "Reading page data (operator, price)…"
-
-    def test_evaluate_without_returned_fields_names_the_selectors_it_reads(self):
-        text = bat._step_text(
-            "browser_evaluate", {"function": "() => document.querySelectorAll('tr.result-row').length"}
-        )
-
-        assert text == "Reading data from the page (tr.result-row)…"
-
-    def test_evaluate_mutating_script_is_reported_as_a_change(self):
-        text = bat._step_text("browser_evaluate", {"function": "(el) => { el.value = 'Melaka'; }"})
-
-        assert text == "Changing the page with a script…"
-
-    def test_evaluate_mutation_names_the_target_element_when_given(self):
-        text = bat._step_text(
-            "browser_evaluate", {"function": "(el) => { el.focus(); }", "element": "Departure date field"}
-        )
-
-        assert text == "Changing the page with a script (Departure date field)…"
-
-    def test_evaluate_nested_object_literal_does_not_leak_inner_keys(self):
-        text = bat._step_text("browser_evaluate", {"function": "() => { return {a: 1, meta: {b: 2, c: 3}, d: 4}; }"})
-
-        assert text == "Running a script that returns a, meta, d…"
-
-    def test_run_code_scripts_are_described_the_same_way(self):
-        text = bat._step_text("browser_run_code", {"code": "async (page) => { await page.click('text=Search'); }"})
-
-        assert text == "Changing the page with a script…"
-
-    @pytest.mark.parametrize(
-        "args, expected",
-        [
-            ({}, "Running a script on the page…"),
-            ({"function": "() => { const x = 1 + 1; }"}, "Checking the page with a script…"),
-        ],
-    )
-    def test_evaluate_without_a_describable_script_still_says_something(self, args, expected):
-        assert bat._step_text("browser_evaluate", args) == expected
-
-    def test_server_qualified_tool_name_is_normalized_before_matching(self):
-        text = bat._step_text(
-            "mcp_playwright-official_browser_evaluate",
-            {"function": "() => ({price: document.querySelector('.p').innerText})"},
-        )
-
-        assert text == "Reading page data (price)…"
+    in ws_session.py), in Chinese, and only for the handful of tool names
+    worth a line -- everything else (clicks, raw DOM probes/snapshots, the
+    script-injection escape hatch, key presses, ...) used to get one too,
+    dozens per search, drowning out the few that told the user something
+    real (see _STEP_TEXT_BUILDERS)."""
 
     @pytest.mark.parametrize(
         "tool, args, expected",
         [
-            ("browser_navigate", {"url": "https://example.com"}, "Navigating to https://example.com"),
-            ("browser_click", {"element": "Search button"}, "Clicking Search button"),
-            ("browser_type", {"element": "From"}, "Filling in a field…"),
-            ("browser_snapshot", {}, "Taking a look at the current page…"),
+            ("browser_navigate", {"url": "https://example.com"}, "正在前往 https://example.com…"),
+            ("browser_navigate", {}, "正在跳转…"),
+            ("browser_type", {"element": "From"}, "正在填写表单…"),
+            ("browser_fill_form", {}, "正在填写表单…"),
+            ("browser_select_option", {}, "正在选择选项…"),
+            ("browser_probe_cards", {}, "正在读取页面上的车次信息…"),
         ],
     )
-    def test_other_browser_tool_text_is_unchanged(self, tool, args, expected):
+    def test_the_important_tools_get_chinese_text(self, tool, args, expected):
         assert bat._step_text(tool, args) == expected
+
+    @pytest.mark.parametrize(
+        "tool",
+        [
+            "browser_click",
+            "browser_snapshot",
+            "browser_probe_interactives",
+            "browser_batch_interact",
+            "browser_evaluate",
+            "browser_run_code",
+            "browser_run_code_unsafe",
+            "browser_press_key",
+            "some_unknown_tool",
+            "",
+        ],
+    )
+    def test_every_other_tool_produces_no_log_line(self, tool):
+        assert bat._step_text(tool, {}) == ""
+
+    def test_server_qualified_tool_name_is_normalized_before_matching(self):
+        text = bat._step_text("mcp_playwright-official_browser_navigate", {"url": "https://example.com"})
+
+        assert text == "正在前往 https://example.com…"
 
 
 class TestBrowserStepTextToolArgsCoercion:
@@ -886,31 +857,16 @@ class TestBrowserStepTextToolArgsCoercion:
     ``ToolCall.arguments`` -- a raw JSON string, not a dict. Step text that
     read it as a dict silently lost every argument it needed."""
 
-    @pytest.mark.parametrize(
-        "tool, raw_args, expected",
-        [
-            (
-                "browser_navigate",
-                '{"url": "https://www.easybook.com/en-my/bus/booking"}',
-                "Navigating to https://www.easybook.com/en-my/bus/booking",
-            ),
-            ("browser_click", '{"element": "Search buses"}', "Clicking Search buses"),
-            (
-                "browser_evaluate",
-                '{"function": "() => ({price: document.querySelector(\'.p\').innerText})"}',
-                "Reading page data (price)…",
-            ),
-        ],
-    )
-    def test_json_string_args_are_parsed(self, tool, raw_args, expected):
-        assert bat._step_text(tool, raw_args) == expected
+    def test_json_string_args_are_parsed(self):
+        raw_args = '{"url": "https://www.easybook.com/en-my/bus/booking"}'
+        assert bat._step_text("browser_navigate", raw_args) == "正在前往 https://www.easybook.com/en-my/bus/booking…"
 
     @pytest.mark.parametrize("raw_args", ["", "   ", "not json", '["a", "b"]', None, 42])
     def test_malformed_or_non_object_args_degrade_gracefully(self, raw_args):
-        assert bat._step_text("browser_navigate", raw_args) == "Navigating…"
+        assert bat._step_text("browser_navigate", raw_args) == "正在跳转…"
 
     def test_dict_args_still_work(self):
-        assert bat._step_text("browser_navigate", {"url": "https://example.com"}) == "Navigating to https://example.com"
+        assert bat._step_text("browser_navigate", {"url": "https://example.com"}) == "正在前往 https://example.com…"
 
 
 def _interaction_ctx(*, tools, available):

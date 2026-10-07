@@ -443,16 +443,22 @@ _PENDING_OPTION_SELECTION_REQUESTS: Dict[str, Dict[str, Any]] = {}
         "details, and payment, on the real site, in their own device's browser. Only "
         "call this immediately after such a search -- if there is no live browser "
         "session (e.g. this is the first thing in the conversation), it fails and you "
-        "should tell the user to search again first."
+        "should tell the user to search again first. `selected_label` must be the exact "
+        "option label the user picked from that form (e.g. '707-Inc · 07:15'), unchanged "
+        "-- the checkout view uses it to hide every other departure on the page, so the "
+        "user sees only the one they chose instead of the full results list again."
     )
 )
-async def browser_handoff_to_checkout() -> dict[str, Any]:
+async def browser_handoff_to_checkout(selected_label: str = "") -> dict[str, Any]:
     try:
         page = await _direct_page()
         checkout = await _checkout_handoff(page)
     except Exception as exc:  # noqa: BLE001 -- report as an ordinary tool failure, not a crash
         return {"text": f"[ERROR] No live browser session to hand off: {exc}"}
-    logger.info(f"[browser-checkout] direct url={checkout['url']} cookies={len(checkout['cookies'])}")
+    operator, _, time_part = selected_label.partition(" · ")
+    checkout["filter_operator"] = operator.strip()
+    checkout["filter_time"] = time_part.strip()
+    logger.info(f"[browser-checkout] direct url={checkout['url']} cookies={len(checkout['cookies'])} filter={operator.strip()!r}/{time_part.strip()!r}")
     return {
         "text": "Handed the live session to the user's own checkout view -- they continue there themselves.",
         "checkout": checkout,
@@ -1042,34 +1048,6 @@ async def _seat_map_reached() -> bool:
     return any(marker.lower() in lowered for marker in _SEAT_MAP_TEXT_MARKERS)
 
 
-# The inner agent can reach for a raw JS escape hatch (`browser_evaluate` /
-# `browser_run_code`). Its step text can't come from the tool name alone --
-# "Evaluate…" says nothing about whether it is reading a price, filling a
-# field, or clicking a button -- so these helpers describe the script itself.
-_SCRIPT_ARG_KEYS = ("function", "expression", "script", "code")
-_SCRIPT_WRITE_RE = re.compile(
-    r"\.click\s*\(|dispatchEvent|\.value\s*=|setAttribute\s*\(|\.submit\s*\(|"
-    r"appendChild|removeChild|innerHTML\s*=|\.focus\s*\(|scrollIntoView",
-    re.IGNORECASE,
-)
-_SCRIPT_READ_RE = re.compile(
-    r"textContent|innerText|innerHTML|getAttribute|dataset|document\.title|querySelector",
-    re.IGNORECASE,
-)
-_SELECTOR_RE = re.compile(r"""querySelector(?:All)?\(\s*["'`]([^"'`]+)["'`]""")
-_SCRIPT_SELECTORS_LIMIT = 2
-_SCRIPT_FIELDS_LIMIT = 4
-
-
-def _script_text(args: Dict[str, Any]) -> str:
-    """The raw script out of whichever parameter name carried it."""
-    for key in _SCRIPT_ARG_KEYS:
-        value = args.get(key)
-        if isinstance(value, str) and value.strip():
-            return value.strip()
-    return ""
-
-
 def _coerce_tool_args(tool_args: Any) -> Dict[str, Any]:
     """Normalize one step's tool arguments into a dict.
 
@@ -1093,147 +1071,32 @@ def _coerce_tool_args(tool_args: Any) -> Dict[str, Any]:
     return {}
 
 
-def _shorthand_label(script: str, name: str) -> str:
-    """Readable label for a shorthand return key such as ``{title}``.
-
-    A bare identifier like ``t`` says nothing, so fall back to what it was
-    assigned from: ``const t = document.title`` reads as "title", and
-    ``const p = document.querySelector('.price').innerText`` as "price".
-    """
-    assigned = re.search(rf"(?:const|let|var)\s+{re.escape(name)}\s*=\s*([^;\n]+)", script)
-    if not assigned:
-        return ""
-    expression = assigned.group(1)
-    if "document.title" in expression:
-        return "title"
-    attribute = re.search(r"""getAttribute\(\s*["'`]data-([\w-]+)["'`]""", expression)
-    if attribute:
-        return attribute.group(1).replace("-", " ")
-    selectors = _script_selectors(expression, limit=1)
-    if selectors:
-        token = re.split(r"[\s>+~]+", selectors[0])[-1].lstrip(".#")
-        return token.replace("-", " ").replace("_", " ").strip()
-    return ""
-
-
-def _returned_field_names(script: str, limit: int = _SCRIPT_FIELDS_LIMIT) -> List[str]:
-    """Keys of the object literal a script returns, in source order.
-
-    ``return {title, price: el.textContent}`` yields ``title``/``price``, so
-    the log can name what is being read. Comma splitting is brace/bracket
-    aware so a nested value (``{meta: {a: 1}}``) doesn't leak its own keys,
-    and shorthand keys (``{title}``) are resolved through their assignment
-    rather than reported as the raw variable name.
-    """
-    match = re.search(r"return\s*\(?\s*\{", script) or re.search(r"=>\s*\(\s*\{", script)
-    if not match:
-        return []
-    start = script.index("{", match.start())
-    depth = 0
-    end = -1
-    for index in range(start, len(script)):
-        char = script[index]
-        if char == "{":
-            depth += 1
-        elif char == "}":
-            depth -= 1
-            if depth == 0:
-                end = index
-                break
-    if end == -1:
-        return []
-
-    names: List[str] = []
-    depth = 0
-    token = ""
-    for char in script[start + 1 : end] + ",":
-        if char in "{([":
-            depth += 1
-        elif char in "})]":
-            depth -= 1
-        if char == "," and depth == 0:
-            key = re.match(r"""\s*["'`]?([A-Za-z_$][\w$\-]*)["'`]?\s*(:?)""", token)
-            if key:
-                name = key.group(1)
-                if not key.group(2):
-                    name = _shorthand_label(script, name) or name
-                names.append(name)
-            token = ""
-            if len(names) >= limit:
-                break
-        else:
-            token += char
-    return names
-
-
-def _script_selectors(script: str, limit: int = _SCRIPT_SELECTORS_LIMIT) -> List[str]:
-    """Distinct selectors the script queries, shortest-first, de-duplicated."""
-    selectors: List[str] = []
-    for match in _SELECTOR_RE.finditer(script):
-        selector = re.sub(r"\s+", " ", match.group(1).strip())
-        if selector and selector not in selectors:
-            selectors.append(selector[:48])
-    selectors.sort(key=len)
-    return selectors[:limit]
-
-
-def _script_step_text(tool_name: str, args: Dict[str, Any]) -> str:
-    """Describe a script-injection step by what the script does to the page."""
-    script = _script_text(args)
-    target = str(args.get("element") or args.get("target") or args.get("ref") or "").strip()
-    if not script:
-        return "Running a script on the page…"
-
-    if _SCRIPT_WRITE_RE.search(script):
-        suffix = f" ({target})" if target and target.lower() != "page" else ""
-        return f"Changing the page with a script{suffix}…"
-
-    if _SCRIPT_READ_RE.search(script):
-        fields = _returned_field_names(script)
-        if fields:
-            return f"Reading page data ({', '.join(fields)})…"
-        selectors = _script_selectors(script)
-        if selectors:
-            return f"Reading data from the page ({', '.join(selectors)})…"
-        return "Reading data from the page…"
-
-    fields = _returned_field_names(script)
-    if fields:
-        return f"Running a script that returns {', '.join(fields)}…"
-    if tool_name != "browser_evaluate":
-        return "Running a script on the page…"
-    return "Checking the page with a script…"
+# Which inner tool calls are worth a line in the client's live action-log
+# panel (see browser.step in ws_session.py). There used to be a line for
+# every single inner step, including raw DOM probes/snapshots and the
+# script-injection escape hatch (browser_evaluate/run_code/run_code_unsafe)
+# -- dozens per search, drowning out the handful that actually told the user
+# something real happened (where it went, what it read, what it picked).
+# Everything not listed here produces no log line at all; _step_text returns
+# "" for it and the caller skips emitting that step.
+_STEP_TEXT_BUILDERS: Dict[str, Callable[[Dict[str, Any]], str]] = {
+    "browser_navigate": lambda args: (f"正在前往 {args['url']}…" if args.get("url") else "正在跳转…"),
+    "browser_type": lambda args: "正在填写表单…",
+    "browser_fill_form": lambda args: "正在填写表单…",
+    "browser_select_option": lambda args: "正在选择选项…",
+    "browser_probe_cards": lambda args: "正在读取页面上的车次信息…",
+}
 
 
 def _step_text(tool_name: str, tool_args: Any) -> str:
-    """Human-readable line for one inner browser action, shown live in the
-    client's action-log panel (see browser.step in ws_session.py)."""
-    args = _coerce_tool_args(tool_args)
-    tool_name = _normalized_tool_name(tool_name)
-    if tool_name in ("browser_evaluate", "browser_run_code", "browser_run_code_unsafe"):
-        return _script_step_text(tool_name, args)
-    if tool_name == "browser_navigate":
-        url = args.get("url")
-        return f"Navigating to {url}" if url else "Navigating…"
-    if tool_name == "browser_click":
-        target = args.get("element") or args.get("ref") or ""
-        return f"Clicking {target}".strip() if target else "Clicking…"
-    if tool_name in ("browser_type", "browser_fill_form"):
-        return "Filling in a field…"
-    if tool_name == "browser_select_option":
-        return "Choosing an option…"
-    if tool_name == "browser_probe_interactives":
-        return "Looking at what's on the page…"
-    if tool_name == "browser_probe_cards":
-        return "Reading the results on the page…"
-    if tool_name == "browser_batch_interact":
-        return "Carrying out a sequence of actions…"
-    if tool_name == "browser_snapshot":
-        return "Taking a look at the current page…"
-    if tool_name:
-        readable = tool_name.replace("browser_", "").replace("_", " ").strip()
-        return (readable[0].upper() + readable[1:] + "…") if readable else "Working…"
-    return "Working…"
+    """Chinese, human-readable line for one inner browser action -- only for
+    the handful of tool names in ``_STEP_TEXT_BUILDERS``; "" for every other
+    tool (clicks, raw probes/snapshots, script injections, key presses, ...),
+    which the caller takes as "don't show this step at all"."""
+    builder = _STEP_TEXT_BUILDERS.get(_normalized_tool_name(tool_name))
+    if builder is None:
+        return ""
+    return builder(_coerce_tool_args(tool_args))
 
 
 # BrowserRuntimeRail._prepare_terminal_synthesis clears every tool as soon as
@@ -1606,13 +1469,14 @@ class BrowserAgentTool(Tool):
                     continue
                 if chunk_type == "tool_call":
                     tool_name = _normalized_tool_name(payload.get("tool_name", ""))
-                    await _emit(
-                        {
-                            "status": "started",
-                            "tool": tool_name,
-                            "text": _step_text(tool_name, payload.get("tool_args")),
-                        }
-                    )
+                    step_text = _step_text(tool_name, payload.get("tool_args"))
+                    if step_text:
+                        # "" means this tool isn't one of the few worth a log
+                        # line (see _STEP_TEXT_BUILDERS) -- the matching
+                        # tool_result below still runs and still refreshes
+                        # the live screenshot either way, just with no entry
+                        # added to the action log for it.
+                        await _emit({"status": "started", "tool": tool_name, "text": step_text})
                 elif chunk_type == "tool_result":
                     finished_payload: dict[str, Any] = {
                         "status": "finished",
@@ -1626,11 +1490,12 @@ class BrowserAgentTool(Tool):
                             finished_payload["screenshot_mime"] = screenshot["mime"]
                     await _emit(finished_payload)
                 elif chunk_type == "tool_error":
+                    error_message = payload.get("message")
                     await _emit(
                         {
                             "status": "error",
                             "tool": _normalized_tool_name(payload.get("tool_name", "")),
-                            "text": str(payload.get("message") or "That action failed."),
+                            "text": f"操作失败：{error_message}" if error_message else "该操作失败。",
                         }
                     )
                 elif chunk_type == "answer":
@@ -1644,7 +1509,7 @@ class BrowserAgentTool(Tool):
         except Exception as exc:  # noqa: BLE001 -- report the failure as a tool result, don't crash the outer turn
             if pending is not None:
                 pending["resuming"] = False
-            await _emit({"status": "error", "tool": "", "text": f"Browser agent run failed: {exc}"})
+            await _emit({"status": "error", "tool": "", "text": f"浏览器运行失败：{exc}"})
             return ToolOutput(success=False, error=f"Browser agent run failed: {exc}")
         finally:
             agent.config.configure_max_iterations(_MAX_INNER_ITERATIONS)
