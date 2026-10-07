@@ -975,6 +975,35 @@ async def _checkout_reached() -> bool:
     return any(marker in text for marker in _CHECKOUT_TEXT_MARKERS)
 
 
+_SEAT_MAP_TEXT_MARKERS = (
+    "choose seat",
+    "choose your seat",
+    "select seat",
+    "select your seat",
+    "seat selection",
+    "seat map",
+    "seat layout",
+    "选座",
+    "选择座位",
+    "选择坐位",
+    "座位图",
+)
+
+
+async def _seat_map_reached() -> bool:
+    """True once the page shows a seat picker -- the point a departure-choice
+    run is told to stop at (see the outer agent's prompt). Checked on page
+    text, the same way as ``_checkout_reached``, since there's no single URL
+    or DOM shape shared across booking sites."""
+    try:
+        page = await _direct_page()
+        text = await page.evaluate("() => document.body ? document.body.innerText : ''")
+    except Exception:  # noqa: BLE001 -- an unreadable page isn't a seat map
+        return False
+    lowered = text.lower()
+    return any(marker.lower() in lowered for marker in _SEAT_MAP_TEXT_MARKERS)
+
+
 # The inner agent can reach for a raw JS escape hatch (`browser_evaluate` /
 # `browser_run_code`). Its step text can't come from the tool name alone --
 # "Evaluate…" says nothing about whether it is reading a price, filling a
@@ -1597,7 +1626,19 @@ class BrowserAgentTool(Tool):
 
         if not final_text:
             final_text = "The browser agent finished without a final summary."
-        return ToolOutput(success=True, data={"content": _final_summary(final_text)})
+        data: Dict[str, Any] = {"content": _final_summary(final_text)}
+        # The run stopped right on a seat picker (the prompt tells a
+        # departure-choice run to do exactly that) -- hand the live session
+        # straight to the app's own checkout view instead of leaving the
+        # user to continue in the cramped live-view relay.
+        try:
+            if not await _checkout_reached() and await _seat_map_reached():
+                page = await _direct_page()
+                data["checkout"] = await _checkout_handoff(page)
+                logger.info(f"[browser-checkout] auto url={data['checkout']['url']} cookies={len(data['checkout']['cookies'])}")
+        except Exception:  # noqa: BLE001 -- the text summary still goes out even if the handoff fails
+            pass
+        return ToolOutput(success=True, data=data)
 
     async def stream(self, inputs: Any, **kwargs: Any):
         del inputs, kwargs

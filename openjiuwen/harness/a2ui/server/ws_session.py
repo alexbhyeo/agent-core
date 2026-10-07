@@ -540,6 +540,18 @@ def _translate(chunk: Any, state: dict[str, Any]) -> list[tuple[str, dict[str, A
                 finished_payload["text"] = "Got them all — planning your map…"
         events.append(("tool.finished", finished_payload))
 
+        if (
+            tool_name == "browser_agent_run"
+            and isinstance(tool_result, ToolOutput)
+            and isinstance(tool_result.data, dict)
+            and isinstance(tool_result.data.get("checkout"), dict)
+        ):
+            # The run stopped right on a seat picker and already handed its
+            # live session to the app -- see the auto-handoff in
+            # BrowserAgentTool.invoke. Same wire event a user's Pay Now tap
+            # sends (ws_session._run_browser_input), just not tap-triggered.
+            events.append(("browser.checkout", tool_result.data["checkout"]))
+
         result_text, genui_messages = _extract_result(tool_result)
         if genui_messages and result_text:
             # Only "presentation" tools (show_card/show_info_list/etc.) return

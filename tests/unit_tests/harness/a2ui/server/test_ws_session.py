@@ -342,6 +342,21 @@ class TestTranslate:
         state = _new_state()
         assert _translate(_chunk("llm_usage", {}), state) == []
 
+    def test_browser_agent_run_with_a_checkout_payload_emits_browser_checkout(self):
+        state = _new_state()
+        checkout = {"url": "https://example.com/seats", "user_agent": "ua", "cookies": []}
+        tool_result = ToolOutput(success=True, data={"content": "Seat map is open.", "checkout": checkout})
+        payload = {"tool_name": "browser_agent_run", "tool_call_id": "c4", "tool_result": tool_result}
+        events = _translate(_chunk("tool_result", payload), state)
+        assert ("browser.checkout", checkout) in events
+
+    def test_browser_agent_run_without_a_checkout_payload_emits_no_browser_checkout(self):
+        state = _new_state()
+        tool_result = ToolOutput(success=True, data={"content": "Here are your options."})
+        payload = {"tool_name": "browser_agent_run", "tool_call_id": "c5", "tool_result": tool_result}
+        events = _translate(_chunk("tool_result", payload), state)
+        assert all(event_type != "browser.checkout" for event_type, _ in events)
+
 
 class TestConnectionSessionDispatch:
     @pytest.mark.asyncio

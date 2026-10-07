@@ -352,6 +352,38 @@ class TestBrowserCheckoutStopRail:
         assert type(decision).__name__ == "ApproveResult"
 
 
+class TestSeatMapReached:
+    """_seat_map_reached: true once the page's own text shows a seat picker,
+    in English or Chinese -- the point a departure-choice run is told to
+    stop at and hand off to the app's checkout view."""
+
+    @pytest.mark.asyncio
+    async def test_true_for_an_english_seat_picker(self):
+        page = _fake_page()
+        page.evaluate = AsyncMock(return_value="Choose Seats for Departing Trip\n14A 14B 14C")
+        with patch.object(bat, "_direct_page", AsyncMock(return_value=page)):
+            assert await bat._seat_map_reached() is True
+
+    @pytest.mark.asyncio
+    async def test_true_for_a_chinese_seat_picker(self):
+        page = _fake_page()
+        page.evaluate = AsyncMock(return_value="请选择座位\n选座图")
+        with patch.object(bat, "_direct_page", AsyncMock(return_value=page)):
+            assert await bat._seat_map_reached() is True
+
+    @pytest.mark.asyncio
+    async def test_false_for_an_ordinary_results_page(self):
+        page = _fake_page()
+        page.evaluate = AsyncMock(return_value="Singapore to Malacca -- 376 trips found")
+        with patch.object(bat, "_direct_page", AsyncMock(return_value=page)):
+            assert await bat._seat_map_reached() is False
+
+    @pytest.mark.asyncio
+    async def test_false_when_the_page_cannot_be_read(self):
+        with patch.object(bat, "_direct_page", AsyncMock(side_effect=RuntimeError("no browser"))):
+            assert await bat._seat_map_reached() is False
+
+
 class TestEasybookAutoCredentials:
     """_easybook_auto_credentials: the standing easybook.com login, scoped
     strictly to the live page URL so it's never typed into an unrelated
