@@ -510,8 +510,9 @@ above aren't available or come back empty:
    bus/coach route and no site named by the user, prefer redBus (redbus.sg or
    the matching country domain) over other aggregators such as Easybook --
    it has been the more reliable site to actually search and reach seat
-   selection on. Only use a different site if the user names one, or redBus
-   has no results for that route.
+   selection on. For a train route within China specifically, prefer
+   trip.com over other sites. Only use a different site if the user names
+   one, or the preferred site has no results for that route.
 2. If you just need that page's own image and the inputs its form asks for
    (to build a preferences form yourself), use `browser_inspect_page`. If the
    request needs real, current results from actually using the site -- e.g.
