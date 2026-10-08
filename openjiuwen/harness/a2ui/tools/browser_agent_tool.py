@@ -885,10 +885,10 @@ async def _apply_mobile_emulation(context: Any, page: Any) -> None:
     await cdp.send("Emulation.setTouchEmulationEnabled", {"enabled": True, "maxTouchPoints": 5})
 
 
-async def _direct_page() -> Any:
-    """The live page, driven directly over the shared Chrome's DevTools
-    endpoint -- not through the browser tool's MCP round-trip, which costs
-    about a second per call. The MCP tool attaches to the same Chrome."""
+async def _ensure_direct_browser() -> Any:
+    """Connect (once) to the shared Chrome over CDP and return its first
+    context -- the same browser the inner agent's own Playwright MCP
+    connection drives, just a separate client connection to it."""
     global _direct_playwright, _direct_browser
     async with _BROWSER_INPUT_LOCK:
         if _direct_browser is None or not _direct_browser.is_connected():
@@ -897,7 +897,36 @@ async def _direct_page() -> Any:
 
                 _direct_playwright = await async_playwright().start()
             _direct_browser = await _direct_playwright.chromium.connect_over_cdp(_BROWSER_CDP_ENDPOINT)
-        context = _direct_browser.contexts[0]
+        return _direct_browser.contexts[0]
+
+
+async def _ensure_all_pages_emulated(context: Any) -> None:
+    """Mobile emulation (UA, touch, device metrics) is a property of one CDP
+    target, not the browser as a whole -- and the inner agent's own
+    Playwright MCP connection can open new tabs mid-run. Observed live on
+    trip.com: a search opened extra tabs partway through, each with the
+    default desktop UA, after the one page open at the run's start had
+    already been emulated -- those later tabs were what the live screenshots
+    and the search itself actually showed. Sweeps every open page in the
+    shared context and emulates whichever ones haven't been touched yet."""
+    for page in list(context.pages):
+        if page.is_closed() or page in _direct_sized_pages:
+            continue
+        try:
+            await page.set_viewport_size({"width": 360, "height": 720})
+            await _apply_mobile_emulation(context, page)
+        except Exception:  # noqa: BLE001 -- a page mid-navigation/closing isn't fatal here
+            continue
+        _direct_sized_pages.add(page)
+
+
+async def _direct_page() -> Any:
+    """The live page, driven directly over the shared Chrome's DevTools
+    endpoint -- not through the browser tool's MCP round-trip, which costs
+    about a second per call. The MCP tool attaches to the same Chrome."""
+    context = await _ensure_direct_browser()
+    await _ensure_all_pages_emulated(context)
+    async with _BROWSER_INPUT_LOCK:
         open_pages = [page for page in context.pages if not page.is_closed()]
         page = open_pages[-1] if open_pages else await context.new_page()
         if page not in _direct_sized_pages:
@@ -1525,6 +1554,14 @@ class BrowserAgentTool(Tool):
                     }
                     runtime = _browser_runtime
                     if runtime is not None:
+                        try:
+                            # Catches any tab the inner agent's own MCP
+                            # connection opened since the last sweep, before
+                            # it ends up in a screenshot still looking like
+                            # a desktop page.
+                            await _ensure_all_pages_emulated(await _ensure_direct_browser())
+                        except Exception:  # noqa: BLE001 -- best-effort; the screenshot itself still runs
+                            pass
                         screenshot = await _capture_screenshot(runtime)
                         if screenshot is not None:
                             finished_payload["screenshot_base64"] = screenshot["base64"]

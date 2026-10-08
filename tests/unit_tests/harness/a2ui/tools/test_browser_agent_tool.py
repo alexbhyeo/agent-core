@@ -303,6 +303,65 @@ class TestSeatSelectionHandoff:
         assert "checkout" not in result.data
 
 
+class TestEnsureAllPagesEmulated:
+    """_ensure_all_pages_emulated: the inner agent's own Playwright MCP
+    connection can open tabs our side never saw -- this sweeps every page in
+    the shared context and emulates whichever ones aren't already tracked in
+    _direct_sized_pages (observed live: a trip.com search left extra tabs on
+    the default desktop UA after the one page open at the run's start had
+    already been emulated)."""
+
+    def setup_method(self):
+        bat._direct_sized_pages.clear()
+
+    def teardown_method(self):
+        bat._direct_sized_pages.clear()
+
+    @pytest.mark.asyncio
+    async def test_emulates_every_untracked_page(self):
+        page_a, page_b = MagicMock(), MagicMock()
+        page_a.is_closed.return_value = False
+        page_b.is_closed.return_value = False
+        page_a.set_viewport_size = AsyncMock()
+        page_b.set_viewport_size = AsyncMock()
+        context = MagicMock()
+        context.pages = [page_a, page_b]
+        with patch.object(bat, "_apply_mobile_emulation", AsyncMock()) as emulate:
+            await bat._ensure_all_pages_emulated(context)
+        assert emulate.await_count == 2
+        assert page_a in bat._direct_sized_pages
+        assert page_b in bat._direct_sized_pages
+
+    @pytest.mark.asyncio
+    async def test_skips_already_tracked_and_closed_pages(self):
+        tracked, closed, fresh = MagicMock(), MagicMock(), MagicMock()
+        tracked.is_closed.return_value = False
+        closed.is_closed.return_value = True
+        fresh.is_closed.return_value = False
+        fresh.set_viewport_size = AsyncMock()
+        bat._direct_sized_pages.add(tracked)
+        context = MagicMock()
+        context.pages = [tracked, closed, fresh]
+        with patch.object(bat, "_apply_mobile_emulation", AsyncMock()) as emulate:
+            await bat._ensure_all_pages_emulated(context)
+        emulate.assert_awaited_once_with(context, fresh)
+
+    @pytest.mark.asyncio
+    async def test_a_page_that_fails_to_emulate_does_not_stop_the_sweep(self):
+        failing, fresh = MagicMock(), MagicMock()
+        failing.is_closed.return_value = False
+        fresh.is_closed.return_value = False
+        failing.set_viewport_size = AsyncMock(side_effect=RuntimeError("navigating"))
+        fresh.set_viewport_size = AsyncMock()
+        context = MagicMock()
+        context.pages = [failing, fresh]
+        with patch.object(bat, "_apply_mobile_emulation", AsyncMock()) as emulate:
+            await bat._ensure_all_pages_emulated(context)
+        assert failing not in bat._direct_sized_pages
+        assert fresh in bat._direct_sized_pages
+        emulate.assert_awaited_once_with(context, fresh)
+
+
 class TestBrowserHandoffToCheckout:
     """browser_handoff_to_checkout: the departure-choice form's follow-up
     call -- hands off the live session as-is, with no browsing of its own
