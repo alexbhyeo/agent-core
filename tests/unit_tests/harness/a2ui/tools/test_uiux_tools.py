@@ -367,6 +367,108 @@ class TestAskPreferencesForm:
         assert "成人" in caption_texts
         assert not any("Check-in" in t or "Adults" in t for t in caption_texts)
 
+    @pytest.mark.asyncio
+    async def test_transport_form_tidies_a_verbose_departure_option_label(self):
+        # Regression test: observed live more than once, despite the outer
+        # agent's own prompt instruction (with a worked bad/good example),
+        # an option label came back as the whole line crammed in -- e.g.
+        # "G201 -- dep Shanghai Hongqiao 10:00 -> arr Hangzhoudong 10:45
+        # (45m, direct) | 1st Class US$20.89 available | 2nd Class US$12.98
+        # available | Business US$45.65 (1 left)". The prompt alone wasn't
+        # reliable enough across every run, so this is enforced in code.
+        verbose = (
+            "G201 — dep Shanghai Hongqiao 10:00 -> arr Hangzhoudong 10:45 (45m, direct) | "
+            "1st Class US$20.89 available | 2nd Class US$12.98 available | Business US$45.65 (1 left)"
+        )
+        result = await tools.ask_preferences_form.invoke(
+            {
+                "title": "Choose a train for Shanghai -> Hangzhou",
+                "fields": [
+                    {
+                        "id": "departure",
+                        "type": "choice",
+                        "label": "Departure",
+                        "options": [{"label": verbose, "value": "g201"}],
+                    }
+                ],
+            }
+        )
+        components = result["genui"][-1]["updateComponents"]["components"]
+        picker = next(c for c in components if c["id"] == "departure")
+        assert picker["options"] == [{"label": "G201 · 10:00", "value": "g201"}]
+
+    @pytest.mark.asyncio
+    async def test_non_transport_form_leaves_option_labels_untouched(self):
+        verbose = "This is a perfectly ordinary, if unusually long, budget range option label"
+        result = await tools.ask_preferences_form.invoke(
+            {
+                "title": "Racket preferences",
+                "fields": [
+                    {
+                        "id": "budget",
+                        "type": "choice",
+                        "label": "Budget",
+                        "options": [{"label": verbose, "value": "v"}],
+                    }
+                ],
+            }
+        )
+        components = result["genui"][-1]["updateComponents"]["components"]
+        picker = next(c for c in components if c["id"] == "budget")
+        assert picker["options"] == [{"label": verbose, "value": "v"}]
+
+    @pytest.mark.asyncio
+    async def test_transport_form_leaves_an_already_short_label_untouched(self):
+        result = await tools.ask_preferences_form.invoke(
+            {
+                "title": "Choose a departure",
+                "fields": [
+                    {
+                        "id": "departure",
+                        "type": "choice",
+                        "label": "Departure",
+                        "options": [{"label": "707-Inc · 07:15", "value": "a"}],
+                    }
+                ],
+            }
+        )
+        components = result["genui"][-1]["updateComponents"]["components"]
+        picker = next(c for c in components if c["id"] == "departure")
+        assert picker["options"] == [{"label": "707-Inc · 07:15", "value": "a"}]
+
+
+class TestTidyTransportOptionLabel:
+    """_tidy_transport_option_label: a floor under the departure-choice
+    form's "operator · time" prompt rule, for whichever run doesn't follow
+    it -- see test_transport_form_tidies_a_verbose_departure_option_label
+    for the exact label observed live."""
+
+    def test_short_label_is_returned_unchanged(self):
+        assert tools._tidy_transport_option_label("G7541 · 05:52") == "G7541 · 05:52"
+
+    def test_verbose_pipe_delimited_label_is_tidied(self):
+        verbose = (
+            "707 - Inc | Executive(2+1) | Dep 07:15 Bugis MRT -> Arr 11:48 Melaka Sentral "
+            "(4h 33m) | 24 Seats available | S$ 31.50 | Cancellable"
+        )
+        assert tools._tidy_transport_option_label(verbose) == "707 - Inc · 07:15"
+
+    def test_verbose_em_dash_label_is_tidied(self):
+        verbose = (
+            "G201 — dep Shanghai Hongqiao 10:00 -> arr Hangzhoudong 10:45 (45m, direct) | "
+            "1st Class US$20.89 available"
+        )
+        assert tools._tidy_transport_option_label(verbose) == "G201 · 10:00"
+
+    def test_long_label_with_no_recognizable_operator_or_time_is_truncated(self):
+        verbose = "A very long option label with no colon-formatted time anywhere in it at all, just prose"
+        result = tools._tidy_transport_option_label(verbose)
+        assert result.endswith("…")
+        assert len(result) <= tools._TRANSPORT_LABEL_MAX_LEN
+
+    def test_empty_label_is_returned_unchanged(self):
+        assert tools._tidy_transport_option_label("") == ""
+
 
 class TestAllTools:
     def test_all_tools_exposes_expected_names(self):

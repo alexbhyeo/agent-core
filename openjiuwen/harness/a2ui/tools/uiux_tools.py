@@ -310,6 +310,35 @@ _TRANSPORT_FORM_TERMS = (
     "渡轮",
 )
 
+# A departure-choice option is meant to be "operator · time" -- short enough
+# to read at a glance in a checkbox list. The outer agent's own prompt says
+# this explicitly, with a worked bad/good example, but that instruction
+# alone wasn't reliable across every run: observed live more than once, an
+# option label came back as the full line of route/duration/seats/price/
+# fare-class crammed in, e.g. "G201 — dep Shanghai Hongqiao 10:00 -> arr
+# Hangzhoudong 10:45 (45m, direct) | 1st Class US$20.89 available | ...".
+# This enforces the shape in code, as a floor under the prompt rather than a
+# replacement for it: a label that is already short is left exactly as
+# given (translations, punctuation, anything model-chosen survives intact);
+# only one that is clearly the whole-line form gets cut down to its
+# operator/flight-or-train-number and its first clock time.
+_TRANSPORT_LABEL_TIME_RE = re.compile(r"\b([01]?\d|2[0-3]):[0-5]\d\b")
+_TRANSPORT_LABEL_MAX_LEN = 40
+_TRANSPORT_LABEL_OPERATOR_MAX_LEN = 24
+
+
+def _tidy_transport_option_label(label: str) -> str:
+    text = (label or "").strip()
+    if not text or len(text) <= _TRANSPORT_LABEL_MAX_LEN:
+        return text
+    operator = re.split(r"\s\|\s|\s—\s|\s\(", text, maxsplit=1)[0].strip()
+    if len(operator) > _TRANSPORT_LABEL_OPERATOR_MAX_LEN:
+        operator = operator[:_TRANSPORT_LABEL_OPERATOR_MAX_LEN].rstrip()
+    time_match = _TRANSPORT_LABEL_TIME_RE.search(text)
+    if operator and time_match:
+        return f"{operator} · {time_match.group(0)}"
+    return text[: _TRANSPORT_LABEL_MAX_LEN - 1].rstrip() + "…"
+
 
 def _item_icon(item: InfoListItem) -> Optional[str]:
     if item.image_url:
@@ -538,7 +567,10 @@ def ask_preferences_form(title: str, fields: list[FormField], submit_label: str 
         category = f.category.strip() if f.category and f.category.strip() else "Preferences"
         built_fields = built_groups.setdefault(category, [])
         if f.type == FormFieldType.choice:
-            options = [(opt.label, opt.value) for opt in (f.options or [])]
+            options = [
+                ((_tidy_transport_option_label(opt.label) if is_transport_form else opt.label), opt.value)
+                for opt in (f.options or [])
+            ]
             default_value = [f.default_option_value] if f.default_option_value else []
             built_fields.append(
                 genui.choice_picker(
@@ -552,7 +584,10 @@ def ask_preferences_form(title: str, fields: list[FormField], submit_label: str 
             field_defaults[f.id] = default_value
             field_paths[f.id] = f"/{f.id}/value"
         elif f.type == FormFieldType.multi_choice:
-            options = [(opt.label, opt.value) for opt in (f.options or [])]
+            options = [
+                ((_tidy_transport_option_label(opt.label) if is_transport_form else opt.label), opt.value)
+                for opt in (f.options or [])
+            ]
             default_values = f.default_option_values if f.default_option_values else []
             built_fields.append(
                 genui.choice_picker(
