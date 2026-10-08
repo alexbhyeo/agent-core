@@ -1051,6 +1051,21 @@ async def perform_browser_input(event: Dict[str, Any]) -> Optional[Dict[str, Any
     elif kind == "refresh":
         pass
     elif kind == "reset":
+        # A "New" conversation used to only blank the one page _direct_page()
+        # happened to resolve to -- every other tab a past search left open
+        # (clicking into individual results opens new tabs; old runs never
+        # got cleaned up) stayed open indefinitely. With several accumulated,
+        # _direct_page()'s "last open page" pick could land on a stale one
+        # instead of whatever the next search actually uses, showing a blank
+        # or wrong-site live view. Close every other tab so exactly one,
+        # blank page is left.
+        context = page.context
+        for other in list(context.pages):
+            if other is not page and not other.is_closed():
+                try:
+                    await other.close()
+                except Exception:  # noqa: BLE001 -- best-effort cleanup, never block the reset on it
+                    pass
         await page.goto("about:blank")
     else:
         dy = _clamp(event.get("dy"), -1000, 1000)

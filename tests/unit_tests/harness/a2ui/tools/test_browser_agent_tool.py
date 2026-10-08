@@ -552,6 +552,49 @@ class TestPerformBrowserInput:
             with pytest.raises(RuntimeError):
                 await bat.perform_browser_input({"kind": "tap", "x": 0.5, "y": 0.5})
 
+    @pytest.mark.asyncio
+    async def test_reset_closes_every_other_open_tab_and_blanks_the_current_one(self):
+        # Regression test: tabs opened by past searches (clicking into an
+        # individual result opens a new one) were never closed, so "New"
+        # only blanking the one page _direct_page() happened to resolve to
+        # left the others accumulating indefinitely -- observed live, five
+        # tabs deep, with the live view ending up on a stale one instead of
+        # whatever the next search actually used.
+        page = _fake_page()
+        page.goto = AsyncMock()
+        still_open = MagicMock()
+        still_open.is_closed.return_value = False
+        still_open.close = AsyncMock()
+        already_closed = MagicMock()
+        already_closed.is_closed.return_value = True
+        already_closed.close = AsyncMock()
+        context = MagicMock()
+        context.pages = [still_open, page, already_closed]
+        page.context = context
+
+        with patch.object(bat, "_direct_page", AsyncMock(return_value=page)):
+            await bat.perform_browser_input({"kind": "reset"})
+
+        still_open.close.assert_awaited_once()
+        already_closed.close.assert_not_awaited()
+        page.goto.assert_awaited_once_with("about:blank")
+
+    @pytest.mark.asyncio
+    async def test_reset_tolerates_a_tab_that_fails_to_close(self):
+        page = _fake_page()
+        page.goto = AsyncMock()
+        stubborn = MagicMock()
+        stubborn.is_closed.return_value = False
+        stubborn.close = AsyncMock(side_effect=RuntimeError("target already navigating"))
+        context = MagicMock()
+        context.pages = [page, stubborn]
+        page.context = context
+
+        with patch.object(bat, "_direct_page", AsyncMock(return_value=page)):
+            await bat.perform_browser_input({"kind": "reset"})
+
+        page.goto.assert_awaited_once_with("about:blank")
+
 
 class TestBrowserCheckoutStopRail:
     """Page actions are refused once the page shows passenger details or
