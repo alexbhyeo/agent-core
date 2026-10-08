@@ -349,6 +349,85 @@ class TestBrowserHandoffToCheckout:
         assert result["checkout"]["filter_operator"] == ""
         assert result["checkout"]["filter_time"] == ""
 
+    @pytest.mark.asyncio
+    async def test_calls_recover_matching_page_with_the_chosen_operator(self):
+        checkout = {"url": "https://trip.com/book", "user_agent": "ua", "cookies": []}
+        with (
+            patch.object(bat, "_direct_page", AsyncMock(return_value=MagicMock())),
+            patch.object(bat, "_recover_matching_page", AsyncMock()) as recover,
+            patch.object(bat, "_checkout_handoff", AsyncMock(return_value=checkout)),
+        ):
+            await browser_handoff_to_checkout.invoke({"selected_label": "G7331 · 06:13"})
+        recover.assert_awaited_once()
+        assert recover.call_args.args[1] == "G7331"
+
+
+class TestPageMatchesLabel:
+    """_page_matches_label: a case-insensitive substring check of the page's
+    own text, used to tell whether the live page still shows the departure
+    the user chose before handing it off (see _recover_matching_page)."""
+
+    @pytest.mark.asyncio
+    async def test_empty_token_always_matches(self):
+        assert await bat._page_matches_label(MagicMock(), "") is True
+
+    @pytest.mark.asyncio
+    async def test_case_insensitive_substring_match(self):
+        page = MagicMock()
+        page.evaluate = AsyncMock(return_value="Shanghai Hongqiao -> Hangzhoudong\nG7331 06:13")
+        assert await bat._page_matches_label(page, "g7331") is True
+
+    @pytest.mark.asyncio
+    async def test_no_match_when_token_absent(self):
+        page = MagicMock()
+        page.evaluate = AsyncMock(return_value="Z175 04:08 -> 05:50")
+        assert await bat._page_matches_label(page, "G7331") is False
+
+    @pytest.mark.asyncio
+    async def test_unreadable_page_does_not_match(self):
+        page = MagicMock()
+        page.evaluate = AsyncMock(side_effect=RuntimeError("detached"))
+        assert await bat._page_matches_label(page, "G7331") is False
+
+
+class TestRecoverMatchingPage:
+    """_recover_matching_page: the search run can leave the live page on a
+    *different* result's own page (it often clicks into individual results
+    to read exact details) -- this steps back through browser history
+    looking for a page that shows the one the user actually chose."""
+
+    @pytest.mark.asyncio
+    async def test_already_matching_page_is_left_alone(self):
+        page = MagicMock()
+        page.evaluate = AsyncMock(return_value="G7331 06:13")
+        page.go_back = AsyncMock()
+        await bat._recover_matching_page(page, "G7331")
+        page.go_back.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_steps_back_through_history_until_a_match_is_found(self):
+        page = MagicMock()
+        page.evaluate = AsyncMock(side_effect=["Z175 04:08", "G7331 06:13"])
+        page.go_back = AsyncMock()
+        await bat._recover_matching_page(page, "G7331")
+        page.go_back.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_gives_up_after_a_few_tries_if_nothing_matches(self):
+        page = MagicMock()
+        page.evaluate = AsyncMock(return_value="Z175 04:08")
+        page.go_back = AsyncMock()
+        await bat._recover_matching_page(page, "G7331")
+        assert page.go_back.await_count == 3
+
+    @pytest.mark.asyncio
+    async def test_stops_if_there_is_no_more_history(self):
+        page = MagicMock()
+        page.evaluate = AsyncMock(return_value="Z175 04:08")
+        page.go_back = AsyncMock(side_effect=RuntimeError("no history"))
+        await bat._recover_matching_page(page, "G7331")
+        page.go_back.assert_awaited_once()
+
 
 class TestPerformBrowserInput:
     """perform_browser_input relays user taps/typing straight to the page."""

@@ -432,6 +432,39 @@ def request_option_selection(options: list[dict[str, str]], prompt: str) -> dict
 _PENDING_OPTION_SELECTION_REQUESTS: Dict[str, Dict[str, Any]] = {}
 
 
+async def _page_matches_label(page: Any, token: str) -> bool:
+    """True if the page's own text already contains this token (the chosen
+    operator/train number) -- case-insensitive, substring match."""
+    if not token:
+        return True
+    try:
+        text = await page.evaluate("() => document.body ? document.body.innerText : ''")
+    except Exception:  # noqa: BLE001 -- an unreadable page doesn't match
+        return False
+    return token.lower() in text.lower()
+
+
+async def _recover_matching_page(page: Any, operator: str) -> None:
+    """The search run can leave the live page on a *different* result's own
+    page -- it often clicks into individual results to read exact times and
+    prices before reporting back, and whichever one it looked at last is
+    whatever the page shows when the handoff runs, not necessarily the one
+    the user went on to choose (observed live: results for several trains
+    shown, user picks G7331, but the page had moved on to Z175's own booking
+    page by the time the handoff ran). Step back through browser history a
+    few times looking for a page that does show the chosen one, instead of
+    handing off whatever happens to be on screen."""
+    if await _page_matches_label(page, operator):
+        return
+    for _ in range(3):
+        try:
+            await page.go_back(wait_until="domcontentloaded", timeout=10000)
+        except Exception:  # noqa: BLE001 -- no more history, or it didn't settle in time
+            return
+        if await _page_matches_label(page, operator):
+            return
+
+
 @tool(
     description=(
         "Hands the current live browser session to the app's own checkout web view "
@@ -450,12 +483,13 @@ _PENDING_OPTION_SELECTION_REQUESTS: Dict[str, Dict[str, Any]] = {}
     )
 )
 async def browser_handoff_to_checkout(selected_label: str = "") -> dict[str, Any]:
+    operator, _, time_part = selected_label.partition(" · ")
     try:
         page = await _direct_page()
+        await _recover_matching_page(page, operator.strip())
         checkout = await _checkout_handoff(page)
     except Exception as exc:  # noqa: BLE001 -- report as an ordinary tool failure, not a crash
         return {"text": f"[ERROR] No live browser session to hand off: {exc}"}
-    operator, _, time_part = selected_label.partition(" · ")
     checkout["filter_operator"] = operator.strip()
     checkout["filter_time"] = time_part.strip()
     logger.info(f"[browser-checkout] direct url={checkout['url']} cookies={len(checkout['cookies'])} filter={operator.strip()!r}/{time_part.strip()!r}")
