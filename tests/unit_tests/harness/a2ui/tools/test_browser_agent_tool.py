@@ -409,7 +409,7 @@ class TestBrowserHandoffToCheckout:
         assert result["checkout"]["filter_time"] == ""
 
     @pytest.mark.asyncio
-    async def test_calls_recover_matching_page_with_the_chosen_operator(self):
+    async def test_calls_recover_matching_page_with_the_chosen_operator_and_time(self):
         checkout = {"url": "https://trip.com/book", "user_agent": "ua", "cookies": []}
         with (
             patch.object(bat, "_direct_page", AsyncMock(return_value=MagicMock())),
@@ -419,6 +419,7 @@ class TestBrowserHandoffToCheckout:
             await browser_handoff_to_checkout.invoke({"selected_label": "G7331 · 06:13"})
         recover.assert_awaited_once()
         assert recover.call_args.args[1] == "G7331"
+        assert recover.call_args.args[2] == "06:13"
 
 
 class TestPageMatchesLabel:
@@ -449,26 +450,69 @@ class TestPageMatchesLabel:
         assert await bat._page_matches_label(page, "G7331") is False
 
 
+class TestPageMatchesDeparture:
+    """_page_matches_departure: requires BOTH the operator and its exact
+    departure time to be on the page -- regression coverage for the
+    same-operator-different-time case (see its own docstring)."""
+
+    @pytest.mark.asyncio
+    async def test_true_when_both_operator_and_time_are_present(self):
+        page = MagicMock()
+        page.evaluate = AsyncMock(return_value="707-Inc · 12:30 -> Melaka Sentral")
+        assert await bat._page_matches_departure(page, "707-Inc", "12:30") is True
+
+    @pytest.mark.asyncio
+    async def test_false_when_operator_matches_but_a_different_time_is_shown(self):
+        # Regression test: observed live, the same operator ran more than
+        # one departure ("707-Inc" at both 07:15 and 12:30) -- a page for
+        # the wrong one of those still has the operator's name on it, so an
+        # operator-only check would wrongly accept it.
+        page = MagicMock()
+        page.evaluate = AsyncMock(return_value="707-Inc · 07:15 -> Melaka Sentral")
+        assert await bat._page_matches_departure(page, "707-Inc", "12:30") is False
+
+    @pytest.mark.asyncio
+    async def test_false_when_time_matches_but_a_different_operator_is_shown(self):
+        page = MagicMock()
+        page.evaluate = AsyncMock(return_value="Delima Express · 12:30 -> Melaka Sentral")
+        assert await bat._page_matches_departure(page, "707-Inc", "12:30") is False
+
+    @pytest.mark.asyncio
+    async def test_empty_operator_and_time_always_matches(self):
+        assert await bat._page_matches_departure(MagicMock(), "", "") is True
+
+
 class TestRecoverMatchingPage:
     """_recover_matching_page: the search run can leave the live page on a
     *different* result's own page (it often clicks into individual results
     to read exact details) -- this steps back through browser history
-    looking for a page that shows the one the user actually chose."""
+    looking for a page that shows the one the user actually chose, by both
+    its operator and its exact departure time."""
 
     @pytest.mark.asyncio
     async def test_already_matching_page_is_left_alone(self):
         page = MagicMock()
-        page.evaluate = AsyncMock(return_value="G7331 06:13")
+        page.evaluate = AsyncMock(return_value="707-Inc 12:30")
         page.go_back = AsyncMock()
-        await bat._recover_matching_page(page, "G7331")
+        await bat._recover_matching_page(page, "707-Inc", "12:30")
         page.go_back.assert_not_awaited()
 
     @pytest.mark.asyncio
-    async def test_steps_back_through_history_until_a_match_is_found(self):
+    async def test_steps_back_through_history_until_both_operator_and_time_match(self):
+        # The first page has the right operator but the wrong time (a
+        # different departure by the same operator) -- an operator-only
+        # check would have stopped here wrongly; this must keep going.
         page = MagicMock()
-        page.evaluate = AsyncMock(side_effect=["Z175 04:08", "G7331 06:13"])
+        page.evaluate = AsyncMock(
+            side_effect=[
+                "707-Inc 07:15",  # attempt 1, operator check -> True
+                "707-Inc 07:15",  # attempt 1, time check -> False (not 12:30)
+                "707-Inc 12:30",  # attempt 2 (after go_back), operator check -> True
+                "707-Inc 12:30",  # attempt 2, time check -> True
+            ]
+        )
         page.go_back = AsyncMock()
-        await bat._recover_matching_page(page, "G7331")
+        await bat._recover_matching_page(page, "707-Inc", "12:30")
         page.go_back.assert_awaited_once()
 
     @pytest.mark.asyncio
@@ -476,7 +520,7 @@ class TestRecoverMatchingPage:
         page = MagicMock()
         page.evaluate = AsyncMock(return_value="Z175 04:08")
         page.go_back = AsyncMock()
-        await bat._recover_matching_page(page, "G7331")
+        await bat._recover_matching_page(page, "G7331", "06:13")
         assert page.go_back.await_count == 3
 
     @pytest.mark.asyncio
@@ -484,7 +528,7 @@ class TestRecoverMatchingPage:
         page = MagicMock()
         page.evaluate = AsyncMock(return_value="Z175 04:08")
         page.go_back = AsyncMock(side_effect=RuntimeError("no history"))
-        await bat._recover_matching_page(page, "G7331")
+        await bat._recover_matching_page(page, "G7331", "06:13")
         page.go_back.assert_awaited_once()
 
 

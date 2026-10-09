@@ -444,7 +444,20 @@ async def _page_matches_label(page: Any, token: str) -> bool:
     return token.lower() in text.lower()
 
 
-async def _recover_matching_page(page: Any, operator: str) -> None:
+async def _page_matches_departure(page: Any, operator: str, time_text: str) -> bool:
+    """True only if the page shows BOTH the chosen operator and its exact
+    departure time. The operator alone isn't a reliable enough match --
+    observed live, a single operator ("707-Inc") ran more than one
+    departure in the same result set, each at a different time, and a page
+    for the *wrong* one of those still passed an operator-only check,
+    silently handing off the wrong departure despite otherwise-correct
+    recovery logic."""
+    if not await _page_matches_label(page, operator):
+        return False
+    return await _page_matches_label(page, time_text)
+
+
+async def _recover_matching_page(page: Any, operator: str, time_text: str) -> None:
     """The search run can leave the live page on a *different* result's own
     page -- it often clicks into individual results to read exact times and
     prices before reporting back, and whichever one it looked at last is
@@ -454,14 +467,14 @@ async def _recover_matching_page(page: Any, operator: str) -> None:
     page by the time the handoff ran). Step back through browser history a
     few times looking for a page that does show the chosen one, instead of
     handing off whatever happens to be on screen."""
-    if await _page_matches_label(page, operator):
+    if await _page_matches_departure(page, operator, time_text):
         return
     for _ in range(3):
         try:
             await page.go_back(wait_until="domcontentloaded", timeout=10000)
         except Exception:  # noqa: BLE001 -- no more history, or it didn't settle in time
             return
-        if await _page_matches_label(page, operator):
+        if await _page_matches_departure(page, operator, time_text):
             return
 
 
@@ -486,7 +499,7 @@ async def browser_handoff_to_checkout(selected_label: str = "") -> dict[str, Any
     operator, _, time_part = selected_label.partition(" · ")
     try:
         page = await _direct_page()
-        await _recover_matching_page(page, operator.strip())
+        await _recover_matching_page(page, operator.strip(), time_part.strip())
         checkout = await _checkout_handoff(page)
     except Exception as exc:  # noqa: BLE001 -- report as an ordinary tool failure, not a crash
         return {"text": f"[ERROR] No live browser session to hand off: {exc}"}
