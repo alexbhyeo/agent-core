@@ -466,16 +466,45 @@ async def _recover_matching_page(page: Any, operator: str, time_text: str) -> No
     shown, user picks G7331, but the page had moved on to Z175's own booking
     page by the time the handoff ran). Step back through browser history a
     few times looking for a page that does show the chosen one, instead of
-    handing off whatever happens to be on screen."""
+    handing off whatever happens to be on screen.
+
+    The live page's browser history is one long-lived tab shared across every
+    search this process ever runs, not just the current one -- `reset`
+    navigates it to `about:blank` rather than actually clearing history, so
+    stepping back far enough walks straight past that boundary into an
+    earlier, unrelated search on a different site entirely (observed live:
+    recovering a redBus departure wandered back through `about:blank` into a
+    leftover trip.com train search from an earlier test run, and the live
+    checkout handoff ended up on trip.com). Recovery never follows history
+    past the current page's own origin, and undoes itself back to the
+    original page if nothing on-site matches both operator and time."""
+    original_url = page.url
+    origin = urlsplit(original_url).hostname
     if await _page_matches_departure(page, operator, time_text):
         return
-    for _ in range(3):
+    matched = False
+    for depth in range(1, 4):
         try:
             await page.go_back(wait_until="domcontentloaded", timeout=10000)
         except Exception:  # noqa: BLE001 -- no more history, or it didn't settle in time
-            return
+            break
+        if urlsplit(page.url).hostname != origin:
+            logger.info(f"[browser-checkout] recover depth={depth} left origin (url={page.url}), undoing")
+            try:
+                await page.go_forward(wait_until="domcontentloaded", timeout=10000)
+            except Exception:  # noqa: BLE001 -- best effort undo
+                pass
+            break
         if await _page_matches_departure(page, operator, time_text):
-            return
+            matched = True
+            break
+    if matched:
+        return
+    if page.url != original_url:
+        try:
+            await page.goto(original_url, wait_until="domcontentloaded", timeout=10000)
+        except Exception:  # noqa: BLE001 -- best effort; leave page wherever it ended up
+            pass
 
 
 @tool(

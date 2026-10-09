@@ -373,6 +373,7 @@ class TestBrowserHandoffToCheckout:
         checkout = {"url": "https://redbus.sg/seats", "user_agent": "ua", "cookies": []}
         with (
             patch.object(bat, "_direct_page", AsyncMock(return_value=page)),
+            patch.object(bat, "_recover_matching_page", AsyncMock()),
             patch.object(bat, "_checkout_handoff", AsyncMock(return_value=checkout)),
         ):
             result = await browser_handoff_to_checkout.invoke({})
@@ -391,6 +392,7 @@ class TestBrowserHandoffToCheckout:
         checkout = {"url": "https://redbus.sg/seats", "user_agent": "ua", "cookies": []}
         with (
             patch.object(bat, "_direct_page", AsyncMock(return_value=MagicMock())),
+            patch.object(bat, "_recover_matching_page", AsyncMock()),
             patch.object(bat, "_checkout_handoff", AsyncMock(return_value=checkout)),
         ):
             result = await browser_handoff_to_checkout.invoke({"selected_label": "707-Inc · 07:15"})
@@ -402,6 +404,7 @@ class TestBrowserHandoffToCheckout:
         checkout = {"url": "https://redbus.sg/seats", "user_agent": "ua", "cookies": []}
         with (
             patch.object(bat, "_direct_page", AsyncMock(return_value=MagicMock())),
+            patch.object(bat, "_recover_matching_page", AsyncMock()),
             patch.object(bat, "_checkout_handoff", AsyncMock(return_value=checkout)),
         ):
             result = await browser_handoff_to_checkout.invoke({})
@@ -482,54 +485,115 @@ class TestPageMatchesDeparture:
         assert await bat._page_matches_departure(MagicMock(), "", "") is True
 
 
+class _FakeHistoryPage:
+    """A minimal stand-in for a Playwright Page that actually models browser
+    history as a position in a list, so go_back/go_forward/goto behave like
+    the real thing instead of needing a brittle chain of mocked return
+    values. `history` is oldest-first; `start` is the current entry's index."""
+
+    def __init__(self, history: list[tuple[str, str]], start: int):
+        self._history = list(history)
+        self._index = start
+        self.go_back_calls = 0
+        self.go_forward_calls = 0
+        self.goto_urls: list[str] = []
+
+    @property
+    def url(self) -> str:
+        return self._history[self._index][0]
+
+    async def evaluate(self, _script: str) -> str:
+        return self._history[self._index][1]
+
+    async def go_back(self, **_kwargs):
+        self.go_back_calls += 1
+        if self._index == 0:
+            raise RuntimeError("no more history")
+        self._index -= 1
+
+    async def go_forward(self, **_kwargs):
+        self.go_forward_calls += 1
+        self._index += 1
+
+    async def goto(self, url: str, **_kwargs):
+        self.goto_urls.append(url)
+        for i, (entry_url, _) in enumerate(self._history):
+            if entry_url == url:
+                self._index = i
+                return
+
+
 class TestRecoverMatchingPage:
     """_recover_matching_page: the search run can leave the live page on a
     *different* result's own page (it often clicks into individual results
     to read exact details) -- this steps back through browser history
     looking for a page that shows the one the user actually chose, by both
-    its operator and its exact departure time."""
+    its operator and its exact departure time. It must never follow that
+    history past the current site's own origin (see its own docstring for
+    the live trip.com/redBus cross-contamination this guards against)."""
 
     @pytest.mark.asyncio
     async def test_already_matching_page_is_left_alone(self):
-        page = MagicMock()
-        page.evaluate = AsyncMock(return_value="707-Inc 12:30")
-        page.go_back = AsyncMock()
+        page = _FakeHistoryPage([("https://redbus.sg/x", "707-Inc 12:30")], start=0)
         await bat._recover_matching_page(page, "707-Inc", "12:30")
-        page.go_back.assert_not_awaited()
+        assert page.go_back_calls == 0
 
     @pytest.mark.asyncio
     async def test_steps_back_through_history_until_both_operator_and_time_match(self):
-        # The first page has the right operator but the wrong time (a
+        # The current page has the right operator but the wrong time (a
         # different departure by the same operator) -- an operator-only
         # check would have stopped here wrongly; this must keep going.
-        page = MagicMock()
-        page.evaluate = AsyncMock(
-            side_effect=[
-                "707-Inc 07:15",  # attempt 1, operator check -> True
-                "707-Inc 07:15",  # attempt 1, time check -> False (not 12:30)
-                "707-Inc 12:30",  # attempt 2 (after go_back), operator check -> True
-                "707-Inc 12:30",  # attempt 2, time check -> True
-            ]
+        page = _FakeHistoryPage(
+            [
+                ("https://redbus.sg/listing", "707-Inc 12:30 and other departures"),
+                ("https://redbus.sg/detail-0715", "707-Inc 07:15"),
+            ],
+            start=1,
         )
-        page.go_back = AsyncMock()
         await bat._recover_matching_page(page, "707-Inc", "12:30")
-        page.go_back.assert_awaited_once()
+        assert page.go_back_calls == 1
+        assert page.url == "https://redbus.sg/listing"
 
     @pytest.mark.asyncio
-    async def test_gives_up_after_a_few_tries_if_nothing_matches(self):
-        page = MagicMock()
-        page.evaluate = AsyncMock(return_value="Z175 04:08")
-        page.go_back = AsyncMock()
+    async def test_gives_up_and_restores_the_original_page_if_nothing_matches(self):
+        history = [
+            ("https://redbus.sg/a", "Z175 04:08"),
+            ("https://redbus.sg/b", "Z175 04:08"),
+            ("https://redbus.sg/c", "Z175 04:08"),
+            ("https://redbus.sg/d", "Z175 04:08"),
+        ]
+        page = _FakeHistoryPage(history, start=3)
         await bat._recover_matching_page(page, "G7331", "06:13")
-        assert page.go_back.await_count == 3
+        assert page.go_back_calls == 3
+        # Nothing on-site matched -- restored to where it started, not left
+        # on whatever the last go_back happened to land on.
+        assert page.url == "https://redbus.sg/d"
+        assert page.goto_urls == ["https://redbus.sg/d"]
 
     @pytest.mark.asyncio
     async def test_stops_if_there_is_no_more_history(self):
-        page = MagicMock()
-        page.evaluate = AsyncMock(return_value="Z175 04:08")
-        page.go_back = AsyncMock(side_effect=RuntimeError("no history"))
+        page = _FakeHistoryPage([("https://redbus.sg/a", "Z175 04:08")], start=0)
         await bat._recover_matching_page(page, "G7331", "06:13")
-        page.go_back.assert_awaited_once()
+        assert page.go_back_calls == 1
+        assert page.goto_urls == []  # never moved, so no restore needed
+
+    @pytest.mark.asyncio
+    async def test_never_follows_history_past_the_current_site_into_a_different_one(self):
+        # Regression test: observed live, a shared long-lived browser tab's
+        # history reached back through `about:blank` (the boundary a prior
+        # `reset` left behind) into a leftover trip.com train search from an
+        # unrelated earlier test run, and the checkout handoff landed there.
+        history = [
+            ("https://www.trip.com/trains/list", "G7331 06:13 Shanghai -> Hangzhou"),
+            ("about:blank", ""),
+            ("https://www.redbus.sg/", "redBus home page, no departure info"),
+        ]
+        page = _FakeHistoryPage(history, start=2)
+        await bat._recover_matching_page(page, "707-Inc", "07:45")
+        assert page.go_back_calls == 1  # stepped into about:blank, then stopped
+        assert page.go_forward_calls == 1  # undid that one step
+        assert page.url == "https://www.redbus.sg/"  # never reached trip.com
+        assert page.goto_urls == []  # go_forward already restored it
 
 
 class TestPerformBrowserInput:
