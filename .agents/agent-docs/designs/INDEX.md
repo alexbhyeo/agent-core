@@ -17,9 +17,13 @@ generated: true
 | [agent_evolving](#module-agent_evolving) |
 | [agent_evolving/trajectory](#module-agent_evolving-trajectory) |
 | [agent_teams](#module-agent_teams) |
+| [agent_teams/harness](#module-agent_teams-harness) |
 | [agent_teams/workflow](#module-agent_teams-workflow) |
 | [core/foundation/llm](#module-core-foundation-llm) |
+| [core/runner](#module-core-runner) |
+| [core/sys_operation](#module-core-sys_operation) |
 | [extensions/observability](#module-extensions-observability) |
+| [extensions/sys_operation](#module-extensions-sys_operation) |
 | [harness](#module-harness) |
 | [harness_providers](#module-harness_providers) |
 | [未分类](#module-unclassified) |
@@ -73,6 +77,16 @@ generated: true
 | [SDD-0016](archive/SDD-0016-third-party-agent-reliability/design.md) | 三方 Agent 可靠性设计 | shipped | @zhanglongmin | core | 2026-08-31 |
 | [SDD-0018](archive/SDD-0018-swarmflow-team-runtime-binding/design.md) | Swarmflow 启停与 Team 生命周期联动（小飞机控灯 / 恢复裁决 / 冷启动续跑） | shipped | @chenchunzhou | core | 2026-09-18 |
 
+<a id="module-agent_teams-harness"></a>
+
+## agent_teams/harness
+
+### 开发前 (proposals)
+
+| ID | 标题 | 状态 | 作者 | 领域 | 更新日期 |
+|---|---|---|---|---|---|
+| [D-20261124-0855-firecracker-session-manager](proposals/D-20261124-0855-firecracker-session-manager/design.md) | Firecracker 会话管理器设计提案 | draft | alexbhyeo | core | 2026-11-24 |
+
 <a id="module-agent_teams-workflow"></a>
 
 ## agent_teams/workflow
@@ -118,6 +132,26 @@ generated: true
 |---|---|---|---|---|---|
 | [D-20261112-1120-goal-assessment-isolation](active/D-20261112-1120-goal-assessment-isolation/design.md) | Goal 独立评估的轨迹与执行上下文隔离 | in-development | alan_cheng | observability | 2026-11-12 |
 
+<a id="module-core-runner"></a>
+
+## core/runner
+
+### 开发前 (proposals)
+
+| ID | 标题 | 状态 | 作者 | 领域 | 更新日期 |
+|---|---|---|---|---|---|
+| [D-20261124-0855-firecracker-session-manager](proposals/D-20261124-0855-firecracker-session-manager/design.md) | Firecracker 会话管理器设计提案 | draft | alexbhyeo | core | 2026-11-24 |
+
+<a id="module-core-sys_operation"></a>
+
+## core/sys_operation
+
+### 开发前 (proposals)
+
+| ID | 标题 | 状态 | 作者 | 领域 | 更新日期 |
+|---|---|---|---|---|---|
+| [D-20261124-0855-firecracker-session-manager](proposals/D-20261124-0855-firecracker-session-manager/design.md) | Firecracker 会话管理器设计提案 | draft | alexbhyeo | core | 2026-11-24 |
+
 <a id="module-extensions-observability"></a>
 
 ## extensions/observability
@@ -135,6 +169,16 @@ generated: true
 |---|---|---|---|---|---|
 | [D-20261112-1120-goal-assessment-isolation](active/D-20261112-1120-goal-assessment-isolation/design.md) | Goal 独立评估的轨迹与执行上下文隔离 | in-development | alan_cheng | observability | 2026-11-12 |
 
+<a id="module-extensions-sys_operation"></a>
+
+## extensions/sys_operation
+
+### 开发前 (proposals)
+
+| ID | 标题 | 状态 | 作者 | 领域 | 更新日期 |
+|---|---|---|---|---|---|
+| [D-20261124-0855-firecracker-session-manager](proposals/D-20261124-0855-firecracker-session-manager/design.md) | Firecracker 会话管理器设计提案 | draft | alexbhyeo | core | 2026-11-24 |
+
 <a id="module-harness"></a>
 
 ## harness
@@ -143,6 +187,7 @@ generated: true
 
 | ID | 标题 | 状态 | 作者 | 领域 | 更新日期 |
 |---|---|---|---|---|---|
+| [D-20261124-0855-firecracker-session-manager](proposals/D-20261124-0855-firecracker-session-manager/design.md) | Firecracker 会话管理器设计提案 | draft | alexbhyeo | core | 2026-11-24 |
 | [SDD-0022](proposals/SDD-0022-trajectory-observability-framework/design.md) | 轨迹观测框架：基于 OTel GenAI 语义约定的 Harness 与 Team 轨迹采集和处理 | draft | @alan_cheng | observability | 2026-09-15 |
 | [SDD-0024](proposals/SDD-0024-trajectory-projection-evolution-rl/design.md) | 轨迹投影：把 OTel 标准轨迹投影为自演进与在线 AgentRL 输入 | draft | @alan_cheng | observability | 2026-09-15 |
 

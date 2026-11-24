@@ -27,6 +27,7 @@ generated: true
 | [core/controller](#module-core-controller) |
 | [core/foundation/llm](#module-core-foundation-llm) |
 | [core/foundation/llm/model_clients](#module-core-foundation-llm-model_clients) |
+| [core/runner](#module-core-runner) |
 | [core/runner/drunner/dmessage_queue](#module-core-runner-drunner-dmessage_queue) |
 | [core/session](#module-core-session) |
 | [core/session/tracer](#module-core-session-tracer) |
@@ -36,6 +37,7 @@ generated: true
 | [extensions.tracer_otel](#module-extensions-tracer_otel) |
 | [extensions/a2a](#module-extensions-a2a) |
 | [extensions/observability](#module-extensions-observability) |
+| [extensions/sys_operation](#module-extensions-sys_operation) |
 | [extensions/tracer_otel](#module-extensions-tracer_otel) |
 | [harness](#module-harness) |
 | [harness/moa](#module-harness-moa) |
@@ -307,6 +309,8 @@ generated: true
 
 | ID / 文档 | 类型 | 标题 | 作者 | 关联 D |
 |---|---|---|---|---|
+| [D-20261124-0855-firecracker-session-manager](designs/proposals/D-20261124-0855-firecracker-session-manager/design.md) | D | Firecracker 会话管理器设计提案 | alexbhyeo | — |
+| [D-20261124-0855-firecracker-session-manager-en](designs/proposals/D-20261124-0855-firecracker-session-manager/assets/design_en.md) | D | Firecracker Session Manager Design Proposal | alexbhyeo | — |
 | [F-20261118-1150-team-document-memory](features/F_20261118_1150_team-document-memory.md) | F | Team 接入 Jiuwen 文档记忆 | Wang Tao | 无独立 D：依据 D-20261113-2017-jiuwen-memory-team-upgrade 及已确认的跨仓 Team 方案。 |
 
 <a id="module-agent_teams-memory"></a>
@@ -399,6 +403,15 @@ generated: true
 |---|---|---|---|---|
 | [B_20261117_1727_anthropic-output-limit-errors](bugfix/openjiuwen/core/B_20261117_1727_anthropic-output-limit-errors.md) | B | 模型输出上限截断可见错误修复 | lizhiyuan | 无独立 D：用户在本轮会话确认的 Anthropic 输出上限错误处理范围，未形成独立设计文档。 |
 
+<a id="module-core-runner"></a>
+
+## core/runner
+
+| ID / 文档 | 类型 | 标题 | 作者 | 关联 D |
+|---|---|---|---|---|
+| [D-20261124-0855-firecracker-session-manager](designs/proposals/D-20261124-0855-firecracker-session-manager/design.md) | D | Firecracker 会话管理器设计提案 | alexbhyeo | — |
+| [D-20261124-0855-firecracker-session-manager-en](designs/proposals/D-20261124-0855-firecracker-session-manager/assets/design_en.md) | D | Firecracker Session Manager Design Proposal | alexbhyeo | — |
+
 <a id="module-core-runner-drunner-dmessage_queue"></a>
 
 ## core/runner/drunner/dmessage_queue
@@ -439,6 +452,8 @@ generated: true
 
 | ID / 文档 | 类型 | 标题 | 作者 | 关联 D |
 |---|---|---|---|---|
+| [D-20261124-0855-firecracker-session-manager](designs/proposals/D-20261124-0855-firecracker-session-manager/design.md) | D | Firecracker 会话管理器设计提案 | alexbhyeo | — |
+| [D-20261124-0855-firecracker-session-manager-en](designs/proposals/D-20261124-0855-firecracker-session-manager/assets/design_en.md) | D | Firecracker Session Manager Design Proposal | alexbhyeo | — |
 | [F_20261104_1720_tool-execution-environment](features/F_20261104_1720_tool-execution-environment.md) | F | 工具执行环境作用域 | alan_cheng | 无独立 D：无独立 D；在现有 harness 工具调用与 team 会话存储契约上的小范围扩展。 |
 | [B_20261104_2054_recovered-context-seed-and-execution-environment](bugfix/agent_teams/B_20261104_2054_recovered-context-seed-and-execution-environment.md) | B | 冷恢复后成员策略 seed 与执行环境传递修复 | alan_cheng | 无独立 D：无独立 D；修复 F_20261104_1720_tool-execution-environment / F_20261104_1721_session-execution-settings 在冷恢复与远程调用路径上的遗漏。 |
 
@@ -481,6 +496,15 @@ generated: true
 | [F_20261112_1120_goal-assessment-isolation](features/F_20261112_1120_goal-assessment-isolation.md) | F | Goal 评估调用的观测隔离实施 | alan_cheng | [D-20261112-1120-goal-assessment-isolation](designs/active/D-20261112-1120-goal-assessment-isolation/design.md) |
 | [B_20261102_1120_avatar-child-session-trace-root](bugfix/agent_teams/B_20261102_1120_avatar-child-session-trace-root.md) | B | Swarmflow avatar child session 找不到 Team 轨迹 root | wangcan103 | 无独立 D：普通缺陷修复；沿用 S_18 的 session 隔离契约，无独立设计 |
 
+<a id="module-extensions-sys_operation"></a>
+
+## extensions/sys_operation
+
+| ID / 文档 | 类型 | 标题 | 作者 | 关联 D |
+|---|---|---|---|---|
+| [D-20261124-0855-firecracker-session-manager](designs/proposals/D-20261124-0855-firecracker-session-manager/design.md) | D | Firecracker 会话管理器设计提案 | alexbhyeo | — |
+| [D-20261124-0855-firecracker-session-manager-en](designs/proposals/D-20261124-0855-firecracker-session-manager/assets/design_en.md) | D | Firecracker Session Manager Design Proposal | alexbhyeo | — |
+
 <a id="module-extensions-tracer_otel"></a>
 
 ## extensions/tracer_otel
@@ -499,6 +523,8 @@ generated: true
 |---|---|---|---|---|
 | [D-20261110-1903-team-goal-mode](designs/active/D-20261110-1903-team-goal-mode/design.md) | D | Team Leader 与成员 Goal 模式设计方案 | alan_cheng | — |
 | [D-20261112-1120-goal-assessment-isolation](designs/active/D-20261112-1120-goal-assessment-isolation/design.md) | D | Goal 独立评估的轨迹与执行上下文隔离 | alan_cheng | — |
+| [D-20261124-0855-firecracker-session-manager](designs/proposals/D-20261124-0855-firecracker-session-manager/design.md) | D | Firecracker 会话管理器设计提案 | alexbhyeo | — |
+| [D-20261124-0855-firecracker-session-manager-en](designs/proposals/D-20261124-0855-firecracker-session-manager/assets/design_en.md) | D | Firecracker Session Manager Design Proposal | alexbhyeo | — |
 | [SDD-0006](designs/archive/SDD-0006-native-harness-async-tool-control-and-spill/design.md) | D | 原生 Harness 异步工具管控框架与磁盘溢写 | @alan_cheng | — |
 | [SDD-0022](designs/proposals/SDD-0022-trajectory-observability-framework/design.md) | D | 轨迹观测框架：基于 OTel GenAI 语义约定的 Harness 与 Team 轨迹采集和处理 | @alan_cheng | — |
 | [SDD-0024](designs/proposals/SDD-0024-trajectory-projection-evolution-rl/design.md) | D | 轨迹投影：把 OTel 标准轨迹投影为自演进与在线 AgentRL 输入 | @alan_cheng | — |
