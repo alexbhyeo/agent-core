@@ -20,7 +20,9 @@ generated: true
 | [core/controller](#module-core-controller) |
 | [core/runner/drunner/dmessage_queue](#module-core-runner-drunner-dmessage_queue) |
 | [core/session](#module-core-session) |
+| [deploy/firecracker](#module-deploy-firecracker) |
 | [extensions/a2a](#module-extensions-a2a) |
+| [extensions/sys_operation](#module-extensions-sys_operation) |
 | [harness](#module-harness) |
 
 <a id="module-agent_evolving-ttse"></a>
@@ -101,6 +103,14 @@ generated: true
 |---|---|---|---|---|
 | [S_01_runtime-data-compatibility](core_runtime/S_01_runtime-data-compatibility.md) | S | 运行时身份、持久化与流式结束兼容规约 | alan_cheng | — |
 
+<a id="module-deploy-firecracker"></a>
+
+## deploy/firecracker
+
+| ID / 文档 | 类型 | 标题 | 作者 | 关联 D |
+|---|---|---|---|---|
+| [S_01_firecracker-session-sandbox](sys_operation/S_01_firecracker-session-sandbox.md) | S | Firecracker 会话沙箱规约 | alexbhyeo | — |
+
 <a id="module-extensions-a2a"></a>
 
 ## extensions/a2a
@@ -108,6 +118,14 @@ generated: true
 | ID / 文档 | 类型 | 标题 | 作者 | 关联 D |
 |---|---|---|---|---|
 | [S_01_runtime-data-compatibility](core_runtime/S_01_runtime-data-compatibility.md) | S | 运行时身份、持久化与流式结束兼容规约 | alan_cheng | — |
+
+<a id="module-extensions-sys_operation"></a>
+
+## extensions/sys_operation
+
+| ID / 文档 | 类型 | 标题 | 作者 | 关联 D |
+|---|---|---|---|---|
+| [S_01_firecracker-session-sandbox](sys_operation/S_01_firecracker-session-sandbox.md) | S | Firecracker 会话沙箱规约 | alexbhyeo | — |
 
 <a id="module-harness"></a>
 
