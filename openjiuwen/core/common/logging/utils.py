@@ -42,6 +42,28 @@ def set_session_id(trace_id: str = "default_trace_id") -> None:
     _trace_id_context.set(trace_id)
 
 
+def bind_session_id(session_id: str) -> contextvars.Token:
+    """Set the session id in the current context and return a token for :func:`unbind_session_id`.
+
+    Use this (rather than :func:`set_session_id`) around a bounded scope such
+    as one agent run, so the previous value is restored afterwards.
+    """
+    return _trace_id_context.set(session_id)
+
+
+def unbind_session_id(token: contextvars.Token) -> None:
+    """Restore the session id that was current before :func:`bind_session_id`.
+
+    A token created in a different context (e.g. an async generator finalized
+    by another task) cannot be reset; the binding then simply ends with that
+    context.
+    """
+    try:
+        _trace_id_context.reset(token)
+    except ValueError:
+        pass
+
+
 def get_session_id() -> Optional[str]:
     """
     Get trace_id from current context

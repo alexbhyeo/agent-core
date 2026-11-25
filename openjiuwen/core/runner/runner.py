@@ -15,6 +15,7 @@ import anyio
 from openjiuwen.core.common.exception.codes import StatusCode
 from openjiuwen.core.common.exception.errors import build_error
 from openjiuwen.core.common.logging import LogEventType, runner_logger as logger
+from openjiuwen.core.common.logging.utils import bind_session_id, unbind_session_id
 from openjiuwen.core.context_engine import ModelContext
 from openjiuwen.core.runner.callback import AsyncCallbackFramework
 from openjiuwen.core.runner.drunner.dmessage_queue.dsubscription.reply_topic_subscription import ReplyTopicSubscription
@@ -435,15 +436,34 @@ class _RunnerImpl(_TeamRunnerMixin):
         """
         with self._root_task_group_scope():
             agent_instance, agent_session = await self._prepare_agent(agent, inputs, session)
-            if self._is_remote_agent(agent_instance):
-                res = await agent_instance.invoke(inputs)
-            elif isinstance(agent_instance, LegacyBaseAgent):
-                # ControllerAgent handles its own session lifecycle
-                res = await agent_instance.invoke(inputs, session=None)
-            else:
-                res = await agent_instance.invoke(inputs, agent_session)
-                await agent_session.post_run()
+            with self._session_id_scope(agent_session):
+                if self._is_remote_agent(agent_instance):
+                    res = await agent_instance.invoke(inputs)
+                elif isinstance(agent_instance, LegacyBaseAgent):
+                    # ControllerAgent handles its own session lifecycle
+                    res = await agent_instance.invoke(inputs, session=None)
+                else:
+                    res = await agent_instance.invoke(inputs, agent_session)
+                    await agent_session.post_run()
             return res
+
+    @staticmethod
+    @contextmanager
+    def _session_id_scope(agent_session: Optional[AgentSession]):
+        """Expose the run's session id via ``get_session_id()`` for the duration of the run.
+
+        Session-scoped consumers (log trace ids, SESSION-scoped sandboxes) read it
+        from context; without this every single-agent run saw ``default_trace_id``.
+        """
+        session_id = agent_session.get_session_id() if agent_session is not None else None
+        if not session_id:
+            yield
+            return
+        token = bind_session_id(session_id)
+        try:
+            yield
+        finally:
+            unbind_session_id(token)
 
     async def run_agent_streaming(self,
                                   agent: str | BaseAgent | LegacyBaseAgent,
@@ -467,17 +487,18 @@ class _RunnerImpl(_TeamRunnerMixin):
         token = self._enter_root_task_group_context()
         try:
             agent_instance, agent_session = await self._prepare_agent(agent, inputs, session)
-            if self._is_remote_agent(agent_instance):
-                async for chunk in agent_instance.stream(inputs):
-                    yield chunk
-            elif isinstance(agent_instance, LegacyBaseAgent):
-                # ControllerAgent handles its own session lifecycle
-                async for chunk in agent_instance.stream(inputs, session=None):
-                    yield chunk
-            else:
-                async for chunk in agent_instance.stream(inputs, session=agent_session):
-                    yield chunk
-                await agent_session.post_run()
+            with self._session_id_scope(agent_session):
+                if self._is_remote_agent(agent_instance):
+                    async for chunk in agent_instance.stream(inputs):
+                        yield chunk
+                elif isinstance(agent_instance, LegacyBaseAgent):
+                    # ControllerAgent handles its own session lifecycle
+                    async for chunk in agent_instance.stream(inputs, session=None):
+                        yield chunk
+                else:
+                    async for chunk in agent_instance.stream(inputs, session=agent_session):
+                        yield chunk
+                    await agent_session.post_run()
         finally:
             self._exit_root_task_group_context(token)
 
