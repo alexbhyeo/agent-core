@@ -39,12 +39,15 @@ class SandboxGatewayClientMixin:
         return _resolve_isolation_key_template(self._isolation_key_template)
 
     async def _get_gateway_client(self) -> SandboxGatewayClient:
-        if not hasattr(self, '_gateway_client'):
-            self._gateway_client = SandboxGatewayClient(
-                config=self._config,
-                isolation_key=self._get_resolved_isolation_key(),
-            )
-        return self._gateway_client
+        # One client per resolved key: a SESSION-scoped operation serves every
+        # session that uses it, so the key must be resolved on each call.
+        isolation_key = self._get_resolved_isolation_key()
+        clients = self.__dict__.setdefault("_gateway_clients", {})
+        client = clients.get(isolation_key)
+        if client is None:
+            client = SandboxGatewayClient(config=self._config, isolation_key=isolation_key)
+            clients[isolation_key] = client
+        return client
 
     async def invoke(self, method: str, **params) -> Any:
         """Invoke a provider method through the gateway full-chain routing."""
