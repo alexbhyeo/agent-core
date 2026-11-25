@@ -1,0 +1,30 @@
+#!/bin/bash
+# PID 1 inside a Firecracker session VM.
+# eth0 is configured by the kernel (ip= boot argument); this script mounts the
+# usual filesystems, points DNS at public resolvers, routes MMDS, then hands
+# over to tini so the guest agent runs with proper zombie reaping.
+set -u
+mount -t proc proc /proc
+mount -t sysfs sysfs /sys
+mountpoint -q /dev || mount -t devtmpfs devtmpfs /dev
+mkdir -p /dev/pts /dev/shm
+mount -t devpts devpts /dev/pts
+mount -t tmpfs -o mode=1777 tmpfs /dev/shm
+# devtmpfs has no fd links; bash process substitution (used by the aio provider) needs /dev/fd.
+ln -sfn /proc/self/fd /dev/fd
+ln -sfn /proc/self/fd/0 /dev/stdin
+ln -sfn /proc/self/fd/1 /dev/stdout
+ln -sfn /proc/self/fd/2 /dev/stderr
+mount -t tmpfs tmpfs /run
+mount -t tmpfs -o mode=1777 tmpfs /tmp
+mount -t cgroup2 cgroup2 /sys/fs/cgroup 2>/dev/null || true
+
+hostname fc-session
+ip link set lo up
+# MMDS lives on a link-local address reached through eth0.
+ip route add 169.254.169.254 dev eth0 2>/dev/null || true
+printf 'nameserver 1.1.1.1\nnameserver 8.8.8.8\n' > /etc/resolv.conf
+
+export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+export HOME=/root
+exec /usr/bin/tini -s -- /usr/bin/python3 /opt/fc/fc_guest_agent.py
