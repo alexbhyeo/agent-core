@@ -422,6 +422,8 @@ generated: true
 | [D-20261124-0855-firecracker-session-manager](designs/proposals/D-20261124-0855-firecracker-session-manager/design.md) | D | Firecracker 会话管理器设计提案 | alexbhyeo | — |
 | [D-20261124-0855-firecracker-session-manager-en](designs/proposals/D-20261124-0855-firecracker-session-manager/assets/design_en.md) | D | Firecracker Session Manager Design Proposal | alexbhyeo | — |
 | [F_20261125_0200_firecracker-session-sandbox-phase1](features/F_20261125_0200_firecracker-session-sandbox-phase1.md) | F | Firecracker 会话沙箱第一阶段实施与决策归档 | alexbhyeo | [D-20261124-0855-firecracker-session-manager](designs/proposals/D-20261124-0855-firecracker-session-manager/design.md) |
+| [F_20261126_0726_firecracker-session-sandbox-phase2-4](features/F_20261126_0726_firecracker-session-sandbox-phase2-4.md) | F | Firecracker 会话沙箱第二至第四阶段实施与决策归档 | alexbhyeo | [D-20261124-0855-firecracker-session-manager](designs/proposals/D-20261124-0855-firecracker-session-manager/design.md) |
+| [S_01_firecracker-session-sandbox](specs/sys_operation/S_01_firecracker-session-sandbox.md) | S | Firecracker 会话沙箱规约 | alexbhyeo | — |
 
 <a id="module-core-runner-drunner-dmessage_queue"></a>
 
@@ -467,7 +469,9 @@ generated: true
 | [D-20261124-0855-firecracker-session-manager-en](designs/proposals/D-20261124-0855-firecracker-session-manager/assets/design_en.md) | D | Firecracker Session Manager Design Proposal | alexbhyeo | — |
 | [F_20261104_1720_tool-execution-environment](features/F_20261104_1720_tool-execution-environment.md) | F | 工具执行环境作用域 | alan_cheng | 无独立 D：无独立 D；在现有 harness 工具调用与 team 会话存储契约上的小范围扩展。 |
 | [F_20261125_0200_firecracker-session-sandbox-phase1](features/F_20261125_0200_firecracker-session-sandbox-phase1.md) | F | Firecracker 会话沙箱第一阶段实施与决策归档 | alexbhyeo | [D-20261124-0855-firecracker-session-manager](designs/proposals/D-20261124-0855-firecracker-session-manager/design.md) |
+| [F_20261126_0726_firecracker-session-sandbox-phase2-4](features/F_20261126_0726_firecracker-session-sandbox-phase2-4.md) | F | Firecracker 会话沙箱第二至第四阶段实施与决策归档 | alexbhyeo | [D-20261124-0855-firecracker-session-manager](designs/proposals/D-20261124-0855-firecracker-session-manager/design.md) |
 | [B_20261104_2054_recovered-context-seed-and-execution-environment](bugfix/agent_teams/B_20261104_2054_recovered-context-seed-and-execution-environment.md) | B | 冷恢复后成员策略 seed 与执行环境传递修复 | alan_cheng | 无独立 D：无独立 D；修复 F_20261104_1720_tool-execution-environment / F_20261104_1721_session-execution-settings 在冷恢复与远程调用路径上的遗漏。 |
+| [S_01_firecracker-session-sandbox](specs/sys_operation/S_01_firecracker-session-sandbox.md) | S | Firecracker 会话沙箱规约 | alexbhyeo | — |
 
 <a id="module-core-workflow"></a>
 
@@ -525,6 +529,8 @@ generated: true
 | [D-20261124-0855-firecracker-session-manager](designs/proposals/D-20261124-0855-firecracker-session-manager/design.md) | D | Firecracker 会话管理器设计提案 | alexbhyeo | — |
 | [D-20261124-0855-firecracker-session-manager-en](designs/proposals/D-20261124-0855-firecracker-session-manager/assets/design_en.md) | D | Firecracker Session Manager Design Proposal | alexbhyeo | — |
 | [F_20261125_0200_firecracker-session-sandbox-phase1](features/F_20261125_0200_firecracker-session-sandbox-phase1.md) | F | Firecracker 会话沙箱第一阶段实施与决策归档 | alexbhyeo | [D-20261124-0855-firecracker-session-manager](designs/proposals/D-20261124-0855-firecracker-session-manager/design.md) |
+| [F_20261126_0726_firecracker-session-sandbox-phase2-4](features/F_20261126_0726_firecracker-session-sandbox-phase2-4.md) | F | Firecracker 会话沙箱第二至第四阶段实施与决策归档 | alexbhyeo | [D-20261124-0855-firecracker-session-manager](designs/proposals/D-20261124-0855-firecracker-session-manager/design.md) |
+| [F_20261126_0926_firecracker-session-sandbox-phase5-messaging](features/F_20261126_0926_firecracker-session-sandbox-phase5-messaging.md) | F | Firecracker 会话沙箱第五阶段与 VM 任务用户消息实施与决策归档 | alexbhyeo | [D-20261124-0855-firecracker-session-manager](designs/proposals/D-20261124-0855-firecracker-session-manager/design.md) |
 | [S_01_firecracker-session-sandbox](specs/sys_operation/S_01_firecracker-session-sandbox.md) | S | Firecracker 会话沙箱规约 | alexbhyeo | — |
 
 <a id="module-extensions-tracer_otel"></a>
