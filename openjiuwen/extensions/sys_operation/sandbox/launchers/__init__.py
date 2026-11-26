@@ -10,9 +10,15 @@ from openjiuwen.extensions.sys_operation.sandbox.launchers.firecracker import ( 
     FirecrackerLauncherConfig,
     build_browser_instance,
     build_firecracker_gateway_config,
+    fork_session,
     get_session_info,
+    get_session_messages,
     is_ownership_error,
     manager_http_status,
+    register_session_mcp_server,
+    reply_to_session_message,
+    scoped_resource_id,
+    set_session_secrets,
 )
 
 __all__ = [
@@ -20,7 +26,13 @@ __all__ = [
     "FirecrackerLauncherConfig",
     "build_browser_instance",
     "build_firecracker_gateway_config",
+    "fork_session",
     "get_session_info",
+    "get_session_messages",
     "is_ownership_error",
     "manager_http_status",
+    "register_session_mcp_server",
+    "reply_to_session_message",
+    "scoped_resource_id",
+    "set_session_secrets",
 ]

@@ -15,6 +15,7 @@ record or cached provider, even if they present the same session id.
 
 from __future__ import annotations
 
+import os
 import re
 from dataclasses import dataclass
 from typing import Any, Dict, Literal, Optional
@@ -53,9 +54,9 @@ class FirecrackerLauncherConfig(SandboxLauncherConfig):
     owner_user_id: str = Field(..., min_length=1, description="End user that owns the sessions this agent opens")
     api_token: str = Field(default="", description="Bearer token for FcSessionManager (FCM_API_TOKEN)")
     profile: Dict[str, Any] = Field(default_factory=dict, description="VM profile, e.g. {'vcpus': 2, 'mem_mib': 2048}")
-    pause_mode: Literal["memory"] = Field(
+    pause_mode: Literal["memory", "snapshot"] = Field(
         default="memory",
-        description="What pause() does. Phase 1 supports 'memory' (vCPUs stopped, RAM kept); snapshots come later.",
+        description="What pause() does: 'memory' stops vCPUs and keeps RAM; 'snapshot' persists the VM to disk.",
     )
     request_timeout_seconds: float = Field(default=180.0, description="Timeout for manager calls (boot included)")
 
@@ -66,6 +67,12 @@ class _Handle:
     owner_user_id: str
     api_token: str
     timeout: float
+    pause_mode: str = "memory"
+
+    def metadata(self) -> Dict[str, Any]:
+        """Non-secret part saved with the gateway record (the token is never stored)."""
+        return {"manager_url": self.manager_url, "owner_user_id": self.owner_user_id,
+                "timeout": self.timeout, "pause_mode": self.pause_mode}
 
 
 def _launcher_error(operation: str, reason: str, http_status: Optional[int] = None,
@@ -180,6 +187,7 @@ class FirecrackerLauncher(SandboxLauncher):
             owner_user_id=config.owner_user_id,
             api_token=config.api_token,
             timeout=max(float(config.request_timeout_seconds), float(timeout_seconds or 0)),
+            pause_mode=config.pause_mode,
         )
         session_id = _session_id_for(isolation_key)
         info = await _call(handle, "launch", "POST", "/v1/sessions", {
@@ -190,7 +198,23 @@ class FirecrackerLauncher(SandboxLauncher):
         self._handles[session_id] = handle
         logger.info("Firecracker session %s ready for owner %s (state=%s)",
                     session_id, config.owner_user_id, info.get("state"))
-        return LaunchedSandbox(base_url=info["base_url"], sandbox_id=session_id)
+        return LaunchedSandbox(base_url=info["base_url"], sandbox_id=session_id, metadata=handle.metadata())
+
+    def restore_handle(self, sandbox_id: str, metadata: Optional[Dict[str, Any]]) -> None:
+        """Re-attach to a sandbox launched by an earlier process (from the gateway record).
+
+        The manager token is not part of the saved metadata; it is read from
+        ``FCM_API_TOKEN``.
+        """
+        if sandbox_id in self._handles or not metadata or not metadata.get("manager_url"):
+            return
+        self._handles[sandbox_id] = _Handle(
+            manager_url=str(metadata["manager_url"]),
+            owner_user_id=str(metadata["owner_user_id"]),
+            api_token=os.getenv("FCM_API_TOKEN", ""),
+            timeout=float(metadata.get("timeout") or 180.0),
+            pause_mode=str(metadata.get("pause_mode") or "memory"),
+        )
 
     def _handle(self, operation: str, sandbox_id: str) -> _Handle:
         handle = self._handles.get(sandbox_id)
@@ -200,7 +224,17 @@ class FirecrackerLauncher(SandboxLauncher):
         return handle
 
     async def pause(self, sandbox_id: str) -> None:
-        await _call(self._handle("pause", sandbox_id), "pause", "POST", f"/v1/sessions/{sandbox_id}:pause")
+        handle = self._handle("pause", sandbox_id)
+        if handle.pause_mode == "snapshot":
+            await self.persist(sandbox_id)
+            return
+        await _call(handle, "pause", "POST", f"/v1/sessions/{sandbox_id}:pause")
+
+    async def persist(self, sandbox_id: str, checkpoint_ref: Optional[str] = None) -> None:
+        """Snapshot the VM to disk and stop its process; the next request restores it."""
+        body = {"checkpoint_ref": checkpoint_ref} if checkpoint_ref else None
+        await _call(self._handle("persist", sandbox_id), "persist", "POST",
+                    f"/v1/sessions/{sandbox_id}:persist", body)
 
     async def resume(self, sandbox_id: str) -> None:
         await _call(self._handle("resume", sandbox_id), "resume", "POST", f"/v1/sessions/{sandbox_id}:resume")
@@ -247,6 +281,106 @@ async def get_session_info(config: FirecrackerLauncherConfig, session_id: str,
     return await _call(handle, "get_session_info", "GET", f"/v1/sessions/{safe}")
 
 
+def scoped_resource_id(owner_user_id: str, session_id: str, name: str) -> str:
+    """Process-wide unique id for a per-user, per-session resource (tool / MCP server).
+
+    ``Runner.resource_mgr`` is shared by every user in the process, so two users'
+    resources with the same name must never share an id.
+    """
+    return f"{_safe_id(owner_user_id)}--{_safe_id(session_id)}--{_safe_id(name)}"
+
+
+async def register_session_mcp_server(
+    config: FirecrackerLauncherConfig,
+    session_id: str,
+    name: str,
+    command: str,
+    args: Optional[list[str]] = None,
+    env: Optional[Dict[str, str]] = None,
+    *,
+    register: bool = True,
+) -> Any:
+    """Run a user-supplied stdio MCP server inside the session's microVM.
+
+    The command never runs on the agent-core host: FcSessionManager starts it in
+    the VM and exposes it as streamable HTTP through the session's MCP port.
+    Returns the ``McpServerConfig``; with ``register=True`` it is also added to
+    ``Runner.resource_mgr`` under :func:`scoped_resource_id`.
+    """
+    from openjiuwen.core.foundation.tool.mcp.base import McpServerConfig
+
+    await get_session_info(config, session_id, ensure=True)
+    handle = _Handle(config.manager_url, config.owner_user_id, config.api_token,
+                     float(config.request_timeout_seconds))
+    info = await _call(handle, "register_mcp_server", "POST", f"/v1/sessions/{_safe_id(session_id)}/mcp-servers",
+                       {"name": name, "command": command, "args": list(args or []), "env": dict(env or {})})
+    server_id = scoped_resource_id(config.owner_user_id, session_id, name)
+    server_config = McpServerConfig(server_id=server_id, server_name=server_id, server_path=info["url"],
+                                    client_type="streamable-http")
+    if register:
+        from openjiuwen.core.runner import Runner
+
+        result = await Runner.resource_mgr.add_mcp_server(server_config)
+        if result.is_err():
+            error = result.error()
+            raise _launcher_error("register_mcp_server", f"adding MCP server {server_id} failed: {error}",
+                                  cause=error if isinstance(error, BaseException) else None)
+    return server_config
+
+
+async def set_session_secrets(config: FirecrackerLauncherConfig, session_id: str,
+                              secrets: Dict[str, Optional[str]]) -> list[str]:
+    """Hand per-session credentials to tools inside the VM (through MMDS; ``None`` removes a key).
+
+    Values stay in FcSessionManager memory and in the VM's metadata service only;
+    they are not written to disk or saved in snapshots. Returns the current key names.
+    """
+    handle = _Handle(config.manager_url, config.owner_user_id, config.api_token,
+                     float(config.request_timeout_seconds))
+    info = await _call(handle, "set_secrets", "PUT", f"/v1/sessions/{_safe_id(session_id)}/secrets", dict(secrets))
+    return list(info.get("secret_keys", []))
+
+
+async def fork_session(config: FirecrackerLauncherConfig, session_id: str,
+                       new_session_ids: list[str]) -> list[Dict[str, Any]]:
+    """Clone a session VM (memory, processes and disks) into new sessions of the same owner.
+
+    The source is snapshotted once; each fork runs in its own VM with its own disks
+    and guest token. Use a fork's session id as the agent session id to work in it.
+    Returns the manager's description of every fork.
+    """
+    handle = _Handle(config.manager_url, config.owner_user_id, config.api_token,
+                     float(config.request_timeout_seconds))
+    info = await _call(handle, "fork", "POST", f"/v1/sessions/{_safe_id(session_id)}:fork",
+                       {"new_session_ids": [_safe_id(sid) for sid in new_session_ids]})
+    return list(info.get("sessions", []))
+
+
+async def get_session_messages(config: FirecrackerLauncherConfig, session_id: str, after: int = 0,
+                               wait_seconds: float = 0.0) -> Dict[str, Any]:
+    """Messages that tasks in the session VM sent to its user (``fc-notify`` / ``fc-ask``).
+
+    Returns ``{"messages": [...], "last_id": n, "state": ...}`` with messages newer than
+    ``after``; waits up to ``wait_seconds`` (max 60) for a new one. A question carries
+    ``status`` ``pending`` / ``answered`` / ``expired``; answer it with
+    :func:`reply_to_session_message`.
+    """
+    wait = max(0.0, min(float(wait_seconds), 60.0))
+    handle = _Handle(config.manager_url, config.owner_user_id, config.api_token,
+                     max(float(config.request_timeout_seconds), wait + 30))
+    return await _call(handle, "messages", "GET",
+                       f"/v1/sessions/{_safe_id(session_id)}/messages?after={int(after)}&wait={wait:g}")
+
+
+async def reply_to_session_message(config: FirecrackerLauncherConfig, session_id: str, message_id: int,
+                                   text: str) -> Dict[str, Any]:
+    """Answer a question a task in the session VM is waiting on; wakes a paused or persisted VM."""
+    handle = _Handle(config.manager_url, config.owner_user_id, config.api_token,
+                     float(config.request_timeout_seconds))
+    return await _call(handle, "reply", "POST",
+                       f"/v1/sessions/{_safe_id(session_id)}/messages/{int(message_id)}/reply", {"text": text})
+
+
 async def build_browser_instance(config: FirecrackerLauncherConfig, session_id: str) -> Dict[str, str]:
     """``browser_instance`` for ``create_browser_agent``: this session's in-VM Chromium.
 
@@ -267,7 +401,13 @@ __all__ = [
     "LAUNCHER_TYPE",
     "build_browser_instance",
     "build_firecracker_gateway_config",
+    "fork_session",
     "get_session_info",
+    "get_session_messages",
     "is_ownership_error",
     "manager_http_status",
+    "register_session_mcp_server",
+    "reply_to_session_message",
+    "scoped_resource_id",
+    "set_session_secrets",
 ]
