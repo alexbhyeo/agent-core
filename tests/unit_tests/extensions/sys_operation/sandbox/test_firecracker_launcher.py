@@ -30,9 +30,15 @@ from openjiuwen.extensions.sys_operation.sandbox.launchers import (
     FirecrackerLauncherConfig,
     build_browser_instance,
     build_firecracker_gateway_config,
+    fork_session,
     get_session_info,
+    get_session_messages,
     is_ownership_error,
     manager_http_status,
+    register_session_mcp_server,
+    reply_to_session_message,
+    scoped_resource_id,
+    set_session_secrets,
 )
 
 TOKEN = "test-manager-token"
@@ -101,6 +107,57 @@ class FakeManager:
         self.sessions[sid]["state"] = "RUNNING"
         return web.json_response(self._info(sid))
 
+    async def mcp_servers(self, request: web.Request) -> web.Response:
+        body = await request.json()
+        self._record(request, body)
+        sid = self._owned(request)
+        return web.json_response({"name": body["name"], "url": f"{self.base}/mcp/{sid}/servers/{body['name']}/mcp",
+                                  "servers": [body["name"]]})
+
+    async def secrets(self, request: web.Request) -> web.Response:
+        body = await request.json()
+        self._record(request, body)
+        sid = self._owned(request)
+        keys = self.sessions[sid].setdefault("secret_keys", set())
+        for key, value in body.items():
+            (keys.discard if value is None else keys.add)(key)
+        return web.json_response({"session_id": sid, "secret_keys": sorted(keys)})
+
+    async def fork(self, request: web.Request) -> web.Response:
+        body = await request.json()
+        self._record(request, body)
+        sid = self._owned(request)
+        for new_id in body["new_session_ids"]:
+            self.sessions[new_id] = {"owner": self.sessions[sid]["owner"], "state": "RUNNING", "forked_from": sid}
+        return web.json_response({"sessions": [self._info(n) for n in body["new_session_ids"]]}, status=201)
+
+    async def messages(self, request: web.Request) -> web.Response:
+        self._record(request)
+        sid = self._owned(request)
+        after = int(request.query.get("after", "0"))
+        msgs = [m for m in self.sessions[sid].setdefault("messages", []) if m["id"] > after]
+        return web.json_response({"session_id": sid, "state": "RUNNING", "messages": msgs,
+                                  "last_id": max([m["id"] for m in self.sessions[sid]["messages"]], default=0),
+                                  "wait": request.query.get("wait")})
+
+    async def reply(self, request: web.Request) -> web.Response:
+        body = await request.json()
+        self._record(request, body)
+        sid = self._owned(request)
+        mid = int(request.match_info["mid"])
+        msg = next((m for m in self.sessions[sid].get("messages", []) if m["id"] == mid), None)
+        if msg is None:
+            return web.json_response({"error": "no question"}, status=404)
+        msg.update(status="answered", answer=body["text"])
+        return web.json_response(msg)
+
+    async def persist(self, request: web.Request) -> web.Response:
+        body = await request.json() if request.can_read_body else None
+        self._record(request, body)
+        sid = self._owned(request)
+        self.sessions[sid]["state"] = "PERSISTED"
+        return web.json_response(self._info(sid))
+
     async def delete(self, request: web.Request) -> web.Response:
         self._record(request)
         sid = self._owned(request)
@@ -132,6 +189,12 @@ class FakeManager:
         app.router.add_get(f"/v1/sessions/{sid}", self.get)
         app.router.add_post(f"/v1/sessions/{sid}:pause", self.pause)
         app.router.add_post(f"/v1/sessions/{sid}:resume", self.resume)
+        app.router.add_post(f"/v1/sessions/{sid}:persist", self.persist)
+        app.router.add_post(f"/v1/sessions/{sid}/mcp-servers", self.mcp_servers)
+        app.router.add_put(f"/v1/sessions/{sid}/secrets", self.secrets)
+        app.router.add_post(f"/v1/sessions/{sid}:fork", self.fork)
+        app.router.add_get(f"/v1/sessions/{sid}/messages", self.messages)
+        app.router.add_post(f"/v1/sessions/{sid}/messages/{{mid:\\d+}}/reply", self.reply)
         app.router.add_delete(f"/v1/sessions/{sid}", self.delete)
         app.router.add_post(f"/t/{GUEST_TOKEN}/v1/file/write", self.guest_write)
         app.router.add_post(f"/t/{GUEST_TOKEN}/v1/file/read", self.guest_read)
@@ -220,6 +283,45 @@ async def test_pause_resume_and_check_status(manager):
     await launcher.resume("sess-2")
     assert manager.requests[-1]["path"] == "/v1/sessions/sess-2:resume"
     assert await launcher.check_status("sess-2") == SandboxStatus.RUNNING
+
+
+@pytest.mark.asyncio
+async def test_snapshot_pause_mode_persists_and_carries_checkpoint_ref(manager):
+    set_session_id("sess-snap")
+    launcher = FirecrackerLauncher()
+    await launcher.launch(_config(manager, pause_mode="snapshot"), timeout_seconds=30)
+
+    await launcher.pause("sess-snap")
+    assert manager.requests[-1]["path"] == "/v1/sessions/sess-snap:persist"
+    assert await launcher.check_status("sess-snap") == SandboxStatus.PAUSED
+    await launcher.persist("sess-snap", checkpoint_ref="ck-7")
+    assert manager.requests[-1]["body"] == {"checkpoint_ref": "ck-7"}
+
+
+@pytest.mark.asyncio
+async def test_launch_metadata_has_no_secret(manager):
+    set_session_id("sess-meta")
+    launched = await FirecrackerLauncher().launch(_config(manager), timeout_seconds=30)
+    assert launched.metadata == {"manager_url": manager.base, "owner_user_id": "alice",
+                                 "timeout": 180.0, "pause_mode": "memory"}
+    assert TOKEN not in str(launched.metadata)
+
+
+@pytest.mark.asyncio
+async def test_restore_handle_reattaches_after_process_restart(manager, monkeypatch):
+    set_session_id("sess-restart")
+    launched = await FirecrackerLauncher().launch(_config(manager), timeout_seconds=30)
+    FirecrackerLauncher._handles.clear()  # simulate a new agent-core process
+    monkeypatch.setenv("FCM_API_TOKEN", TOKEN)
+
+    launcher = FirecrackerLauncher()
+    launcher.restore_handle("sess-restart", launched.metadata)
+    await launcher.pause("sess-restart")
+    assert manager.requests[-1]["path"] == "/v1/sessions/sess-restart:pause"
+    assert manager.requests[-1]["auth"] == f"Bearer {TOKEN}"
+    assert manager.requests[-1]["owner"] == "alice"
+    launcher.restore_handle("unknown", None)  # nothing saved: stays unknown
+    assert "unknown" not in FirecrackerLauncher._handles
 
 
 @pytest.mark.asyncio
@@ -313,6 +415,81 @@ async def test_browser_instance_is_per_owner_and_session(manager):
     }
     info = await get_session_info(_config(manager), "sess-8", ensure=False)
     assert info["state"] == "RUNNING"
+
+
+def test_scoped_resource_ids_never_collide_across_users():
+    assert scoped_resource_id("alice", "s1", "github") == "alice--s1--github"
+    assert scoped_resource_id("alice", "s1", "github") != scoped_resource_id("bob", "s1", "github")
+    assert scoped_resource_id("a/b", "s 1", "x") == "a-b--s-1--x"
+
+
+@pytest.mark.asyncio
+async def test_register_session_mcp_server_builds_scoped_config(manager):
+    server = await register_session_mcp_server(_config(manager), "sess-mcp", "tools", "python3",
+                                               ["-m", "srv"], {"K": "v"}, register=False)
+    assert server.server_id == "alice--sess-mcp--tools"
+    assert server.client_type == "streamable-http"
+    assert server.server_path == f"{manager.base}/mcp/sess-mcp/servers/tools/mcp"
+    req = manager.requests[-1]
+    assert req["path"] == "/v1/sessions/sess-mcp/mcp-servers"
+    assert req["body"] == {"name": "tools", "command": "python3", "args": ["-m", "srv"], "env": {"K": "v"}}
+
+
+@pytest.mark.asyncio
+async def test_set_session_secrets_merges_and_removes(manager):
+    await get_session_info(_config(manager), "sess-sec")
+    assert await set_session_secrets(_config(manager), "sess-sec", {"GH_TOKEN": "x", "OTHER": "y"}) == \
+        ["GH_TOKEN", "OTHER"]
+    assert await set_session_secrets(_config(manager), "sess-sec", {"OTHER": None}) == ["GH_TOKEN"]
+    assert manager.requests[-1]["owner"] == "alice"
+
+
+@pytest.mark.asyncio
+async def test_fork_session_creates_forks_for_the_same_owner(manager):
+    await get_session_info(_config(manager), "sess-src")
+    forks = await fork_session(_config(manager), "sess-src", ["sess-f1", "sess f2"])
+    assert [f["session_id"] for f in forks] == ["sess-f1", "sess-f2"]
+    req = manager.requests[-1]
+    assert req["path"] == "/v1/sessions/sess-src:fork" and req["owner"] == "alice"
+    assert req["body"] == {"new_session_ids": ["sess-f1", "sess-f2"]}
+
+
+@pytest.mark.asyncio
+async def test_session_messages_round_trip(manager):
+    await get_session_info(_config(manager), "sess-msg")
+    manager.sessions["sess-msg"]["messages"] = [
+        {"id": 1, "type": "notify", "text": "building"},
+        {"id": 2, "type": "question", "text": "deploy?", "status": "pending"},
+    ]
+    page = await get_session_messages(_config(manager), "sess-msg", after=1, wait_seconds=120)
+    assert [m["id"] for m in page["messages"]] == [2] and page["last_id"] == 2
+    assert manager.requests[-1]["path"] == "/v1/sessions/sess-msg/messages"
+    assert page["wait"] == "60", "the long-poll wait is capped at 60 seconds"
+    answered = await reply_to_session_message(_config(manager), "sess-msg", 2, "yes")
+    assert answered["status"] == "answered" and answered["answer"] == "yes"
+    assert manager.requests[-1]["body"] == {"text": "yes"}
+    with pytest.raises(BaseError) as exc:
+        await reply_to_session_message(_config(manager), "sess-msg", 9, "no")
+    assert manager_http_status(exc.value) == 404
+
+
+@pytest.mark.asyncio
+async def test_session_messages_of_another_user_are_rejected(manager):
+    await get_session_info(_config(manager), "sess-msg-a")
+    with pytest.raises(BaseError) as exc:
+        await get_session_messages(_config(manager, owner="mallory"), "sess-msg-a")
+    assert is_ownership_error(exc.value)
+    with pytest.raises(BaseError) as exc:
+        await reply_to_session_message(_config(manager, owner="mallory"), "sess-msg-a", 1, "x")
+    assert is_ownership_error(exc.value)
+
+
+@pytest.mark.asyncio
+async def test_fork_session_of_another_users_session_is_rejected(manager):
+    await get_session_info(_config(manager), "sess-bob")
+    with pytest.raises(BaseError) as exc:
+        await fork_session(_config(manager, owner="mallory"), "sess-bob", ["x"])
+    assert manager_http_status(exc.value) == 403
 
 
 @pytest.mark.skipif(importlib.util.find_spec("agent_sandbox") is None, reason="needs the 'sandbox' extra")

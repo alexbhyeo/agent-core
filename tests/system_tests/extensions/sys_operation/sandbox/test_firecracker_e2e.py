@@ -13,110 +13,28 @@ Run inside the e2e runner container (see deploy/firecracker/README.md):
 from __future__ import annotations
 
 import asyncio
-import os
 import socket
 import time
 import uuid
-from typing import Any, Awaitable, Callable, Optional
 
 import aiohttp
 import pytest
-import pytest_asyncio
 
-from openjiuwen.core.common.exception.codes import StatusCode
 from openjiuwen.core.common.exception.errors import BaseError
-from openjiuwen.core.common.logging.utils import set_session_id
 from openjiuwen.core.runner import Runner
-from openjiuwen.core.sys_operation import OperationMode, SysOperation, SysOperationCard
-from openjiuwen.extensions.sys_operation.sandbox.launchers import (
-    FirecrackerLauncherConfig,
-    build_browser_instance,
-    build_firecracker_gateway_config,
-    get_session_info,
+from openjiuwen.extensions.sys_operation.sandbox.launchers import build_browser_instance, get_session_info
+from tests.test_logger import logger as test_logger
+from tests.system_tests.extensions.sys_operation.sandbox.fc_helpers import (
+    BROWSER_PROFILE,
+    LLM_READY,
+    MANAGER_URL,
+    SUCCESS,
+    in_session,
+    manager,
+    sh,
 )
 
-MANAGER_URL = os.getenv("FC_MANAGER_URL", "")
-MANAGER_TOKEN = os.getenv("FCM_API_TOKEN", "")
-LLM_READY = bool(os.getenv("API_KEY") and os.getenv("API_BASE") and os.getenv("MODEL_NAME"))
-VM_PROFILE = {"vcpus": 2, "mem_mib": 1024}
-BROWSER_PROFILE = {"vcpus": 2, "mem_mib": 1536}
-SUCCESS = StatusCode.SUCCESS.code
-
 pytestmark = pytest.mark.skipif(not MANAGER_URL, reason="needs a running FcSessionManager (FC_MANAGER_URL)")
-
-
-async def manager(method: str, path: str, owner: str, json: Optional[dict] = None) -> tuple[int, Any]:
-    headers = {"Authorization": f"Bearer {MANAGER_TOKEN}", "X-Owner-User-Id": owner}
-    async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=240)) as session:
-        async with session.request(method, MANAGER_URL.rstrip("/") + path, json=json, headers=headers) as resp:
-            return resp.status, await resp.json(content_type=None)
-
-
-async def in_session(session_id: str, fn: Callable[[], Awaitable[Any]]) -> Any:
-    """Run ``fn`` in its own task with the agent session id bound (like Runner does)."""
-
-    async def _task() -> Any:
-        set_session_id(session_id)
-        return await fn()
-
-    return await asyncio.create_task(_task())
-
-
-class FcEnv:
-    """One SysOperation per user (as agent-core intends); one VM per session; full cleanup."""
-
-    def __init__(self) -> None:
-        self.sessions: list[tuple[str, str]] = []
-        self.cards: list[str] = []
-        self.ops: dict[str, SysOperation] = {}
-
-    def config(self, owner: str, profile: Optional[dict] = None) -> FirecrackerLauncherConfig:
-        cfg = build_firecracker_gateway_config(manager_url=MANAGER_URL, owner_user_id=owner,
-                                               api_token=MANAGER_TOKEN, profile=profile or VM_PROFILE)
-        return cfg.launcher_config
-
-    def user_op(self, owner: str) -> SysOperation:
-        if owner not in self.ops:
-            card = SysOperationCard(
-                id=f"fc-e2e-{owner}-{uuid.uuid4().hex[:6]}",
-                mode=OperationMode.SANDBOX,
-                gateway_config=build_firecracker_gateway_config(manager_url=MANAGER_URL, owner_user_id=owner,
-                                                                api_token=MANAGER_TOKEN, profile=VM_PROFILE),
-            )
-            result = Runner.resource_mgr.add_sys_operation(card)
-            assert result.is_ok(), result.msg()
-            self.cards.append(card.id)
-            self.ops[owner] = Runner.resource_mgr.get_sys_operation(card.id)
-        return self.ops[owner]
-
-    def open(self, owner: str, session_id: Optional[str] = None) -> tuple[str, SysOperation]:
-        session_id = session_id or f"e2e-{uuid.uuid4().hex[:8]}"
-        self.sessions.append((owner, session_id))
-        return session_id, self.user_op(owner)
-
-    async def close(self) -> None:
-        for owner, session_id in self.sessions:
-            await manager("DELETE", f"/v1/sessions/{session_id}", owner)
-        for card_id in self.cards:
-            if Runner.resource_mgr.get_sys_operation(card_id) is not None:
-                Runner.resource_mgr.remove_sys_operation(card_id)
-
-
-@pytest_asyncio.fixture(name="fc")
-async def fc_fixture():
-    await Runner.start()
-    env = FcEnv()
-    try:
-        yield env
-    finally:
-        await env.close()
-        await Runner.stop()
-
-
-async def sh(op: SysOperation, session_id: str, command: str, timeout: int = 240):
-    result = await in_session(session_id, lambda: op.shell().execute_cmd(command, timeout=timeout))
-    assert result.code == SUCCESS, result.message
-    return result.data
 
 
 # --------------------------------------------------------------------------- basics
@@ -299,7 +217,7 @@ async def test_three_users_run_in_parallel_in_separate_vms(fc):
         assert sid in [s["session_id"] for s in listing["sessions"]]
     _, alice_list = await manager("GET", "/v1/sessions", "alice")
     assert {opened["alice"][0], opened["alice-2"][0]} <= {s["session_id"] for s in alice_list["sessions"]}
-    print(f"4 sessions for 3 users booted and worked in parallel in {elapsed:.1f}s")
+    test_logger.info("4 sessions for 3 users booted and worked in parallel in %.1fs", elapsed)
 
 
 @pytest.mark.asyncio
@@ -439,4 +357,4 @@ async def test_two_users_browser_agents_run_in_parallel_with_separate_cookies(fc
 
     assert await owner_cookie(alice_cdp) == ["alice"]
     assert await owner_cookie(bob_cdp) == ["bob"]
-    print(f"two browser agents finished in parallel in {elapsed:.1f}s")
+    test_logger.info("two browser agents finished in parallel in %.1fs", elapsed)
