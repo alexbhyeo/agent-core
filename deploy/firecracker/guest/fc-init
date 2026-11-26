@@ -18,6 +18,10 @@ ln -sfn /proc/self/fd/2 /dev/stderr
 mount -t tmpfs tmpfs /run
 mount -t tmpfs -o mode=1777 tmpfs /tmp
 mount -t cgroup2 cgroup2 /sys/fs/cgroup 2>/dev/null || true
+# The session's workspace drive (second virtio-block device) when the manager attached one;
+# it can be swapped at runtime (the guest agent unmounts and remounts it).
+mkdir -p /workspace
+[ -b /dev/vdb ] && mount -o noatime /dev/vdb /workspace
 
 hostname fc-session
 ip link set lo up

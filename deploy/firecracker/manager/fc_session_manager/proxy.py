@@ -4,18 +4,25 @@
 
 Firecracker exposes the guest's vsock as a Unix socket on the host: a client
 connects, sends ``CONNECT <port>\\n`` and gets ``OK <n>\\n`` back, after which
-the stream is the guest connection. Each session gets fixed TCP ports for its
-lifetime, so the ``base_url`` handed to agent-core never changes.
+the stream is the guest connection.
+
+Each session keeps its TCP ports from creation until it is destroyed, so the
+``base_url`` handed to agent-core never changes. A listener stays up while the
+VM is paused or persisted; on a new connection it asks the manager for the
+current vsock socket, which may wake the VM first (wake-on-request).
 """
 
 from __future__ import annotations
 
 import asyncio
 import logging
+import time
 from pathlib import Path
-from typing import Optional
+from typing import Awaitable, Callable, Optional
 
 logger = logging.getLogger(__name__)
+
+Resolver = Callable[[], Awaitable[Path]]
 
 
 async def open_guest_stream(uds_path: Path, guest_port: int,
@@ -30,33 +37,24 @@ async def open_guest_stream(uds_path: Path, guest_port: int,
     return reader, writer
 
 
-async def _pump(src: asyncio.StreamReader, dst: asyncio.StreamWriter) -> None:
-    try:
-        while True:
-            data = await src.read(65536)
-            if not data:
-                break
-            dst.write(data)
-            await dst.drain()
-    except (ConnectionError, asyncio.CancelledError):
-        pass
-    finally:
-        try:
-            dst.close()
-        except Exception:
-            pass
-
-
 class VsockProxy:
-    def __init__(self, listen_port: int, uds_path: Path, guest_port: int):
+    def __init__(self, listen_port: int, guest_port: int, resolve: Resolver,
+                 on_activity: Optional[Callable[[], None]] = None):
         self.listen_port = listen_port
-        self.uds_path = uds_path
         self.guest_port = guest_port
+        self._resolve = resolve
+        self._on_activity = on_activity or (lambda: None)
         self._server: Optional[asyncio.base_events.Server] = None
         self._writers: set[asyncio.StreamWriter] = set()
+        self._last_activity = 0.0
 
     async def start(self) -> None:
         self._server = await asyncio.start_server(self._handle, host="0.0.0.0", port=self.listen_port)
+
+    def close_connections(self) -> None:
+        """Drop every open connection (their guest streams die when the VM process exits)."""
+        for writer in list(self._writers):
+            writer.close()
 
     async def stop(self) -> None:
         if self._server is None:
@@ -64,26 +62,50 @@ class VsockProxy:
         self._server.close()
         # Python 3.12+: wait_closed() waits for live connections (e.g. HTTP
         # keep-alive from the aio provider), so close them explicitly first.
-        for writer in list(self._writers):
-            writer.close()
+        self.close_connections()
         try:
             await asyncio.wait_for(self._server.wait_closed(), timeout=5)
         except asyncio.TimeoutError:
             logger.warning("proxy %s: connections still open after stop", self.listen_port)
         self._server = None
 
+    def _activity(self) -> None:
+        now = time.monotonic()
+        if now - self._last_activity >= 1.0:  # at most one store write per second
+            self._last_activity = now
+            self._on_activity()
+
+    async def _pump(self, src: asyncio.StreamReader, dst: asyncio.StreamWriter) -> None:
+        try:
+            while True:
+                data = await src.read(65536)
+                if not data:
+                    break
+                self._activity()
+                dst.write(data)
+                await dst.drain()
+        except (ConnectionError, asyncio.CancelledError):
+            pass
+        finally:
+            try:
+                dst.close()
+            except Exception:
+                pass
+
     async def _handle(self, client_reader: asyncio.StreamReader, client_writer: asyncio.StreamWriter) -> None:
         self._writers.add(client_writer)
         try:
+            self._activity()
             try:
-                guest_reader, guest_writer = await open_guest_stream(self.uds_path, self.guest_port)
-            except (OSError, ConnectionError, asyncio.TimeoutError) as exc:
-                logger.warning("proxy %s -> vsock %s failed: %s", self.listen_port, self.guest_port, exc)
+                uds_path = await self._resolve()
+                guest_reader, guest_writer = await open_guest_stream(uds_path, self.guest_port)
+            except Exception as exc:  # VM gone, not woken, or still booting
+                logger.warning("proxy %s -> vsock %s unavailable: %s", self.listen_port, self.guest_port, exc)
                 client_writer.close()
                 return
             self._writers.add(guest_writer)
             try:
-                await asyncio.gather(_pump(client_reader, guest_writer), _pump(guest_reader, client_writer))
+                await asyncio.gather(self._pump(client_reader, guest_writer), self._pump(guest_reader, client_writer))
             finally:
                 self._writers.discard(guest_writer)
         finally:
@@ -92,9 +114,18 @@ class VsockProxy:
 
 async def guest_http_get(uds_path: Path, guest_port: int, path: str, timeout: float = 3.0) -> tuple[int, bytes]:
     """Tiny HTTP/1.0 GET over vsock, used for the guest health check."""
+    return await guest_http(uds_path, guest_port, "GET", path, None, timeout)
+
+
+async def guest_http(uds_path: Path, guest_port: int, method: str, path: str, body: Optional[bytes],
+                     timeout: float = 3.0) -> tuple[int, bytes]:
+    """Tiny HTTP/1.0 request over vsock (manager -> guest agent control calls)."""
     reader, writer = await open_guest_stream(uds_path, guest_port, timeout)
     try:
-        writer.write(f"GET {path} HTTP/1.0\r\nHost: guest\r\n\r\n".encode())
+        head = f"{method} {path} HTTP/1.0\r\nHost: guest\r\n"
+        if body is not None:
+            head += f"Content-Type: application/json\r\nContent-Length: {len(body)}\r\n"
+        writer.write(head.encode() + b"\r\n" + (body or b""))
         await writer.drain()
         raw = await asyncio.wait_for(reader.read(), timeout)
     finally:

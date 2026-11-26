@@ -23,6 +23,7 @@ import http.client
 import http.server
 import json
 import os
+import re
 import shutil
 import socket
 import socketserver
@@ -38,6 +39,14 @@ from typing import Any, Optional
 API_PORT = 8080
 CDP_BRIDGE_PORT = 9222
 CHROME_PORT = 9223
+MCP_BRIDGE_PORT = 9300
+MCP_PROXY_PORT = 9301
+# Loopback-only endpoint for tasks inside the VM (fc-notify / fc-ask); never exposed over vsock.
+LOCAL_MSG_PORT = int(os.environ.get("FC_MSG_PORT", "8090"))
+MSG_RING = 1000
+MAX_MSG_CHARS = 8000
+MCP_CONFIG = Path(os.environ.get("FC_MCP_CONFIG", "/var/lib/fc-mcp/servers.json"))
+_MCP_NAME_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,63}$")
 WORKSPACE = Path(os.environ.get("FC_WORKSPACE", "/workspace"))
 MMDS_ADDR = os.environ.get("FC_MMDS_ADDR", "169.254.169.254")
 CHROME_BIN = os.environ.get("FC_CHROME_BIN", "/usr/local/bin/fc-chromium")
@@ -47,6 +56,9 @@ DEFAULT_EXEC_TIMEOUT = 600
 _identity: dict[str, str] = {}
 _chrome_lock = threading.Lock()
 _chrome_proc: Optional[subprocess.Popen] = None
+_mcp_lock = threading.Lock()
+_mcp_proc: Optional[subprocess.Popen] = None
+_mcp_servers: dict[str, dict[str, Any]] = {}
 
 
 def _log(msg: str) -> None:
@@ -74,11 +86,59 @@ def load_identity(retries: int = 60) -> dict[str, str]:
             )
             with urllib.request.urlopen(req, timeout=2) as resp:
                 data = json.loads(resp.read().decode())
-            return {str(k): str(v) for k, v in data.items()}
+            return {str(k): str(v) for k, v in data.items() if not isinstance(v, dict)}
         except Exception as exc:  # MMDS not ready yet
             last_error = exc
             time.sleep(0.5)
     raise RuntimeError(f"MMDS identity unavailable: {last_error}")
+
+
+def _reseed_rng(seed_hex: str) -> None:
+    """Mix a host-supplied seed into the kernel RNG so forks of one snapshot diverge.
+
+    VMGenID already makes the kernel reseed on restore; this covers kernels without it.
+    """
+    try:
+        with open("/dev/urandom", "wb") as fh:
+            fh.write(bytes.fromhex(seed_hex) if seed_hex else os.urandom(32))
+    except (OSError, ValueError) as exc:
+        _log(f"RNG reseed failed: {exc}")
+
+
+_identity_refreshed_at = 0.0
+_identity_lock = threading.Lock()
+
+
+def token_matches(path: str) -> bool:
+    """Does ``path`` carry this VM's guest token? Re-reads MMDS once on a miss.
+
+    A VM restored as a fork gets a new identity through MMDS; the agent notices
+    on the first request carrying the new token (at most one MMDS read per second).
+    """
+    global _identity_refreshed_at
+
+    def ok() -> bool:
+        token = _identity.get("guest_token")
+        return bool(token) and path.startswith(f"/t/{token}/")
+
+    if ok():
+        return True
+    with _identity_lock:
+        if ok():
+            return True
+        if time.time() - _identity_refreshed_at < 1.0 or not path.startswith("/t/"):
+            return False
+        _identity_refreshed_at = time.time()
+        try:
+            fresh = load_identity(retries=1)
+        except RuntimeError:
+            return False
+        if fresh.get("guest_token") != _identity.get("guest_token"):
+            _log(f"identity changed: session {_identity.get('session_id')} -> {fresh.get('session_id')}")
+            _reseed_rng(fresh.get("entropy_seed", ""))
+        _identity.clear()
+        _identity.update(fresh)
+        return ok()
 
 
 # ---------------------------------------------------------------------- helpers
@@ -249,6 +309,11 @@ def api_shell_exec(body: dict[str, Any]) -> dict[str, Any]:
     cwd = body.get("exec_dir") or str(WORKSPACE)
     timeout = body.get("hard_timeout") or body.get("timeout") or DEFAULT_EXEC_TIMEOUT
     env = dict(os.environ, HOME="/root", TERM="dumb")
+    proxy = _identity.get("egress_proxy")
+    if proxy:  # restricted session: the only way out is the manager's allowlist proxy
+        no_proxy = "localhost,127.0.0.1,169.254.169.254"
+        env.update(HTTP_PROXY=proxy, HTTPS_PROXY=proxy, http_proxy=proxy, https_proxy=proxy,
+                   NO_PROXY=no_proxy, no_proxy=no_proxy)
     proc = subprocess.Popen(
         ["/bin/bash", "-c", command],
         cwd=cwd,
@@ -287,12 +352,217 @@ def api_shell_exec(body: dict[str, Any]) -> dict[str, Any]:
     })
 
 
+def _restart_mcp_proxy() -> None:
+    """(Re)start mcp-proxy serving every registered stdio server at /servers/<name>/mcp."""
+    global _mcp_proc
+    MCP_CONFIG.parent.mkdir(parents=True, exist_ok=True)
+    MCP_CONFIG.write_text(json.dumps({"mcpServers": _mcp_servers}))
+    if _mcp_proc is not None and _mcp_proc.poll() is None:
+        _mcp_proc.terminate()
+        try:
+            _mcp_proc.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            _mcp_proc.kill()
+    _mcp_proc = subprocess.Popen(
+        ["mcp-proxy", "--named-server-config", str(MCP_CONFIG), "--host", "127.0.0.1",
+         "--port", str(MCP_PROXY_PORT), "--pass-environment", "--stateless"],
+        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True, cwd="/",
+    )
+    deadline = time.time() + 30
+    while time.time() < deadline:
+        try:
+            with socket.create_connection(("127.0.0.1", MCP_PROXY_PORT), timeout=1):
+                return
+        except OSError:
+            time.sleep(0.2)
+    raise ApiFailure(500, "mcp-proxy did not start")
+
+
+def api_mcp_servers_set(body: dict[str, Any]) -> dict[str, Any]:
+    """Register (or replace) a stdio MCP server that runs inside this VM."""
+    name = str(body.get("name", ""))
+    if not _MCP_NAME_RE.match(name):
+        raise ApiFailure(400, "name must match [a-z0-9][a-z0-9_-]{0,63}")
+    command = body.get("command")
+    if not command or not isinstance(command, str):
+        raise ApiFailure(400, "command is required")
+    args = [str(a) for a in body.get("args") or []]
+    env = {str(k): str(v) for k, v in (body.get("env") or {}).items()}
+    with _mcp_lock:
+        _mcp_servers[name] = {"command": command, "args": args, "env": env, "enabled": True}
+        _restart_mcp_proxy()
+    return _ok({"name": name, "path": f"/servers/{name}/mcp", "servers": sorted(_mcp_servers)})
+
+
+def api_mcp_servers_list(_: dict[str, Any]) -> dict[str, Any]:
+    return _ok({"servers": sorted(_mcp_servers)})
+
+
+def _run(cmd: list[str], check: bool = True) -> subprocess.CompletedProcess:
+    proc = subprocess.run(cmd, capture_output=True, text=True, check=False)
+    if check and proc.returncode != 0:
+        raise ApiFailure(500, f"{' '.join(cmd)} failed: {proc.stderr.strip() or proc.stdout.strip()}")
+    return proc
+
+
+def _stop_workspace_users() -> None:
+    """Kill processes using /workspace (shells left in it, editors), never this agent or PID 1."""
+    users = _run(["fuser", "-m", str(WORKSPACE)], check=False).stdout.split()
+    keep = {os.getpid(), 1}
+    for token in users:
+        pid = int("".join(ch for ch in token if ch.isdigit()) or 0)
+        if pid and pid not in keep:
+            try:
+                os.kill(pid, 9)
+            except ProcessLookupError:
+                pass
+    time.sleep(0.2)
+
+
+def api_workspace(body: dict[str, Any]) -> dict[str, Any]:
+    """Workspace drive control for host-side checkpoints and hot-swap.
+
+    freeze/thaw: make the drive consistent while the host copies it.
+    unmount/mount: release the drive while the host swaps its backing file;
+    unmount stops processes still using /workspace.
+    """
+    action = body.get("action")
+    if action == "freeze":
+        _run(["sync"])
+        _run(["fsfreeze", "-f", str(WORKSPACE)])
+    elif action == "thaw":
+        _run(["fsfreeze", "-u", str(WORKSPACE)], check=False)
+    elif action == "unmount":
+        _run(["sync"])
+        _stop_workspace_users()
+        _run(["umount", str(WORKSPACE)])
+    elif action == "mount":
+        _run(["mount", "/dev/vdb", str(WORKSPACE)])
+    else:
+        raise ApiFailure(400, "action must be freeze, thaw, unmount or mount")
+    mounted = _run(["mountpoint", "-q", str(WORKSPACE)], check=False).returncode == 0
+    return _ok({"action": action, "mounted": mounted})
+
+
+# ------------------------------------------------------------ user messages
+# Tasks in the VM talk to the session's user through this queue: ``notify`` is
+# one-way, ``question`` blocks the asking task until the user's reply arrives.
+# The queue lives in guest memory, so a pending question survives pause/persist.
+
+_msg_cond = threading.Condition()
+_messages: list[dict[str, Any]] = []
+_msg_seq = 0
+_answers: dict[int, str] = {}
+
+
+def post_message(kind: str, text: str, task: str = "", pid: int = 0) -> dict[str, Any]:
+    global _msg_seq
+    if kind not in ("notify", "question"):
+        raise ApiFailure(400, "type must be notify or question")
+    if not isinstance(text, str) or not text.strip():
+        raise ApiFailure(400, "text must be a non-empty string")
+    with _msg_cond:
+        _msg_seq += 1
+        msg = {"id": _msg_seq, "type": kind, "text": text[:MAX_MSG_CHARS], "task": str(task)[:200], "pid": pid,
+               "ts": round(time.time(), 3), "session_id": _identity.get("session_id")}
+        if kind == "question":
+            msg["status"] = "pending"
+        _messages.append(msg)
+        del _messages[:-MSG_RING]
+        _msg_cond.notify_all()
+        return dict(msg)
+
+
+def ask_user(text: str, timeout: float, task: str = "", pid: int = 0) -> dict[str, Any]:
+    msg = post_message("question", text, task, pid)
+    with _msg_cond:
+        answered = _msg_cond.wait_for(lambda: msg["id"] in _answers, timeout=max(1.0, min(timeout, 7 * 86400)))
+        record = next((m for m in _messages if m["id"] == msg["id"]), None)
+        if not answered:
+            if record is not None:
+                record["status"] = "expired"
+            _msg_cond.notify_all()
+            return {"id": msg["id"], "answered": False}
+        return {"id": msg["id"], "answered": True, "answer": _answers.pop(msg["id"])}
+
+
+def api_messages_list(query: dict[str, list[str]]) -> dict[str, Any]:
+    """Messages after ``after``; waits up to ``wait`` seconds for a new one (long-poll)."""
+    after = int((query.get("after") or ["0"])[0])
+    wait = min(float((query.get("wait") or ["0"])[0]), 60.0)
+    with _msg_cond:
+        _msg_cond.wait_for(lambda: any(m["id"] > after for m in _messages), timeout=wait)
+        found = [dict(m) for m in _messages if m["id"] > after]
+    return _ok({"messages": found, "last_id": _msg_seq})
+
+
+def api_messages_reply(body: dict[str, Any]) -> dict[str, Any]:
+    message_id, text = int(body["id"]), body.get("text")
+    if not isinstance(text, str):
+        raise ApiFailure(400, "text must be a string")
+    with _msg_cond:
+        msg = next((m for m in _messages if m["id"] == message_id), None)
+        if msg is None or msg["type"] != "question":
+            raise ApiFailure(404, f"no question {message_id}")
+        if msg["status"] != "pending":
+            raise ApiFailure(409, f"question {message_id} is {msg['status']}")
+        msg["status"] = "answered"
+        msg["answer"] = text[:MAX_MSG_CHARS]
+        _answers[message_id] = text[:MAX_MSG_CHARS]
+        _msg_cond.notify_all()
+        return _ok(dict(msg))
+
+
+class LocalMessageHandler(http.server.BaseHTTPRequestHandler):
+    """127.0.0.1 only: POST /notify {text, task?} and POST /ask {text, timeout?, task?} (blocks)."""
+
+    protocol_version = "HTTP/1.1"
+
+    def log_message(self, fmt: str, *args: Any) -> None:
+        return
+
+    def do_POST(self) -> None:  # noqa: N802 (http.server naming)
+        try:
+            length = int(self.headers.get("Content-Length") or 0)
+            body = json.loads(self.rfile.read(length) or b"{}")
+            task, pid = str(body.get("task", "")), int(body.get("pid") or 0)
+            if self.path == "/notify":
+                result = _ok(post_message("notify", body.get("text", ""), task, pid))
+            elif self.path == "/ask":
+                result = _ok(ask_user(body.get("text", ""), float(body.get("timeout", 3600)), task, pid))
+            else:
+                raise ApiFailure(404, "unknown route")
+            status = 200
+        except ApiFailure as exc:
+            status, result = exc.status, {"success": False, "message": exc.message}
+        except (ValueError, TypeError) as exc:
+            status, result = 400, {"success": False, "message": f"bad request: {exc}"}
+        data = json.dumps(result).encode()
+        self.send_response(status)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(data)))
+        self.end_headers()
+        self.wfile.write(data)
+
+
+class LocalThreadingHTTPServer(socketserver.ThreadingMixIn, http.server.HTTPServer):
+    daemon_threads = True
+    allow_reuse_address = True
+
+
+def serve_local_messages() -> None:
+    LocalThreadingHTTPServer(("127.0.0.1", LOCAL_MSG_PORT), LocalMessageHandler).serve_forever()
+
+
 JSON_ROUTES = {
     ("POST", "v1/file/read"): api_file_read,
     ("POST", "v1/file/write"): api_file_write,
     ("POST", "v1/file/list"): api_file_list,
     ("POST", "v1/file/glob"): api_file_glob,
     ("POST", "v1/shell/exec"): api_shell_exec,
+    ("POST", "fc/mcp/servers"): api_mcp_servers_set,
+    ("POST", "fc/workspace"): api_workspace,
+    ("POST", "fc/messages/reply"): api_messages_reply,
 }
 
 
@@ -326,9 +596,9 @@ class ApiHandler(http.server.BaseHTTPRequestHandler):
 
     def _route(self) -> tuple[Optional[str], dict[str, list[str]]]:
         parsed = urllib.parse.urlsplit(self.path)
-        prefix = f"/t/{_identity.get('guest_token', '')}/"
-        if not _identity.get("guest_token") or not parsed.path.startswith(prefix):
+        if not token_matches(parsed.path):
             return None, {}
+        prefix = f"/t/{_identity.get('guest_token', '')}/"
         return parsed.path[len(prefix):].strip("/"), urllib.parse.parse_qs(parsed.query)
 
     def _read_body(self) -> bytes:
@@ -349,6 +619,10 @@ class ApiHandler(http.server.BaseHTTPRequestHandler):
                 self._send_json(200, _ok({"session_id": _identity.get("session_id"),
                                           "owner_user_id": _identity.get("owner_user_id"),
                                           "hostname": socket.gethostname()}))
+            elif route == "fc/mcp/servers" and method == "GET":
+                self._send_json(200, api_mcp_servers_list({}))
+            elif route == "fc/messages" and method == "GET":
+                self._send_json(200, api_messages_list(query))
             elif route == "v1/file/download" and method == "GET":
                 self._download(query)
             elif route == "v1/file/upload" and method == "POST":
@@ -463,10 +737,10 @@ def handle_cdp(conn: socket.socket) -> None:
         for line in lines[1:]:
             k, _, v = line.partition(":")
             headers[k.strip().lower()] = v.strip()
-        prefix = f"/t/{_identity.get('guest_token', '')}"
-        if not _identity.get("guest_token") or not target.startswith(prefix + "/"):
+        if not token_matches(target):
             _reply(conn, "403 Forbidden", b"forbidden")
             return
+        prefix = f"/t/{_identity.get('guest_token', '')}"
         inner = target[len(prefix):]
         ensure_chrome()
         if headers.get("upgrade", "").lower() == "websocket":
@@ -505,21 +779,76 @@ def handle_cdp(conn: socket.socket) -> None:
             pass
 
 
-def serve_cdp_bridge() -> None:
+def handle_mcp(conn: socket.socket) -> None:
+    """Token-checked bridge to mcp-proxy (streamable HTTP).
+
+    Each request gets ``Connection: close`` so the next one opens a new
+    connection and passes the token check again; Host is rewritten to the
+    loopback address mcp-proxy accepts.
+    """
+    try:
+        head, rest = _read_head(conn)
+        lines = head.decode("latin-1").split("\r\n")
+        method, target, version = lines[0].split(" ", 2)
+        if not token_matches(target):
+            _reply(conn, "403 Forbidden", b"forbidden")
+            return
+        prefix = f"/t/{_identity.get('guest_token', '')}"
+        if _mcp_proc is None or _mcp_proc.poll() is not None:
+            _reply(conn, "503 Service Unavailable", b"no MCP servers registered")
+            return
+        new_lines = [f"{method} {target[len(prefix):]} {version}"]
+        for line in lines[1:]:
+            lower = line.lower()
+            if lower.startswith("host:") or lower.startswith("connection:"):
+                continue
+            new_lines.append(line)
+        new_lines += [f"Host: 127.0.0.1:{MCP_PROXY_PORT}", "Connection: close"]
+        upstream = socket.create_connection(("127.0.0.1", MCP_PROXY_PORT))
+        upstream.sendall("\r\n".join(new_lines).encode("latin-1") + b"\r\n\r\n" + rest)
+        t = threading.Thread(target=_pipe, args=(upstream, conn), daemon=True)
+        t.start()
+        _pipe(conn, upstream)
+        t.join()
+    except Exception as exc:  # keep the bridge alive for other clients
+        _log(f"mcp bridge error: {exc}")
+        try:
+            _reply(conn, "502 Bad Gateway", str(exc).encode())
+        except OSError:
+            pass
+    finally:
+        try:
+            conn.close()
+        except OSError:
+            pass
+
+
+def _serve_vsock(port: int, handler) -> None:
     srv = socket.socket(socket.AF_VSOCK, socket.SOCK_STREAM)
-    srv.bind((socket.VMADDR_CID_ANY, CDP_BRIDGE_PORT))
+    srv.bind((socket.VMADDR_CID_ANY, port))
     srv.listen(64)
     while True:
         conn, _ = srv.accept()
-        threading.Thread(target=handle_cdp, args=(conn,), daemon=True).start()
+        threading.Thread(target=handler, args=(conn,), daemon=True).start()
+
+
+def serve_cdp_bridge() -> None:
+    _serve_vsock(CDP_BRIDGE_PORT, handle_cdp)
+
+
+def serve_mcp_bridge() -> None:
+    _serve_vsock(MCP_BRIDGE_PORT, handle_mcp)
 
 
 def main() -> None:
     WORKSPACE.mkdir(parents=True, exist_ok=True)
-    os.chdir(WORKSPACE)
+    # Long-lived processes stay off /workspace so the drive can be unmounted for a swap.
+    os.chdir("/")
     _identity.update(load_identity())
     _log(f"identity loaded for session {_identity.get('session_id')}")
     threading.Thread(target=serve_cdp_bridge, daemon=True).start()
+    threading.Thread(target=serve_mcp_bridge, daemon=True).start()
+    threading.Thread(target=serve_local_messages, daemon=True).start()
     server = VsockThreadingHTTPServer((socket.VMADDR_CID_ANY, API_PORT), ApiHandler)
     _log(f"serving AIO-compatible API on vsock port {API_PORT}")
     server.serve_forever()

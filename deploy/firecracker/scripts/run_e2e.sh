@@ -9,6 +9,12 @@ if [ "$#" -eq 0 ]; then
   set -- tests/unit_tests/extensions/sys_operation/sandbox/test_firecracker_launcher.py \
          tests/system_tests/extensions/sys_operation/sandbox/test_firecracker_e2e.py
 fi
+# FC_E2E_DOCKER=1 lets restart tests restart the manager container through the Docker socket.
+docker_args=()
+if [ "${FC_E2E_DOCKER:-0}" = "1" ]; then
+  docker_args=(-v /var/run/docker.sock:/var/run/docker.sock -e FC_DOCKER_SOCKET=/var/run/docker.sock
+               -e FC_MANAGER_CONTAINER="${FC_MANAGER_NAME:-fc-manager}")
+fi
 # The checkout is mounted read-only; logs and workspaces go to a scratch dir.
 args=()
 for a in "$@"; do
@@ -18,7 +24,7 @@ docker run --rm --network fc-net \
   --env-file "$FC_E2E_ENV_FILE" \
   -e FC_MANAGER_URL="${FC_MANAGER_URL:-http://fc-manager:8700}" \
   -v "$REPO:/src:ro" \
-  --tmpfs /work:exec,size=2g -w /work \
+  --tmpfs /work:exec,size=2g -w /work "${docker_args[@]}" \
   -e PYTHONDONTWRITEBYTECODE=1 \
   fc-e2e-runner:dev \
   python -m pytest --rootdir /src -c /src/pyproject.toml -p no:cacheprovider -o addopts="" -v -s "${args[@]}"

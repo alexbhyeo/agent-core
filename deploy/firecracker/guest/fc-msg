@@ -1,0 +1,53 @@
+#!/usr/bin/python3
+# coding: utf-8
+# Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
+"""Talk to the session's user from a task inside the VM.
+
+    fc-notify [--task NAME] TEXT...              send a one-way message
+    fc-ask [--task NAME] [--timeout S] TEXT...   ask a question; prints the answer
+                                                 (exit 2 if nobody answers in time)
+
+Installed as /usr/local/bin/fc-notify and /usr/local/bin/fc-ask; the task name
+defaults to $FC_TASK. Messages reach the user through FcSessionManager
+(``GET /v1/sessions/{id}/messages``); replies come back the same way.
+"""
+
+import argparse
+import json
+import os
+import sys
+import urllib.error
+import urllib.request
+
+PORT = int(os.environ.get("FC_MSG_PORT", "8090"))
+
+
+def main() -> int:
+    mode = "ask" if os.path.basename(sys.argv[0]).endswith("ask") else "notify"
+    parser = argparse.ArgumentParser(prog=f"fc-{mode}")
+    parser.add_argument("--task", default=os.environ.get("FC_TASK", ""))
+    if mode == "ask":
+        parser.add_argument("--timeout", type=float, default=3600.0, help="seconds to wait for the answer")
+    parser.add_argument("text", nargs="+")
+    args = parser.parse_args()
+    body = {"text": " ".join(args.text), "task": args.task, "pid": os.getppid()}
+    if mode == "ask":
+        body["timeout"] = args.timeout
+    request = urllib.request.Request(f"http://127.0.0.1:{PORT}/{mode}", data=json.dumps(body).encode(),
+                                     headers={"Content-Type": "application/json"}, method="POST")
+    try:
+        with urllib.request.urlopen(request, timeout=(args.timeout + 30) if mode == "ask" else 30) as resp:
+            data = json.loads(resp.read())["data"]
+    except (urllib.error.URLError, OSError) as exc:
+        print(f"fc-{mode}: guest agent unavailable: {exc}", file=sys.stderr)
+        return 1
+    if mode == "ask":
+        if not data.get("answered"):
+            print(f"fc-ask: no answer within {args.timeout:g}s", file=sys.stderr)
+            return 2
+        print(data["answer"])
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

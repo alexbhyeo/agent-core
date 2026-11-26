@@ -24,6 +24,8 @@ logger = logging.getLogger(__name__)
 GUEST_IP = "172.16.0.2"
 TAP_IP = "172.16.0.1"
 GUEST_MAC = "06:00:AC:10:00:02"
+# Fixed so a restored or forked guest's ARP entry for its gateway stays valid in a new namespace.
+TAP_MAC = "06:00:AC:10:00:01"
 TAP_NAME = "tap0"
 NS_VETH = "vn0"
 EGRESS_CHAIN = "FC-EGRESS"
@@ -111,6 +113,7 @@ async def create_vm_network(index: int) -> None:
     await run(*nsx, "ip", "link", "set", NS_VETH, "up")
     await run(*nsx, "ip", "route", "add", "default", "via", host_ip)
     await run(*nsx, "ip", "tuntap", "add", "dev", TAP_NAME, "mode", "tap")
+    await run(*nsx, "ip", "link", "set", TAP_NAME, "address", TAP_MAC)
     await run(*nsx, "ip", "addr", "add", f"{TAP_IP}/30", "dev", TAP_NAME)
     await run(*nsx, "ip", "link", "set", TAP_NAME, "up")
     await run(*nsx, "sysctl", "-qw", "net.ipv4.ip_forward=1")
@@ -121,6 +124,32 @@ async def create_vm_network(index: int) -> None:
     await run(*nsx, "iptables", "-w", "-A", "INPUT", "-i", TAP_NAME, "-j", "DROP")
 
 
-async def teardown_vm_network(index: int) -> None:
+GUEST_PROXY_PORT = 3128  # the guest reaches the allowlist proxy at TAP_IP:3128
+
+
+def _restrict_rules(index: int, proxy_port: int) -> list[tuple[str, ...]]:
+    host_veth, host_ip = f"vh{index}", f"10.200.{index}.1"
+    return [
+        # No direct egress at all: only replies to connections the proxy made are let back in.
+        ("FC-EGRESS", "-i", host_veth, "-m", "conntrack", "!", "--ctstate", "ESTABLISHED,RELATED", "-j", "DROP"),
+        # The one container service this VM may reach: the allowlist proxy on its veth address.
+        ("INPUT", "-i", host_veth, "-d", host_ip, "-p", "tcp", "--dport", str(proxy_port), "-j", "ACCEPT"),
+    ]
+
+
+async def restrict_egress(index: int, proxy_port: int) -> None:
+    """Send this VM's outbound traffic through the allowlist proxy only."""
+    for chain, *spec in _restrict_rules(index, proxy_port):
+        if not await _rule_exists("filter", chain, *spec):
+            await run("iptables", "-w", "-I", chain, "1", *spec)
+    nsx = ("ip", "netns", "exec", netns_name(index))
+    await run(*nsx, "iptables", "-w", "-t", "nat", "-A", "PREROUTING", "-i", TAP_NAME, "-d", TAP_IP, "-p", "tcp",
+              "--dport", str(GUEST_PROXY_PORT), "-j", "DNAT", "--to-destination", f"10.200.{index}.1:{proxy_port}")
+
+
+async def teardown_vm_network(index: int, proxy_port: int = 0) -> None:
+    if proxy_port:
+        for chain, *spec in _restrict_rules(index, proxy_port):
+            await run("iptables", "-w", "-D", chain, *spec, check=False)
     await run("ip", "netns", "del", netns_name(index), check=False)
     await run("ip", "link", "del", f"vh{index}", check=False)
