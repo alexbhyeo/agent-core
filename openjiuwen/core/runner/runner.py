@@ -517,10 +517,28 @@ class _RunnerImpl(_TeamRunnerMixin):
                 session before cleaning. Default ``False`` raises
                 ``AGENT_TEAM_BUSY_INVALID`` so callers explicitly choose
                 between graceful and forced teardown.
+
+        Sandboxes created under the session (e.g. its microVM) are deleted too.
         """
-        if await self._maybe_release_team_session(session_id, force=force):
+        if not await self._maybe_release_team_session(session_id, force=force):
+            await CheckpointerFactory.get_checkpointer().release(session_id)
+        await self._release_session_sandboxes(session_id)
+
+    @staticmethod
+    async def _release_session_sandboxes(session_id: str) -> None:
+        """Delete the session's sandboxes; only touches a gateway that already exists."""
+        from openjiuwen.core.sys_operation.sandbox.gateway.gateway import SandboxGateway
+
+        gateway = SandboxGateway._instance  # never create a gateway just to release
+        if gateway is None:
             return
-        await CheckpointerFactory.get_checkpointer().release(session_id)
+        try:
+            released = await gateway.release_session(session_id, on_stop="delete")
+        except Exception:
+            logger.exception("releasing sandboxes of session %s failed", session_id)
+            return
+        if released:
+            logger.info("released %d sandbox(es) of session %s", released, session_id)
 
     @classmethod
     def _is_called_by_agent(cls, session: AgentSession) -> bool:

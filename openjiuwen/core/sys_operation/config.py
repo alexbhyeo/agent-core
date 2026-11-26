@@ -124,8 +124,9 @@ class SandboxGatewayConfig(BaseModel):
 
 class GatewayStoreConfig(BaseModel):
     type: str = Field(default="memory",
-                      description="Store type, phase 1 only supports memory")
+                      description="Store type: 'memory' (default) or 'sqlite' (survives process restarts)")
     redis_url: Optional[str] = None
+    sqlite_path: Optional[str] = Field(default=None, description="Database file for type='sqlite'")
 
 
 class GatewayConfig(BaseModel):

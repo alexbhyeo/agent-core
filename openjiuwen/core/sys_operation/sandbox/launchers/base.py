@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Optional
+from typing import TYPE_CHECKING, Any, Dict, Optional
 
 from openjiuwen.core.sys_operation.config import SandboxLauncherConfig
 
@@ -23,11 +23,15 @@ class LaunchedSandbox:
                       container id, E2B sandbox id, etc.).  May be ``None``
                       for remote launchers where lifecycle is external.
         host_port:    Host-side mapped port (Docker only, ``None`` otherwise).
+        metadata:     Launcher-specific, non-secret data the gateway saves with
+                      the record and hands back to ``restore_handle`` (e.g.
+                      after an agent-core restart with a persistent store).
     """
 
     base_url: str
     sandbox_id: Optional[str] = None
     host_port: Optional[int] = None
+    metadata: Optional[Dict[str, Any]] = None
 
 
 class SandboxLauncher:

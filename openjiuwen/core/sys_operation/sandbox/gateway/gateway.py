@@ -5,11 +5,38 @@ from typing import Any, AsyncIterator, Dict, Optional
 
 from pydantic import BaseModel, Field
 
+from openjiuwen.core.common.logging import sys_operation_logger as logger
+from openjiuwen.core.common.logging.utils import get_session_id
 from openjiuwen.core.sys_operation.sandbox.gateway.sandbox_store import (
-    InMemorySandboxStore,
     SandboxRecord,
     SandboxStatus,
+    build_sandbox_store,
 )
+
+# Errors that mean "the sandbox endpoint went away" (e.g. the VM behind it was
+# suspended to disk): the gateway re-resolves the endpoint and retries once.
+_CONNECTION_FAILURE_MARKERS = (
+    "Server disconnected",
+    "RemoteProtocolError",
+    "ConnectError",
+    "Connection refused",
+    "Connection reset",
+    "Connection aborted",
+    "ReadError",
+    "peer closed connection",
+    "Broken pipe",
+)
+
+
+def _is_connection_failure(result: Any = None, exc: Optional[BaseException] = None) -> bool:
+    if exc is not None:
+        text = f"{type(exc).__name__}: {exc}"
+    else:
+        code = getattr(result, "code", None)
+        if code is None or code == StatusCode.SUCCESS.code:
+            return False
+        text = str(getattr(result, "message", ""))
+    return any(marker in text for marker in _CONNECTION_FAILURE_MARKERS)
 from openjiuwen.core.sys_operation.sandbox.sandbox_registry import SandboxRegistry
 from openjiuwen.core.sys_operation.config import (
     SandboxGatewayConfig,
@@ -59,7 +86,7 @@ class SandboxGateway:
     ) -> None:
         self._config = config or GatewayConfig()
         self._provider_cache: Dict[str, Any] = {}
-        self._store = InMemorySandboxStore()
+        self._store = build_sandbox_store(self._config.store.type, self._config.store.sqlite_path)
 
         self._register_builtin_launchers()
 
@@ -86,19 +113,40 @@ class SandboxGateway:
             config: SandboxGatewayConfig,
             request: GatewayInvokeRequest,
     ) -> GatewayResponse:
-        """Resolve endpoint → select Provider → call method → return result."""
+        """Resolve endpoint → select Provider → call method → return result.
+
+        If the call fails because the endpoint went away (connection refused /
+        dropped, e.g. the sandbox was suspended behind our cached record), the
+        cached provider and record are dropped, the endpoint is resolved again
+        (which relaunches or restores the sandbox) and the call is retried once.
+        """
+        try:
+            result, failure = await self._invoke_once(config, request)
+            if request.isolation_key and _is_connection_failure(result, failure):
+                logger.warning("sandbox %s unreachable (%s); re-resolving and retrying once",
+                               request.isolation_key, failure or getattr(result, "message", ""))
+                self._evict_provider_cache(request.isolation_key)
+                await self._store.hdel(request.isolation_key)
+                result, failure = await self._invoke_once(config, request)
+            if failure is not None:
+                raise failure
+            return GatewayResponse(code=StatusCode.SUCCESS.code, message=StatusCode.SUCCESS.errmsg, data=result)
+        except Exception as e:
+            return GatewayResponse(code=StatusCode.ERROR.code, message=str(e), data=None)
+
+    async def _invoke_once(self, config: SandboxGatewayConfig,
+                           request: GatewayInvokeRequest) -> tuple[Any, Optional[Exception]]:
+        """One provider call; returns (result, None) or (None, exception)."""
         try:
             provider = await self._get_or_create_provider(
                 config=config, isolation_key=request.isolation_key, op_type=request.op_type,
             )
             handler = getattr(provider, request.method, None)
             if handler is None:
-                return GatewayResponse(code=StatusCode.ERROR.code, message=f"Method '{request.method}' "
-                                                                           f"not found on provider", data=None)
-            result = await handler(**request.params)
-            return GatewayResponse(code=StatusCode.SUCCESS.code, message=StatusCode.SUCCESS.errmsg, data=result)
-        except Exception as e:
-            return GatewayResponse(code=StatusCode.ERROR.code, message=str(e), data=None)
+                raise AttributeError(f"Method '{request.method}' not found on provider")
+            return await handler(**request.params), None
+        except Exception as e:  # reported by handle_request
+            return None, e
 
     async def handle_stream_request(
             self,
@@ -171,8 +219,42 @@ class SandboxGateway:
         except Exception as e:
             return GatewayResponse(code=StatusCode.ERROR.code, message=str(e), data=False)
 
-    async def pause_sandbox(self, record: SandboxRecord):
+    async def release_session(self, session_id: str, on_stop: str = "delete") -> int:
+        """Release every sandbox created under ``session_id`` (e.g. when the session is discarded).
+
+        Returns the number of sandboxes released. Stores that cannot list their
+        records release nothing.
+        """
+        if not session_id:
+            return 0
+        try:
+            records = await self._store.list_records()
+        except NotImplementedError:
+            logger.warning("sandbox store %s cannot list records; session %s not released",
+                           type(self._store).__name__, session_id)
+            return 0
+        released = 0
+        for key, record in records:
+            if (record.metadata or {}).get("session_id") != session_id:
+                continue
+            response = await self.release_sandbox(key, on_stop=on_stop)
+            if response.code == StatusCode.SUCCESS.code:
+                released += 1
+            else:
+                logger.warning("releasing sandbox %s of session %s failed: %s", key, session_id, response.message)
+        return released
+
+    @staticmethod
+    def _launcher_for(record: SandboxRecord) -> Any:
+        """Launcher for a stored record, re-attached to it when the launcher supports that."""
         launcher = SandboxRegistry.create_launcher(record.launcher_type)
+        restore_handle = getattr(launcher, "restore_handle", None)
+        if restore_handle is not None and record.sandbox_id:
+            restore_handle(record.sandbox_id, (record.metadata or {}).get("launcher"))
+        return launcher
+
+    async def pause_sandbox(self, record: SandboxRecord):
+        launcher = self._launcher_for(record)
         await launcher.pause(record.sandbox_id)
 
     async def delete_sandbox(
@@ -180,7 +262,7 @@ class SandboxGateway:
             record: SandboxRecord,
             isolation_key: Optional[str] = None,
     ) -> None:
-        launcher = SandboxRegistry.create_launcher(record.launcher_type)
+        launcher = self._launcher_for(record)
         resolved_isolation_key = isolation_key or (record.metadata or {}).get("isolation_key")
         await launcher.delete(
             record.sandbox_id or "",
@@ -194,8 +276,6 @@ class SandboxGateway:
             config: SandboxGatewayConfig,
             isolation_key: Optional[str] = None,
     ) -> SandboxEndpoint:
-        launcher_type = config.launcher_config.launcher_type
-
         key = isolation_key
         now = time.time()
 
@@ -218,7 +298,7 @@ class SandboxGateway:
                 isolation_key=isolation_key,
             )
 
-        launcher = SandboxRegistry.create_launcher(launcher_type)
+        launcher = self._launcher_for(record)
         real_status = await launcher.check_status(record.sandbox_id)
 
         if real_status == SandboxStatus.RUNNING:
@@ -270,6 +350,9 @@ class SandboxGateway:
             metadata={
                 "lifecycle_hook": config.launcher_config.extra_params.get("lifecycle_hook"),
                 "isolation_key": key,
+                "launcher": launched.metadata,
+                # The agent session that created the sandbox, so Runner.release can find it.
+                "session_id": get_session_id(),
             },
         )
         await self._store.set(key, record)
@@ -280,7 +363,7 @@ class SandboxGateway:
         if idle_ttl is None:
             return
         for record in await self._store.evict_expired(idle_ttl, now):
-            launcher = SandboxRegistry.create_launcher(record.launcher_type)
+            launcher = self._launcher_for(record)
             await launcher.delete(
                 record.sandbox_id or "",
                 base_url=record.base_url,
