@@ -44,7 +44,7 @@ files:
 | 编号 / slug | S_01 / firecracker-session-sandbox |
 | 关联模块 | `openjiuwen/extensions/sys_operation/sandbox/launchers`、`openjiuwen/core/sys_operation/sandbox/gateway`、`openjiuwen/core/runner`（agent-core 侧）；`deploy/firecracker`（FcSessionManager、guest agent） |
 | 最近一次修订日期 | 2026-11-26 |
-| 关联 feature | [F_20261125_0200_firecracker-session-sandbox-phase1](../../features/F_20261125_0200_firecracker-session-sandbox-phase1.md)、[F_20261126_0726_firecracker-session-sandbox-phase2-4](../../features/F_20261126_0726_firecracker-session-sandbox-phase2-4.md)、[F_20261126_0926_firecracker-session-sandbox-phase5-messaging](../../features/F_20261126_0926_firecracker-session-sandbox-phase5-messaging.md) |
+| 关联 feature | [F_20261125_0200_firecracker-session-sandbox-phase1](../../features/F_20261125_0200_firecracker-session-sandbox-phase1.md)、[F_20261126_0726_firecracker-session-sandbox-phase2-4](../../features/F_20261126_0726_firecracker-session-sandbox-phase2-4.md)、[F_20261126_0926_firecracker-session-sandbox-phase5-messaging](../../features/F_20261126_0926_firecracker-session-sandbox-phase5-messaging.md)；使用方：[F_20261127_0456_firecracker-playground](../../features/F_20261127_0456_firecracker-playground.md)（Playground，只消费本契约） |
 | 设计依据 | D-20261124-0855-firecracker-session-manager（第一至第五阶段范围）；VM 任务用户消息为用户追加需求 |
 
 本规约定义 Firecracker 会话沙箱的当前契约：agent-core 的 `firecracker` launcher 与辅助函数、SandboxGateway 的持久化 store 与兜底重试、`Runner.release` 对会话 VM 的清理、FcSessionManager REST API（含 persist、唤醒、闲置策略、fork、workspace 热替换、会话内 MCP 与密钥、用户分级与限速、balloon、CPU 模板选择、出站审计与白名单、冷快照封存、warm pool、指标告警、VM 任务与用户的消息）、会话归属、网络隔离和 guest agent 接口，以及 agent-core 容器的出站限制脚本。

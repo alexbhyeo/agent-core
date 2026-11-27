@@ -22,6 +22,7 @@ generated: true
 | [core/foundation/llm](#module-core-foundation-llm) |
 | [core/runner](#module-core-runner) |
 | [core/sys_operation](#module-core-sys_operation) |
+| [deploy/firecracker](#module-deploy-firecracker) |
 | [extensions/observability](#module-extensions-observability) |
 | [extensions/sys_operation](#module-extensions-sys_operation) |
 | [harness](#module-harness) |
@@ -151,6 +152,10 @@ generated: true
 | ID | 标题 | 状态 | 作者 | 领域 | 更新日期 |
 |---|---|---|---|---|---|
 | [D-20261124-0855-firecracker-session-manager](proposals/D-20261124-0855-firecracker-session-manager/design.md) | Firecracker 会话管理器设计提案 | draft | alexbhyeo | core | 2026-11-24 |
+
+<a id="module-deploy-firecracker"></a>
+
+## deploy/firecracker
 
 <a id="module-extensions-observability"></a>
 

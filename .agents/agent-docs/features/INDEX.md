@@ -25,6 +25,7 @@ generated: true
 | [core/foundation/llm](#module-core-foundation-llm) |
 | [core/runner](#module-core-runner) |
 | [core/sys_operation](#module-core-sys_operation) |
+| [deploy/firecracker](#module-deploy-firecracker) |
 | [extensions.tracer_otel](#module-extensions-tracer_otel) |
 | [extensions/observability](#module-extensions-observability) |
 | [extensions/sys_operation](#module-extensions-sys_operation) |
@@ -282,6 +283,14 @@ generated: true
 | [F_20261104_1720_tool-execution-environment](F_20261104_1720_tool-execution-environment.md) | F | 工具执行环境作用域 | alan_cheng | 无独立 D：无独立 D；在现有 harness 工具调用与 team 会话存储契约上的小范围扩展。 |
 | [F_20261125_0200_firecracker-session-sandbox-phase1](F_20261125_0200_firecracker-session-sandbox-phase1.md) | F | Firecracker 会话沙箱第一阶段实施与决策归档 | alexbhyeo | [D-20261124-0855-firecracker-session-manager](../designs/proposals/D-20261124-0855-firecracker-session-manager/design.md) |
 | [F_20261126_0726_firecracker-session-sandbox-phase2-4](F_20261126_0726_firecracker-session-sandbox-phase2-4.md) | F | Firecracker 会话沙箱第二至第四阶段实施与决策归档 | alexbhyeo | [D-20261124-0855-firecracker-session-manager](../designs/proposals/D-20261124-0855-firecracker-session-manager/design.md) |
+
+<a id="module-deploy-firecracker"></a>
+
+## deploy/firecracker
+
+| ID / 文档 | 类型 | 标题 | 作者 | 关联 D |
+|---|---|---|---|---|
+| [F_20261127_0456_firecracker-playground](F_20261127_0456_firecracker-playground.md) | F | Firecracker Playground 前后端实施与决策归档 | alexbhyeo | [D-20261127-0315-firecracker-playground](../designs/active/D-20261127-0315-firecracker-playground/design.md) |
 
 <a id="module-extensions-tracer_otel"></a>
 

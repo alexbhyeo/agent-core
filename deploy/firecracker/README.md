@@ -22,6 +22,8 @@ agent-core (any OS) ──REST──▶ FcSessionManager ──jailer──▶ F
 | `docker/manager.Dockerfile` | Manager image with Firecracker/jailer/snapshot-editor v1.18.0, CPU templates and the 6.1 CI guest kernel |
 | `docker/e2e-runner.Dockerfile` | Test runner with agent-core's locked dependencies, Node and Playwright |
 | `scripts/` | `build.sh`, `run_manager.sh` (passes every `FCM_*` setting through), `run_e2e.sh`, `agent_core_egress.sh` |
+| `playground/backend/` | Playground backend: agent-core (DeepAgent / AgentTeam) behind the HTTP API `/api/v1`; runs next to the manager |
+| `playground/frontend/` | Playground frontend: static ChatGPT-style web UI (nginx image); can be hosted on another machine |
 
 ## Requirements
 
@@ -72,6 +74,43 @@ Other helpers in `openjiuwen.extensions.sys_operation.sandbox.launchers`:
 
 Set `GatewayStoreConfig(type="sqlite", sqlite_path=...)` so the Gateway re-attaches sessions
 after an agent-core restart; a request that hits a gone VM is retried once after re-launch.
+
+## Playground (web UI)
+
+A ChatGPT-style web UI to use and test everything above: switch users, open many sessions
+(DeepAgent or AgentTeam), run queries in several sessions at once or as a batch, watch VMs
+pause / persist / wake, answer `fc-ask` questions from tasks in the VM, and drive every session
+feature (lifecycle, fork, workspace checkpoints and swap, secrets, MCP, shell, files, egress,
+debug) plus an operations view (metrics, alerts, per-user sessions, manager restart).
+Design: `.agents/agent-docs/designs/active/D-20261127-0315-firecracker-playground/`.
+
+The frontend and the backend are separate deployables; the only link between them is the HTTP
+API `/api/v1` (bearer token + CORS allowlist):
+
+```bash
+# backend host (with KVM, next to FcSessionManager on the docker network fc-net)
+export PLAYGROUND_TOKEN=$(python3 -c 'import secrets; print(secrets.token_urlsafe(24))')
+export PLAYGROUND_ALLOWED_ORIGINS=https://frontend.example     # where the UI is served from
+export FCM_API_TOKEN=... API_KEY=... API_BASE=... MODEL_NAME=...
+PLAYGROUND_DOCKER=1 deploy/firecracker/playground/backend/run_backend.sh    # port 8800
+
+# frontend host (any machine with Docker; or copy playground/frontend/* to any static host)
+PLAYGROUND_API_BASE_URL=https://backend.example:8800 deploy/firecracker/playground/frontend/run_frontend.sh   # port 8080
+```
+
+Open the frontend, enter the backend URL and `PLAYGROUND_TOKEN` in Settings, then pick a user in
+the bottom-left menu. User switching is not authenticated: anyone with the token can act as any
+user, so keep the Playground on test environments (put TLS in front of the backend when it is
+reached over a network). `PLAYGROUND_DOCKER=1` enables the "restart manager" button.
+
+| Backend setting | Purpose |
+| --- | --- |
+| `PLAYGROUND_TOKEN` | required access token |
+| `PLAYGROUND_ALLOWED_ORIGINS` | comma-separated origins allowed to call the API |
+| `PLAYGROUND_BIND` | listen address (default `0.0.0.0:8800`) |
+| `PLAYGROUND_MAX_RUNS` / `PLAYGROUND_MAX_ITERATIONS` | concurrent queries (8) / agent steps per query (20) |
+| `PLAYGROUND_DEFAULT_VCPUS` / `PLAYGROUND_DEFAULT_MEM_MIB` | default VM size (2 / 1024) |
+| `PLAYGROUND_USERS` | users offered in the user menu (default `alice,bob,noisy,fenced`) |
 
 ## REST API
 
@@ -182,6 +221,7 @@ and inspect its disk.
 | `test_firecracker_phase4_e2e.py` | fork (running and persisted), Diff snapshots, workspace checkpoint and hot-swap |
 | `test_firecracker_phase5_e2e.py` | tiers and rate limits, balloon, CPU templates, egress audit / allowlist, sealed snapshots, warm pool, metrics, agent-core egress |
 | `test_firecracker_messages_e2e.py` | tasks notify / ask the user, across persist, per user, from a DeepAgent and an AgentTeam |
+| `test_firecracker_playground_e2e.py` | Playground: separate frontend / backend origins, token and CORS, user isolation, every panel action, VM questions, manager restart, DeepAgent / AgentTeam / parallel / batch / cancel queries, and the real UI in Chromium |
 
 Phase 5 tests expect the manager to run with
 `FCM_TIERS='{"e2e-slow": {"disk_mbps": 20, "disk_iops": 1000, "net_mbps": 20, "max_sessions": 2}}'`,

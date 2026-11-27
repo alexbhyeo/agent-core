@@ -487,6 +487,8 @@ generated: true
 
 | ID / 文档 | 类型 | 标题 | 作者 | 关联 D |
 |---|---|---|---|---|
+| [D-20261127-0315-firecracker-playground](designs/active/D-20261127-0315-firecracker-playground/design.md) | D | Firecracker 会话沙箱 Playground 前端设计方案 | alexbhyeo | — |
+| [F_20261127_0456_firecracker-playground](features/F_20261127_0456_firecracker-playground.md) | F | Firecracker Playground 前后端实施与决策归档 | alexbhyeo | [D-20261127-0315-firecracker-playground](designs/active/D-20261127-0315-firecracker-playground/design.md) |
 | [S_01_firecracker-session-sandbox](specs/sys_operation/S_01_firecracker-session-sandbox.md) | S | Firecracker 会话沙箱规约 | alexbhyeo | — |
 
 <a id="module-extensions-tracer_otel"></a>
@@ -528,6 +530,7 @@ generated: true
 |---|---|---|---|---|
 | [D-20261124-0855-firecracker-session-manager](designs/proposals/D-20261124-0855-firecracker-session-manager/design.md) | D | Firecracker 会话管理器设计提案 | alexbhyeo | — |
 | [D-20261124-0855-firecracker-session-manager-en](designs/proposals/D-20261124-0855-firecracker-session-manager/assets/design_en.md) | D | Firecracker Session Manager Design Proposal | alexbhyeo | — |
+| [D-20261127-0315-firecracker-playground](designs/active/D-20261127-0315-firecracker-playground/design.md) | D | Firecracker 会话沙箱 Playground 前端设计方案 | alexbhyeo | — |
 | [F_20261125_0200_firecracker-session-sandbox-phase1](features/F_20261125_0200_firecracker-session-sandbox-phase1.md) | F | Firecracker 会话沙箱第一阶段实施与决策归档 | alexbhyeo | [D-20261124-0855-firecracker-session-manager](designs/proposals/D-20261124-0855-firecracker-session-manager/design.md) |
 | [F_20261126_0726_firecracker-session-sandbox-phase2-4](features/F_20261126_0726_firecracker-session-sandbox-phase2-4.md) | F | Firecracker 会话沙箱第二至第四阶段实施与决策归档 | alexbhyeo | [D-20261124-0855-firecracker-session-manager](designs/proposals/D-20261124-0855-firecracker-session-manager/design.md) |
 | [F_20261126_0926_firecracker-session-sandbox-phase5-messaging](features/F_20261126_0926_firecracker-session-sandbox-phase5-messaging.md) | F | Firecracker 会话沙箱第五阶段与 VM 任务用户消息实施与决策归档 | alexbhyeo | [D-20261124-0855-firecracker-session-manager](designs/proposals/D-20261124-0855-firecracker-session-manager/design.md) |
@@ -706,6 +709,7 @@ generated: true
 | [README](designs/README.md) | D | 设计资产 | 待确认 | — |
 | [REGISTRY](designs/REGISTRY.md) | D | SDD 编号台账 (REGISTRY) | 待确认 | — |
 | [SDD-0001](designs/proposals/SDD-0001-sample-design/design.md) | D | 示例设计文档（脚手架自带，可删除） | @your-handle | — |
+| [design_en](designs/active/D-20261127-0315-firecracker-playground/assets/design_en.md) | D | Firecracker Session Sandbox Playground — Design (English version) | 待确认 | — |
 | [legacy-documents](designs/legacy-documents.md) | D | 旧格式设计资料 | 待确认 | — |
 | [migration-20261026](designs/migration-20261026.md) | D | 设计文档迁移与跨仓引用 | 待确认 | — |
 | [swarmchat_design](designs/archive/SSD-0012-swarmchat-design/swarmchat_design.md) | D | 群聊设计 | 待确认 | — |
