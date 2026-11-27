@@ -471,6 +471,7 @@ generated: true
 | [F_20261125_0200_firecracker-session-sandbox-phase1](features/F_20261125_0200_firecracker-session-sandbox-phase1.md) | F | Firecracker 会话沙箱第一阶段实施与决策归档 | alexbhyeo | [D-20261124-0855-firecracker-session-manager](designs/proposals/D-20261124-0855-firecracker-session-manager/design.md) |
 | [F_20261126_0726_firecracker-session-sandbox-phase2-4](features/F_20261126_0726_firecracker-session-sandbox-phase2-4.md) | F | Firecracker 会话沙箱第二至第四阶段实施与决策归档 | alexbhyeo | [D-20261124-0855-firecracker-session-manager](designs/proposals/D-20261124-0855-firecracker-session-manager/design.md) |
 | [B_20261104_2054_recovered-context-seed-and-execution-environment](bugfix/agent_teams/B_20261104_2054_recovered-context-seed-and-execution-environment.md) | B | 冷恢复后成员策略 seed 与执行环境传递修复 | alan_cheng | 无独立 D：无独立 D；修复 F_20261104_1720_tool-execution-environment / F_20261104_1721_session-execution-settings 在冷恢复与远程调用路径上的遗漏。 |
+| [B_20261127_0742_reused-agent-cwd-fallback](bugfix/harness/B_20261127_0742_reused-agent-cwd-fallback.md) | B | 复用的 DeepAgent 在新 Task 中工作目录退回宿主 os.getcwd() 的修复 | alexbhyeo | 无独立 D：缺陷修复，按用户在会话中的确认（2026-11-27，“fix the agent-core the same way as the sandbox fallback”）直接修复，未建立独立 D 文档。 |
 | [S_01_firecracker-session-sandbox](specs/sys_operation/S_01_firecracker-session-sandbox.md) | S | Firecracker 会话沙箱规约 | alexbhyeo | — |
 
 <a id="module-core-workflow"></a>
@@ -614,6 +615,7 @@ generated: true
 | [B_20261104_2030_cancellation-cause-lifecycle](bugfix/core_runtime/B_20261104_2030_cancellation-cause-lifecycle.md) | B | 压缩取消一律误报 failed 及标记生命周期残留窗口缺陷 | CharlesWang2030 | 无独立 D：c4e52b7c 引入 cancellation cause 注册表属于常规缺陷修复，未归档独立设计；本次为对该提交检视发现的标记生命周期缺陷的后续修复，沿用注册表现有契约（TTL、非消费式 resolve、前缀继承）。 |
 | [B_20261114_1107_interactive-memory-turn](bugfix/harness/B_20261114_1107_interactive-memory-turn.md) | B | 交互式中断恢复后记忆丢失修复 | robin1217 | 无独立 D：本次按对话中确认的 D3 收敛方案修复，未建立独立 D 文档；外部 F08 的 D3 是决策编号，不是设计资产标识。 |
 | [B_20261127_0532_sysop-spec-silent-local-fallback](bugfix/harness/B_20261127_0532_sysop-spec-silent-local-fallback.md) | B | SysOperationSpec 解析失败时静默回退 LOCAL 的修复 | alexbhyeo | 无独立 D：缺陷修复，按用户在会话中的确认（2026-11-27，“fix … so that a failed registration raises an error”）直接修复，未建立独立 D 文档。 |
+| [B_20261127_0742_reused-agent-cwd-fallback](bugfix/harness/B_20261127_0742_reused-agent-cwd-fallback.md) | B | 复用的 DeepAgent 在新 Task 中工作目录退回宿主 os.getcwd() 的修复 | alexbhyeo | 无独立 D：缺陷修复，按用户在会话中的确认（2026-11-27，“fix the agent-core the same way as the sandbox fallback”）直接修复，未建立独立 D 文档。 |
 | [S_01_public-api-and-construction](specs/harness/S_01_public-api-and-construction.md) | S | S_01 公开 API 表面与构造流 | yangzequ | — |
 | [S_02_deep-agent-architecture](specs/harness/S_02_deep-agent-architecture.md) | S | S_02 DeepAgent 架构 | yangzequ | — |
 | [S_03_task-loop](specs/harness/S_03_task-loop.md) | S | S_03 TaskLoop 事件体系 | yangzequ | — |
