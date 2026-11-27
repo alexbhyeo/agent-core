@@ -1754,6 +1754,15 @@ class DeepAgent(BaseAgent):
             # Reused subagent instances skip full init; still refresh cwd so
             # create_subagent does not have to mutate the parent's ContextVar.
             self._apply_inherited_artifact_cwd()
+            # A reused instance may run in a new asyncio Task (e.g. a later
+            # Runner call for the same session). The cwd ContextVar was set in
+            # the first run's Task only, so bind it again here; otherwise tools
+            # fall back to this process's os.getcwd(), which is meaningless in a
+            # sandbox. A cwd already bound in this Task (by a parent or host) wins.
+            from openjiuwen.core.sys_operation.cwd import is_cwd_initialized
+
+            if not is_cwd_initialized():
+                self._bind_task_cwd()
             await self._register_online_training_rail_from_env_if_needed()
             return
 
@@ -1768,26 +1777,7 @@ class DeepAgent(BaseAgent):
         # Initialize ContextVar CWD in the current asyncio Task context.
         # Each agent sets its own CWD unconditionally — ContextVar copies
         # are per-Task, so this won't affect the parent agent.
-        if self._deep_config and (self._deep_config.workspace or self._deep_config.cwd):
-            from openjiuwen.core.sys_operation.cwd import init_cwd
-
-            workspace = self._deep_config.workspace
-            workspace_root = (workspace.root_path if workspace else None) or os.getcwd()
-            if self._inherited_artifact_root:
-                init_cwd(
-                    self._inherited_artifact_root,
-                    project_root=self._inherited_artifact_root,
-                    workspace=workspace_root,
-                )
-            else:
-                # cwd and workspace are separate layers: the workspace holds
-                # this agent's artifacts, cwd is where shell runs and relative
-                # paths resolve. They coincide unless the host says otherwise
-                # (team members run in the project dir / their worktree while
-                # keeping a private workspace).
-                cwd_root = self._deep_config.cwd or workspace_root
-                project_root = self._deep_config.project_root or cwd_root
-                init_cwd(cwd_root, project_root=project_root, workspace=workspace_root)
+        self._bind_task_cwd()
 
         await self._register_pending_mcps()
 
@@ -1904,6 +1894,30 @@ class DeepAgent(BaseAgent):
                     and config.auto_create_workspace
             )
         return False
+
+    def _bind_task_cwd(self) -> None:
+        """Bind this agent's cwd / project root / workspace in the current Task's ContextVar."""
+        if not (self._deep_config and (self._deep_config.workspace or self._deep_config.cwd)):
+            return
+        from openjiuwen.core.sys_operation.cwd import init_cwd
+
+        workspace = self._deep_config.workspace
+        workspace_root = (workspace.root_path if workspace else None) or os.getcwd()
+        if self._inherited_artifact_root:
+            init_cwd(
+                self._inherited_artifact_root,
+                project_root=self._inherited_artifact_root,
+                workspace=workspace_root,
+            )
+        else:
+            # cwd and workspace are separate layers: the workspace holds
+            # this agent's artifacts, cwd is where shell runs and relative
+            # paths resolve. They coincide unless the host says otherwise
+            # (team members run in the project dir / their worktree while
+            # keeping a private workspace).
+            cwd_root = self._deep_config.cwd or workspace_root
+            project_root = self._deep_config.project_root or cwd_root
+            init_cwd(cwd_root, project_root=project_root, workspace=workspace_root)
 
     async def ensure_initialized(self) -> None:
         """Perform lazy initialization. For testing only."""

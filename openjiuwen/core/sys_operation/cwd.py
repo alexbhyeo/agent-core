@@ -185,6 +185,17 @@ def get_agent_history_root() -> str:
 
 # ---- Bulk initialization ---------------------------------------------------
 
+def is_cwd_initialized() -> bool:
+    """Whether the current context has a working directory bound.
+
+    True once ``init_cwd`` (or ``set_cwd`` / ``set_original_cwd``) ran in this
+    context or in the context it was copied from. ``get_cwd()`` alone does not
+    count: it falls back to ``os.getcwd()`` when nothing is bound.
+    """
+    state = _cwd_state.get()
+    return state is not None and bool(state.cwd or state.original_cwd)
+
+
 def init_cwd(
     cwd: str,
     project_root: str | None = None,
