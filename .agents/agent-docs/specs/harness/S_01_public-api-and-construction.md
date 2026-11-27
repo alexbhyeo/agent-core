@@ -18,7 +18,7 @@ author_email: yangzequ1@huawei.com
 |---|---|
 | 类型 | spec |
 | 关联模块 | `openjiuwen/harness/__init__.py`、`openjiuwen/harness/factory.py`、`openjiuwen/harness/schema/config.py`、`openjiuwen/harness/extension_binder.py` |
-| 最近一次修订日期 | 2026-11-11 |
+| 最近一次修订日期 | 2026-11-27 |
 | 关联 feature | [F_27 tool.register 启动登记](../features/F_27_tool-registration-event-bridge.md) |
 
 ## 范围 / 边界
@@ -44,6 +44,15 @@ author_email: yangzequ1@huawei.com
 > `S_12` / `S_13`），本 spec 不重复。
 
 ## 不变量
+
+### SysOperationSpec 解析失败关闭（2026-11-27）
+
+`SysOperationSpec.resolve()` 要么返回在该 id 下注册、且 `mode` 与 spec 一致的 `SysOperation`，要么抛出
+`SYS_OPERATION_MANAGER_PROCESS_ERROR`（注册失败附原因；同 id 已注册实例模式不同）。它不返回 `None`：
+`create_deep_agent` 把缺失的 sys_operation 视为“新建 LOCAL”，返回 `None` 会让声明 SANDBOX 的 DeepAgent /
+AgentTeam 成员在宿主上执行工具。get-or-create 语义（团队恢复时复用同一实例）不变。由
+`tests/unit_tests/harness/test_sys_operation_spec_resolve.py` 锁定；背景见
+[B_20261127_0532](../../bugfix/harness/B_20261127_0532_sysop-spec-silent-local-fallback.md)。
 
 ### Spec 调用级工具 owner 接缝（2026-09-28）
 
