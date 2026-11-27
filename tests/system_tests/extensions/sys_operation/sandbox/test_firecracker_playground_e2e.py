@@ -337,6 +337,16 @@ async def test_deep_agent_answers_and_remembers_the_conversation(created):
         assert "4711" in _answer_text(events, sid, first["run_id"])
         second = await _ask(events, "alice", sid, "What number did you write in the previous step? Number only.")
         assert "4711" in _answer_text(events, sid, second["run_id"])
+        # Later runs reuse the agent instance: its shell must still start in the VM's /workspace,
+        # not in the backend's working directory.
+        third = await _ask(events, "alice", sid, "Use the bash tool to run `pwd` (no cd, no workdir argument) "
+                                                 "and reply with its exact output only.")
+        results = [e for e in events.of(sid) if e["type"] == "run.chunk" and e["run_id"] == third["run_id"]
+                   and e["kind"] == "tool_result"]
+        assert results and all("No such file" not in str(e["data"]) for e in results), results
+        assert "/workspace" in _answer_text(events, sid, third["run_id"])
+        calls = [e for e in events.of(sid) if e["type"] == "run.chunk" and e["kind"] in ("tool_call", "tool_result")]
+        assert calls and all(e["data"].get("invoke_id") for e in calls), "tool events carry their invoke id"
         _, content, _ = await call("GET", f"/api/v1/sessions/{sid}/files?path=/workspace/n.txt")
         assert content["text"].strip() == "4711"
         _, info, _ = await call("GET", f"/api/v1/sessions/{sid}")
