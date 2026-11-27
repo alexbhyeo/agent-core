@@ -273,7 +273,11 @@ async function openSession(sid) {
     if (item.vm) { upsertVmCard(item.vm); group = null; continue; }
     const t = item.entry;
     if (t.role === "user") { appendUser(t.text); group = null; }
-    else if (t.role === "assistant") { group = appendAssistant(t.member); group.body.innerHTML = renderText(t.text); }
+    else if (t.role === "assistant") {
+      if (!group || group.member !== t.member || group.text) group = appendAssistant(t.member);
+      group.text = t.text;
+      group.body.innerHTML = renderText(t.text);
+    }
     else if (t.kind === "error") { appendError(t.text); }
     else {
       if (!group || group.member !== t.member) group = appendAssistant(t.member);
@@ -300,9 +304,14 @@ function appendUser(text) {
 function appendAssistant(member) {
   const el = document.createElement("div");
   el.className = "msg-assistant";
-  el.innerHTML = `${member ? `<div class="member">${esc(member)}</div>` : ""}<div class="chips"></div><div class="body"></div>`;
+  el.innerHTML = `${member ? `<div class="member">${esc(member)}</div>` : ""}
+    <details class="activity hidden"><summary></summary><div class="chips steps"></div></details>
+    <div class="body"></div>`;
   $("messages").appendChild(el);
-  return { el, member, chips: el.querySelector(".chips"), body: el.querySelector(".body"), text: "" };
+  return {
+    el, member, text: "", activity: el.querySelector(".activity"), chips: el.querySelector(".steps"),
+    body: el.querySelector(".body"), pending: {}, tools: {}, steps: 0, running: false,
+  };
 }
 
 function appendError(text) {
@@ -312,13 +321,68 @@ function appendError(text) {
   $("messages").appendChild(el);
 }
 
-function addChip(group, kind, text, detail) {
-  const icon = { tool_call: "🔧", tool_result: "✓", team_event: "👥", reasoning: "💭", other: "·" }[kind] || "·";
-  const chip = document.createElement("div");
-  chip.className = "chip";
-  chip.innerHTML = `${icon} ${esc(text).slice(0, 300)}${detail ? `<div class="detail">${esc(detail)}</div>` : ""}`;
-  chip.onclick = () => chip.classList.toggle("open");
-  group.chips.appendChild(chip);
+// Tool activity of one answer: a single collapsible list; each tool call and its result share one row.
+function splitEvent(text, detail) {
+  // live events: text = tool name, detail = "inputs: ..."; stored events: text = "name {...}"
+  if (detail) return { name: text, detail };
+  const i = String(text).indexOf(" ");
+  return i < 0 ? { name: text, detail: "" } : { name: text.slice(0, i), detail: text.slice(i + 1) };
+}
+
+function previewOf(detail) {
+  // payloads look like {'inputs': '{\'command\': \'curl ...\'}'}: take the first meaningful argument
+  const m = String(detail).match(/(?:command|file_path|path|query|url|content)\\*['"]?\s*:\s*\\*(['"])([\s\S]{1,240})/);
+  let raw = String(detail).replace(/^[a-z_]+:\s*/, "");
+  if (m) {  // the value ends at the quote style that opened it
+    const end = m[1] === '"' ? m[2].indexOf('"') : m[2].search(/\\*'/);
+    raw = end >= 0 ? m[2].slice(0, end) : m[2];
+  }
+  return raw.replace(/\s+/g, " ").trim().slice(0, 140);
+}
+
+function updateActivity(group) {
+  group.activity.classList.remove("hidden");
+  const tools = Object.entries(group.tools).map(([n, c]) => (c > 1 ? `${n} ×${c}` : n)).join(", ");
+  const verb = group.running ? "Working…" : "Used";
+  group.activity.querySelector("summary").textContent =
+    `${verb} ${group.steps} step${group.steps === 1 ? "" : "s"}${tools ? " · " + tools : ""}`;
+}
+
+function addChip(group, kind, text, detail, invokeId) {
+  let { name, detail: info } = splitEvent(text, detail);
+  if (!invokeId) {  // stored events keep the id inside their text
+    const m = info.match(/'invoke_id': '([^']+)'/);
+    if (m) { invokeId = m[1]; info = info.replace(/,? ?'invoke_id': '[^']+'/, ""); }
+  }
+  // Parallel calls finish out of order: pair a result with its call by id, else by tool name.
+  const key = invokeId ? `id:${invokeId}` : `name:${name}`;
+  if (kind === "tool_result") {
+    const row = (group.pending[key] || []).shift();
+    const failed = /success\\*['"]?\s*:\s*False/.test(info) || /error: (?!None)\S/.test(info);
+    if (row) {
+      row.querySelector(".state").textContent = failed ? "✗" : "✓";
+      row.classList.toggle("failed", failed);
+      row.querySelector(".detail").textContent += `
+
+${info}`;
+      updateActivity(group);
+      return;
+    }
+  }
+  const icon = { tool_call: "🔧", tool_result: "✓", team_event: "👥", other: "·" }[kind] || "·";
+  const row = document.createElement("div");
+  row.className = "chip step";
+  row.innerHTML = `<div class="step-head"><span class="state">${kind === "tool_call" ? "…" : ""}</span>${icon}
+    <b>${esc(name)}</b><span class="preview">${esc(previewOf(info))}</span></div><div class="detail"></div>`;
+  row.querySelector(".detail").textContent = info;
+  row.onclick = (e) => { if (!e.target.closest(".detail")) row.classList.toggle("open"); };
+  group.chips.appendChild(row);
+  if (kind === "tool_call") {
+    (group.pending[key] = group.pending[key] || []).push(row);
+    group.tools[name] = (group.tools[name] || 0) + 1;
+  }
+  group.steps += 1;
+  updateActivity(group);
 }
 
 function startLive(runId, text) {
@@ -338,6 +402,7 @@ function liveGroup(member) {
       state.live.groups.delete("");
     }
     const g = appendAssistant(member);
+    g.running = true;
     g.body.classList.add("cursor");
     state.live.groups.set(key, g);
   }
@@ -347,18 +412,48 @@ function liveGroup(member) {
 function liveChunk(ev) {
   if (!state.live || state.live.runId !== ev.run_id) state.live = { runId: ev.run_id, groups: new Map() };
   const g = liveGroup(ev.member);
+  if (ev.kind === "reasoning") { appendThinking(g, ev.text); scrollDown(false); return; }
+  if (ev.kind === "delta" || ev.kind === "answer") closeThinking(g);
   if (ev.kind === "delta") { g.text += ev.text; g.body.innerHTML = renderText(g.text); }
   else if (ev.kind === "answer") { g.text = ev.text; g.body.innerHTML = renderText(g.text); }
   else {
-    const detail = ev.data ? Object.entries(ev.data).filter(([, v]) => v).map(([k, v]) => `${k}: ${v}`).join("\n") : "";
-    addChip(g, ev.kind, ev.text, detail);
+    const detail = ev.data ? Object.entries(ev.data).filter(([k, v]) => v && k !== "invoke_id")
+      .map(([k, v]) => `${k}: ${v}`).join("\n") : "";
+    addChip(g, ev.kind, ev.text, detail, ev.data && ev.data.invoke_id);
   }
   scrollDown(false);
+}
+
+// Reasoning tokens stream into one collapsible "Thinking" block per answer (not one line per token).
+function appendThinking(g, text) {
+  if (!g.think) {
+    const el = document.createElement("details");
+    el.className = "thinking";
+    el.open = true;
+    el.innerHTML = '<summary>Thinking…</summary><div class="thinking-text"></div>';
+    g.el.insertBefore(el, g.chips);
+    g.think = { el, text: "", started: Date.now(), closed: false };
+  }
+  g.think.text += text;
+  const box = g.think.el.querySelector(".thinking-text");
+  box.textContent = g.think.text;
+  box.scrollTop = box.scrollHeight;
+}
+
+function closeThinking(g) {
+  if (!g.think || g.think.closed) return;
+  g.think.closed = true;
+  g.think.el.open = false;
+  const secs = Math.max(1, Math.round((Date.now() - g.think.started) / 1000));
+  g.think.el.querySelector("summary").textContent = `Thought for ${secs}s`;
 }
 
 function finishLive(ev) {
   if (state.live) {
     for (const g of state.live.groups.values()) {
+      closeThinking(g);
+      g.running = false;
+      if (g.steps) updateActivity(g);
       g.body.classList.remove("cursor");
       if (!g.text && !g.chips.children.length) g.el.remove();
     }

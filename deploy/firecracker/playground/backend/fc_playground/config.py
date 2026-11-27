@@ -52,7 +52,7 @@ class Settings:
             manager_url=_env("FC_MANAGER_URL", "http://fc-manager:8700").rstrip("/"),
             manager_token=manager_token,
             max_runs=int(_env("PLAYGROUND_MAX_RUNS", "8")),
-            max_iterations=int(_env("PLAYGROUND_MAX_ITERATIONS", "20")),
+            max_iterations=int(_env("PLAYGROUND_MAX_ITERATIONS", "100")),
             default_profile={"vcpus": int(_env("PLAYGROUND_DEFAULT_VCPUS", "2")),
                              "mem_mib": int(_env("PLAYGROUND_DEFAULT_MEM_MIB", "1024"))},
             docker_socket=_env("PLAYGROUND_DOCKER_SOCKET", "/var/run/docker.sock")

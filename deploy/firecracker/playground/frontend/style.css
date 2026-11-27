@@ -91,7 +91,25 @@ code { font-family: ui-monospace, "Cascadia Code", Menlo, monospace; font-size: 
 .chip { font-size: 12.5px; color: var(--muted); border-left: 2px solid var(--border); padding: 1px 8px; cursor: pointer; }
 .chip .detail { display: none; white-space: pre-wrap; font-family: ui-monospace, monospace; font-size: 12px; }
 .chip.open .detail { display: block; }
+.activity { margin: 2px 0 8px; font-size: 13px; color: var(--muted); }
+.activity > summary { cursor: pointer; user-select: none; padding: 2px 0; }
+.activity > summary:hover { color: var(--fg); }
+.activity .steps { margin: 4px 0 0 4px; border-left: 2px solid var(--border); padding-left: 8px; gap: 1px; }
+.step { border-left: 0; padding: 2px 4px; border-radius: 6px; }
+.step:hover { background: var(--bg-soft); }
+.step-head { display: flex; align-items: baseline; gap: 6px; min-width: 0; }
+.step-head .state { width: 12px; flex: none; color: var(--ok); }
+.step.failed .state { color: var(--bad); }
+.step-head b { font-weight: 600; color: var(--fg); flex: none; }
+.step-head .preview { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-family: ui-monospace, monospace;
+  font-size: 12px; min-width: 0; }
+.step .detail { margin: 4px 0 4px 18px; max-height: 260px; overflow: auto; background: var(--code-bg);
+  border: 1px solid var(--border); border-radius: 6px; padding: 6px 8px; color: var(--fg); }
 .msg-error { color: var(--bad); font-size: 13px; }
+.thinking { margin: 2px 0 6px; font-size: 13px; color: var(--muted); }
+.thinking summary { cursor: pointer; user-select: none; }
+.thinking-text { white-space: pre-wrap; border-left: 2px solid var(--border); padding: 2px 10px; margin-top: 4px;
+  max-height: 180px; overflow-y: auto; }
 .cursor::after { content: "▍"; animation: blink 1s steps(1) infinite; color: var(--muted); }
 @keyframes blink { 50% { opacity: 0; } }
 .vm-card { border: 1px solid var(--border); border-radius: 12px; padding: 10px 12px; background: var(--card);

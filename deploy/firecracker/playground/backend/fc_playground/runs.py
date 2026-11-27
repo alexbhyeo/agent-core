@@ -24,6 +24,7 @@ from fc_playground.vm import gateway_config, team_sys_operation, user_sys_operat
 from openjiuwen.core.foundation.llm import Model, ModelClientConfig, ModelRequestConfig
 from openjiuwen.core.runner import Runner
 from openjiuwen.core.session.stream.base import OutputSchema, TraceSchema
+from openjiuwen.core.sys_operation.cwd import init_cwd
 
 logger = logging.getLogger(__name__)
 
@@ -37,6 +38,7 @@ VM_GUIDE = (
 SYSTEM_PROMPT = "You are a helpful engineering assistant. Always use your tools for files and commands. " + VM_GUIDE
 TEAM_NOTE = "\n\n(Environment note for every team member: " + VM_GUIDE + ")"
 _SKIP_TYPES = {"context.usage", "llm_usage"}
+VM_WORKSPACE = "/workspace"
 
 
 class Busy(Exception):
@@ -77,11 +79,13 @@ def normalize_chunk(chunk: Any) -> list[dict[str, Any]]:
         payload = chunk.payload if isinstance(chunk.payload, dict) else {}
         name = payload.get("name") or payload.get("invokeType") or payload.get("componentName") or "tool"
         inputs = (payload.get("inputs") or {}).get("inputs", payload.get("inputs"))
+        invoke_id = payload.get("invokeId")  # pairs a result with its call (parallel calls finish out of order)
         if payload.get("outputs") is None and payload.get("error") is None:
-            return [{"member": member, "kind": "tool_call", "text": str(name), "data": {"inputs": _short(inputs)}}]
+            return [{"member": member, "kind": "tool_call", "text": str(name),
+                     "data": {"inputs": _short(inputs), "invoke_id": invoke_id}}]
         return [{"member": member, "kind": "tool_result", "text": str(name),
                  "data": {"outputs": _short(payload.get("outputs")), "error": _short(payload.get("error"))
-                          if payload.get("error") else None}}]
+                          if payload.get("error") else None, "invoke_id": invoke_id}}]
     if not isinstance(chunk, OutputSchema):
         return [{"member": member, "kind": "other", "text": _short(chunk, 500), "data": None}]
     payload = chunk.payload
@@ -148,7 +152,7 @@ class RunManager:
 
             agent = create_deep_agent(
                 model=build_model(), system_prompt=SYSTEM_PROMPT, rails=[SysOperationRail()],
-                enable_task_loop=False, max_iterations=self._settings.max_iterations, workspace="/workspace",
+                enable_task_loop=False, max_iterations=self._settings.max_iterations, workspace=VM_WORKSPACE,
                 sys_operation=user_sys_operation(self._settings, user),
             )
             self._agents[session_id] = agent
@@ -179,7 +183,9 @@ class RunManager:
         )
         sysop = SysOperationSpec(id=f"pg-team-{user}", mode=OperationMode.SANDBOX,
                                  gateway_config=gateway_config(self._settings, user, team=True))
-        member = DeepAgentSpec(model=model, sys_operation=sysop, workspace=WorkspaceSpec(root_path=str(team_dir / "ws")),
+        # cwd / workspace are paths inside the session VM (the members' tools run there).
+        member = DeepAgentSpec(model=model, sys_operation=sysop, workspace=WorkspaceSpec(root_path=VM_WORKSPACE),
+                               cwd=VM_WORKSPACE, project_root=VM_WORKSPACE,
                                max_iterations=self._settings.max_iterations, enable_task_planning=False)
         size = max(1, min(int(session.get("team_size") or 3), 5))
         members = [TeamMemberSpec(member_name=f"member-{i}", display_name=f"Member {i}",
@@ -220,6 +226,10 @@ class RunManager:
                 stream = Runner.run_agent_team_streaming(agent_team=self._team_spec(user, session),
                                                          inputs={"query": text + TEAM_NOTE}, session=session_id)
             else:
+                # The agent instance is reused across runs (conversation memory), but its shell cwd lives in a
+                # per-task ContextVar set only on first init; without this, later runs fall back to this
+                # process's os.getcwd() and the tools try to cd into a backend path inside the VM.
+                init_cwd(VM_WORKSPACE, project_root=VM_WORKSPACE, workspace=VM_WORKSPACE)
                 stream = Runner.run_agent_streaming(self._deep_agent(user, session_id), {"query": text},
                                                     session=session_id)
             async for chunk in stream:
