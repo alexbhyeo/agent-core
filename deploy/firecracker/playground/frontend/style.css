@@ -178,6 +178,8 @@ h3 { font-size: 14px; margin: 14px 0 6px; }
 .dialog label { display: flex; flex-direction: column; gap: 3px; margin: 8px 0; font-size: 13px; }
 .dialog-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 14px; }
 .dialog-actions button { border: 1px solid var(--border); background: transparent; border-radius: 9px; padding: 6px 14px; }
+.dialog-actions button.primary { background: var(--accent); color: var(--accent-fg); border-color: var(--accent); }
+.dialog-actions button.primary:hover { filter: brightness(1.08); }
 .segmented { display: flex; gap: 14px; }
 .segmented label { flex-direction: row; align-items: center; gap: 6px; }
 .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 0 12px; }
