@@ -108,7 +108,7 @@ reached over a network). `PLAYGROUND_DOCKER=1` enables the "restart manager" but
 | `PLAYGROUND_TOKEN` | required access token |
 | `PLAYGROUND_ALLOWED_ORIGINS` | comma-separated origins allowed to call the API |
 | `PLAYGROUND_BIND` | listen address (default `0.0.0.0:8800`) |
-| `PLAYGROUND_MAX_RUNS` / `PLAYGROUND_MAX_ITERATIONS` | concurrent queries (8) / agent steps per query (20) |
+| `PLAYGROUND_MAX_RUNS` / `PLAYGROUND_MAX_ITERATIONS` | concurrent queries (8) / agent steps per query (100) |
 | `PLAYGROUND_DEFAULT_VCPUS` / `PLAYGROUND_DEFAULT_MEM_MIB` | default VM size (2 / 1024) |
 | `PLAYGROUND_USERS` | users offered in the user menu (default `alice,bob,noisy,fenced`) |
 

@@ -55,6 +55,16 @@ design_note: null
 - **MCP 演示命令**：演示服务需要 `/opt/mcp` venv 中的 `mcp` 包，界面默认命令改为 `/opt/mcp/bin/python`。
 - **后端镜像依赖**：AgentTeam 的 SQLite 存储需要 `sqlite` extra（`aiosqlite`），镜像使用 `--extra sandbox --extra observability --extra sqlite`。
 
+### 用户试用后的修订（2026-11-27）
+
+- **思考流折叠**：`llm_reasoning` 增量此前每个 token 一行；改为每个回答一个可折叠的 “Thinking…” 块，回答开始后收起为 “Thought for Ns”。
+- **工具活动分组**：每个回答的工具调用收进一个默认收起的列表（摘要 “Used N steps · bash ×k …”）；调用与结果合并为一行（✓ / ✗、工具名、命令或路径预览），点击展开完整输入输出。
+- **调用与结果按 invokeId 配对**：并行工具调用的结果乱序返回，按工具名配对会把输出挂到错误的调用下；后端在 `run.chunk` 中携带 `TraceSchema.payload.invokeId`（`data.invoke_id`），前端按 id 配对，旧会话无 id 时退回按名配对。
+- **复用的 DeepAgent 在后续运行中工作目录错误**：DeepAgent 只在首次初始化时把 cwd 写入当前 asyncio 任务的 ContextVar；Playground 为保留对话复用实例，第二次起的运行在新任务中读不到 cwd，退回后端进程的 `os.getcwd()`（`/var/lib/fc-playground`），VM 中的 bash 因 `cd` 失败。Playground 在每次运行前将 cwd 设为 VM 的 `/workspace`，团队成员的 cwd / workspace 也设为 `/workspace`；agent-core 侧的根因修复见 [B_20261127_0742](../bugfix/harness/B_20261127_0742_reused-agent-cwd-fallback.md)。
+- **步数上限**：`PLAYGROUND_MAX_ITERATIONS` 默认由 20 提高到 100（用户要求；新闻检索类问题在 20 步内用尽）。
+- **前端缓存**：nginx 对 js / css / html 返回 `Cache-Control: no-cache`，重新部署后浏览器即可取到新版本。
+- 验证：DeepAgent 用例增加第三问（`pwd` 必须为 `/workspace`、所有工具事件带 `invoke_id`）；DeepAgent、团队、界面、并行 / 批量、取消用例通过；以截图核对分组效果。
+
 ## 与设计的偏差
 
 | 设计 | 实际 | 原因 / 影响 |
