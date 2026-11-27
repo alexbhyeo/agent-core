@@ -15,6 +15,8 @@ from typing import (
 
 from pydantic import BaseModel
 
+from openjiuwen.core.common.exception.codes import StatusCode
+from openjiuwen.core.common.exception.errors import build_error
 from openjiuwen.core.common.logging import logger
 from openjiuwen.core.foundation.llm import (
     Model,
@@ -235,16 +237,34 @@ class SysOperationSpec(BaseModel):
         absent — otherwise each resume logs a spurious "resource already exist"
         error per member.
 
+        Resolution fails closed: if the card cannot be registered, or the instance
+        registered under this id runs in a different mode than the spec asks for,
+        it raises instead of returning ``None``. ``create_deep_agent`` treats a
+        missing sys_operation as "mint a LOCAL one", so returning ``None`` for a
+        SANDBOX spec would silently run the agent's tools on the host.
+
         Returns:
             The live SysOperation registered under this spec's id.
+
+        Raises:
+            BaseError: ``SYS_OPERATION_MANAGER_PROCESS_ERROR`` when the sys_operation
+                cannot be registered or its mode differs from ``self.mode``.
         """
         from openjiuwen.core.runner.runner import Runner
 
         card = self.build_card()
         sys_operation = Runner.resource_mgr.get_sys_operation(card.id)
         if sys_operation is None:
-            Runner.resource_mgr.add_sys_operation(card)
+            result = Runner.resource_mgr.add_sys_operation(card)
             sys_operation = Runner.resource_mgr.get_sys_operation(card.id)
+            if sys_operation is None:
+                reason = result.msg() if result.is_err() else "not found after registration"
+                raise build_error(StatusCode.SYS_OPERATION_MANAGER_PROCESS_ERROR, process="resolve",
+                                  error_msg=f"cannot register {self.mode.value} sys_operation {card.id}: {reason}")
+        if sys_operation.mode != self.mode:
+            raise build_error(StatusCode.SYS_OPERATION_MANAGER_PROCESS_ERROR, process="resolve",
+                              error_msg=f"sys_operation {card.id} is registered as {sys_operation.mode.value}, "
+                                        f"but the spec asks for {self.mode.value}")
         return sys_operation
 
 
