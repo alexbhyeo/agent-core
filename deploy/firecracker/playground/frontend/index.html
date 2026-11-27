@@ -1,0 +1,146 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Firecracker Playground</title>
+  <link rel="stylesheet" href="style.css">
+  <!-- config.js is generated at deploy time (backend URL); app.js only talks to that backend. -->
+  <script src="config.js"></script>
+</head>
+<body>
+<div id="app" class="layout">
+  <aside id="sidebar" class="sidebar">
+    <div class="brand-row">
+      <span class="brand">Firecracker Playground</span>
+      <span id="conn" class="conn off" title="event stream"></span>
+      <button id="btn-settings" class="icon-btn" title="Settings">⚙</button>
+    </div>
+    <button id="btn-new" class="nav-btn primary-nav">✎ New chat</button>
+    <button id="btn-batch" class="nav-btn">⇉ Batch query</button>
+    <button id="btn-ops" class="nav-btn">▦ Operations <span id="alert-count" class="badge hidden"></span></button>
+    <div class="section-title">Sessions</div>
+    <div id="session-list" class="session-list"></div>
+    <div id="external-wrap" class="hidden">
+      <div class="section-title">Other VMs of this user</div>
+      <div id="external-list" class="session-list"></div>
+    </div>
+    <div class="user-box">
+      <button id="btn-user" class="user-btn"><span id="user-avatar" class="avatar"></span>
+        <span class="user-meta"><span id="user-name"></span><span id="user-tier" class="muted small"></span></span>
+        <span class="muted">▾</span></button>
+      <div id="user-menu" class="menu hidden">
+        <div class="menu-title">Switch user</div>
+        <div id="user-options"></div>
+        <form id="user-form" class="menu-form">
+          <input id="user-input" placeholder="another user name" autocomplete="off" maxlength="64">
+          <button type="submit">Use</button>
+        </form>
+      </div>
+    </div>
+  </aside>
+
+  <main id="main" class="main">
+    <header id="chat-header" class="chat-header hidden">
+      <div class="title-wrap">
+        <span id="chat-kind" class="kind"></span>
+        <span id="chat-title" class="chat-title" title="Click to rename"></span>
+        <span id="chat-state" class="pill"></span>
+        <span id="chat-running" class="spinner hidden" title="running"></span>
+      </div>
+      <div class="header-actions">
+        <button id="btn-details" class="ghost-btn">Session panel ⇥</button>
+      </div>
+    </header>
+
+    <section id="chat-view" class="chat-view">
+      <div id="empty" class="empty">
+        <h1>Ready when you are.</h1>
+        <p class="muted">Your question starts a new DeepAgent session in its own Firecracker microVM.</p>
+      </div>
+      <div id="messages" class="messages hidden"></div>
+    </section>
+
+    <section id="ops-view" class="ops-view hidden"></section>
+
+    <form id="composer" class="composer">
+      <textarea id="input" rows="1" placeholder="Ask anything" autocomplete="off"></textarea>
+      <button id="btn-send" type="submit" class="send" title="Send (Enter)">↑</button>
+      <button id="btn-stop" type="button" class="send stop hidden" title="Stop">■</button>
+    </form>
+  </main>
+
+  <aside id="details" class="details hidden">
+    <div class="details-head">
+      <span>Session panel</span>
+      <button id="btn-details-close" class="icon-btn" title="Close">✕</button>
+    </div>
+    <nav id="tabs" class="tabs"></nav>
+    <div id="tab-body" class="tab-body"></div>
+  </aside>
+</div>
+
+<dialog id="dlg-settings" class="dialog">
+  <form method="dialog" id="settings-form">
+    <h2>Backend connection</h2>
+    <p class="muted small">The frontend is a static site; it talks only to the Playground backend API.</p>
+    <label>Backend URL <input id="set-api" placeholder="https://backend-host:8800" required></label>
+    <label>Access token (PLAYGROUND_TOKEN) <input id="set-token" type="password" required></label>
+    <div id="set-status" class="small"></div>
+    <div class="dialog-actions">
+      <button value="cancel" formnovalidate>Cancel</button>
+      <button id="set-save" value="save" class="primary">Save &amp; connect</button>
+    </div>
+  </form>
+</dialog>
+
+<dialog id="dlg-new" class="dialog">
+  <form method="dialog" id="new-form">
+    <h2>New chat</h2>
+    <div class="segmented">
+      <label><input type="radio" name="kind" value="deepagent" checked> DeepAgent</label>
+      <label><input type="radio" name="kind" value="team"> AgentTeam</label>
+    </div>
+    <label class="team-only hidden">Team members
+      <select id="new-team-size"><option>1</option><option>2</option><option selected>3</option><option>4</option><option>5</option></select>
+    </label>
+    <label>Title (optional) <input id="new-title" maxlength="120"></label>
+    <details>
+      <summary>VM profile</summary>
+      <div class="grid2">
+        <label>vCPUs <input id="new-vcpus" type="number" min="1" max="8" placeholder="default"></label>
+        <label>Memory MiB <input id="new-mem" type="number" min="256" step="256" placeholder="default"></label>
+        <label>Workspace MiB <input id="new-ws" type="number" min="0" placeholder="default"></label>
+        <label>CPU template
+          <select id="new-cpu"><option value="">host default</option><option>T2</option><option>T2S</option>
+            <option>T2CL</option><option>C3</option><option>none</option></select></label>
+        <label>Pause after idle (s) <input id="new-ttl-pause" type="number" min="0" placeholder="tier default"></label>
+        <label>Persist after paused (s) <input id="new-ttl-persist" type="number" min="0" placeholder="tier default"></label>
+      </div>
+      <label>Egress allowlist (comma separated, empty = tier default)
+        <input id="new-allow" placeholder="pypi.org, files.pythonhosted.org"></label>
+    </details>
+    <div class="dialog-actions">
+      <button value="cancel" formnovalidate>Cancel</button>
+      <button value="create" class="primary">Create</button>
+    </div>
+  </form>
+</dialog>
+
+<dialog id="dlg-batch" class="dialog">
+  <form method="dialog" id="batch-form">
+    <h2>Batch query</h2>
+    <p class="muted small">Send one question to several sessions; each runs in parallel in its own VM.</p>
+    <div id="batch-sessions" class="check-list"></div>
+    <textarea id="batch-text" rows="3" placeholder="Question for every selected session" required></textarea>
+    <div class="dialog-actions">
+      <button value="cancel" formnovalidate>Cancel</button>
+      <button value="send" class="primary">Send to selected</button>
+    </div>
+  </form>
+</dialog>
+
+<div id="toasts" class="toasts"></div>
+<script src="app.js"></script>
+</body>
+</html>

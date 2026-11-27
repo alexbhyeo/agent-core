@@ -21,5 +21,9 @@ RUN uv sync --frozen --no-install-project --extra sandbox --extra observability 
 # Warm npx's cache with the Playwright MCP version the browser subagent pins.
 RUN npx -y @playwright/mcp@0.0.78 --help >/dev/null 2>&1 || true
 
+# A local headless Chromium for the Playground UI tests (the browser opens the frontend like a user).
+ENV PLAYWRIGHT_BROWSERS_PATH=/opt/ms-playwright
+RUN /opt/venv/bin/python -m playwright install --with-deps chromium && rm -rf /var/lib/apt/lists/*
+
 WORKDIR /src
 ENV PYTHONPATH=/src
